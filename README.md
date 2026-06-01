@@ -5,10 +5,21 @@ A clickable **strawman prototype** for a small home-appliance repair workshop in
 scheduling, and the full carry-in repair lifecycle across a **manager desktop view** and a
 **technician mobile view** — all from a single app.
 
-> ⚠️ **Prototype data, product foundation.** Everything currently runs on in-browser mock data — no
-> login, no server, no real SMS or payment processing, and changes **reset on refresh**. The codebase
-> is now structured as a **modular monolith with vertical slices** (see _Architecture_ below) so a
-> small team can grow it into the real product.
+> ⚠️ **Prototype data, product foundation.** The web app currently runs on in-browser mock data — no
+> login, no real SMS or payment processing, and changes **reset on refresh**. A FastAPI backend
+> (Supabase-backed) is being wired in alongside it; an Expo technician app will follow. The codebase
+> is structured as a **modular monolith with vertical slices spanning all three runtimes** (see
+> [`ARCHITECTURE.md`](./ARCHITECTURE.md)) so a small team can grow it into the real product.
+
+## 📦 Repo layout (monorepo)
+
+```
+EMS_workshop1/
+  src/                # web manager app (React + Vite)        — this README's "Getting Started"
+  backend/            # FastAPI + Alembic + Supabase           — backend/README.md
+  technician-app/     # Expo (Android) — Phase 2               — technician-app/README.md
+  docker-compose.yml  # local Postgres + backend dev stack
+```
 
 ---
 

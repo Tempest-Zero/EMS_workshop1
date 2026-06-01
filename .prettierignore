@@ -6,3 +6,9 @@ coverage
 # Hand-authored demo collateral — leave formatting untouched
 docs
 *.pdf
+
+# Backend is Python — formatted by ruff, not Prettier
+backend
+
+# Expo app has its own Prettier (scaffolded in Phase 2)
+technician-app
