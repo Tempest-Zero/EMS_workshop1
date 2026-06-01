@@ -1,0 +1,19 @@
+# Code ownership for review routing.
+# Syntax: <path>  <@owner ...>   (last matching rule wins)
+#
+# Replace the placeholders below with real GitHub usernames as the team forms.
+
+# Default owner for everything in the repo.
+*                               @Tempest-Zero
+
+# Cross-cutting areas — keep a careful eye here.
+/src/app/                       @Tempest-Zero
+/src/shared/                    @Tempest-Zero
+/.github/                       @Tempest-Zero
+
+# Per-feature ownership — assign a primary maintainer per slice.
+# /src/features/jobs/           @teammate-a
+# /src/features/technicians/    @teammate-b
+# /src/features/attendance/     @teammate-c
+# /src/features/schedule/       @teammate-d
+# /src/features/troubleshooting/ @teammate-e

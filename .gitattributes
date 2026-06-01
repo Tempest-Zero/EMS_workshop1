@@ -1,0 +1,10 @@
+# Normalize line endings to LF for all text files across the team.
+* text=auto eol=lf
+
+# Treat these as binary (never alter).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.svg text eol=lf
+*.pdf binary

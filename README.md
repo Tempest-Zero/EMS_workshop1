@@ -5,9 +5,10 @@ A clickable **strawman prototype** for a small home-appliance repair workshop in
 scheduling, and the full carry-in repair lifecycle across a **manager desktop view** and a
 **technician mobile view** — all from a single app.
 
-> ⚠️ **Prototype only.** Everything runs on in-browser mock data. There is no login, no server, and no
-> real SMS or payment processing. Anything you create or change persists while the tab is open and
-> **resets on refresh**. The purpose is to demo the product shape and gather feedback.
+> ⚠️ **Prototype data, product foundation.** Everything currently runs on in-browser mock data — no
+> login, no server, no real SMS or payment processing, and changes **reset on refresh**. The codebase
+> is now structured as a **modular monolith with vertical slices** (see _Architecture_ below) so a
+> small team can grow it into the real product.
 
 ---
 
@@ -18,7 +19,7 @@ scheduling, and the full carry-in repair lifecycle across a **manager desktop vi
   - **Technician** — mobile, bottom-tab shell, shown inside a phone frame on desktop. Built for
     quick taps with ≥44px touch targets.
 - **Live Dashboard** — KPIs (present today, active jobs, awaiting parts, revenue this week), a
-  *Needs Attention* alert strip, and a recent-activity feed.
+  _Needs Attention_ alert strip, and a recent-activity feed.
 - **Jobs module (the core)** — a status board (Open · Waiting · Ready · History), a New Job intake
   form, and a deep job-detail screen with diagnosis notes, an itemised estimate, payment tracking,
   and a full timeline.
@@ -29,18 +30,19 @@ scheduling, and the full carry-in repair lifecycle across a **manager desktop vi
   from their phone.
 - **Schedule** — a weekly grid (technicians × Mon–Sat) with home-visit indicators.
 - **Troubleshooting** — a searchable fault-code reference (13 codes) and common-fix guides, with an
-  *Add to Job* shortcut that drops a part straight onto a job's estimate.
+  _Add to Job_ shortcut that drops a part straight onto a job's estimate.
 
 ---
 
 ## 🛠 Tech Stack
 
-- **React** + **Vite**
+- **React 19** + **Vite 6**
 - **Tailwind CSS** (v4, via the Vite plugin)
 - **React Router** (the URL prefix drives the role — anything under `/tech` is the technician view)
-- **lucide-react** icons
-- **Plus Jakarta Sans** typeface
-- App state lives in a single **React Context** (`src/context/AppContext.jsx`)
+- **lucide-react** icons · **Plus Jakarta Sans** typeface
+- **Vitest** + **Testing Library** (tests) · **ESLint** + **Prettier** (quality)
+- Path aliases: `@app` / `@shared` / `@features`
+- App state lives in a single **React Context** (`src/app/providers/AppContext.jsx`)
 
 ---
 
@@ -60,6 +62,11 @@ Then open the URL Vite prints (default **http://localhost:5173**).
 - Technician view: `/tech/jobs`
 
 ```bash
+# quality gates (the same checks CI runs)
+npm run lint          # eslint
+npm run format        # prettier --write .
+npm test              # vitest
+
 # production build
 npm run build
 npm run preview
@@ -69,20 +76,39 @@ npm run preview
 
 ## 📁 Project Structure
 
+Organized as **vertical slices** — by capability, not by technical layer:
+
 ```
 src/
-  main.jsx, App.jsx, index.css
-  context/AppContext.jsx        # single state store + all mutators
-  data/                         # mock data: jobs, technicians, attendance,
-                                #            faultCodes, commonFixes, schedule, constants
-  lib/                          # currency, date, statusConfig, job helpers
-  components/                   # shared UI kit (cards, chips, badges, overlays, …)
-  layouts/                      # ManagerLayout, TechLayout, PhoneFrame
-  pages/
-    manager/                    # Dashboard, Jobs, Technicians, Attendance, Schedule, …
-    tech/                       # My Jobs, Clock In, Diagnose, Profile, My Week
-docs/                           # demo documentation (PDF + source HTML)
+  app/            # composition root: router, layouts, global store (AppContext), toasts
+  shared/         # shared kernel — depends on nothing internal
+    ui/           #   primitives, StatusChip, Avatar, StatCard, Overlay, IntegrationBadge
+    lib/          #   currency, date, statusConfig, job, text
+    config/       #   constants (TODAY, WORKSHOP, …)
+  features/       # one folder per capability — a vertical slice
+    dashboard/  jobs/  technicians/  attendance/  schedule/  troubleshooting/  settings/
+      data/         #   mock data the feature owns
+      components/   #   feature-only components
+      pages/        #   route screens (manager + technician views)
+      index.js      #   public API barrel (what the router imports)
+docs/             # demo documentation (PDF + source HTML)
 ```
+
+See **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** for the dependency rules and how to add a feature.
+
+---
+
+## 🧱 Architecture & Contributing
+
+FixFlow is a **modular monolith** being grown into a product by a small team.
+Before contributing, read:
+
+- **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — the layer map (`app` / `shared` / `features`),
+  dependency rules, state management, and how to add a new feature.
+- **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** — branching model, commit conventions, and the PR checklist.
+
+`main` stays green: every pull request runs lint, format check, tests, and build via
+GitHub Actions (`.github/workflows/ci.yml`).
 
 ---
 
