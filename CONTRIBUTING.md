@@ -7,12 +7,53 @@ vertical-slice structure your changes must fit into.
 
 ## Local setup
 
+### Web (manager) — at repo root
+
 ```bash
 npm install      # install dependencies
 npm run dev      # start the dev server (http://localhost:5173)
 npm test         # run the test suite
 npm run lint     # lint
 npm run format   # auto-format with Prettier
+```
+
+### Backend (FastAPI)
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate           # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+
+cp .env.example .env                # then fill in Supabase keys (see backend/README.md)
+uvicorn app.main:app --reload       # http://localhost:8000/api/health
+```
+
+Quality gates (same as CI):
+
+```bash
+ruff format --check .
+ruff check .
+mypy app
+pytest
+```
+
+Database migrations (Alembic):
+
+```bash
+alembic revision --autogenerate -m "describe the change"
+alembic upgrade head
+```
+
+### Mobile (technician-app)
+
+Scaffolds in **Phase 2** of the media slice. See
+[`technician-app/README.md`](./technician-app/README.md) for the planned setup.
+
+### Whole stack via Docker Compose
+
+```bash
+docker compose up --build           # Postgres + backend, hot-reloading
 ```
 
 ## Branching model
@@ -48,18 +89,35 @@ Example: `feat(jobs): add parts search to the estimate editor`.
 
 ## Where does my code go?
 
-Decide which **slice** your change belongs to and stay inside it:
+Decide first **which runtime** the change belongs to (web · backend · mobile),
+then **which slice** inside it. Stay inside that slice.
+
+### Web (`src/`)
 
 - A screen, component, or data change for an existing capability →
   `src/features/<that-feature>/`.
 - A genuinely reusable, dependency-free UI piece or helper → `src/shared/`.
 - Routing, layouts, global store, app-wide wiring → `src/app/`.
-- A brand-new capability → a new `src/features/<name>/` (see _Adding a new
-  feature_ in `ARCHITECTURE.md`).
+- A brand-new capability → a new `src/features/<name>/`.
 
-Respect the dependency rules in `ARCHITECTURE.md`. The most common mistake is
-reaching into another feature's `pages`/barrel — import its `data`/helpers by
-path instead, and keep the dependency one-directional.
+### Backend (`backend/app/`)
+
+- API + DB work for an existing capability → `backend/app/features/<that-feature>/`.
+  Stay inside `router.py`, `schemas.py`, `models.py`, `service.py`,
+  `repository.py`, `tests/`.
+- Cross-slice helpers (errors, pagination, base schemas) → `backend/app/shared/`.
+- A brand-new capability → a new `backend/app/features/<name>/`. If the slice
+  needs a database table, add an Alembic migration in the same PR.
+- **Never** import another slice's `repository.py` or `models.py`. Call its
+  `service.py` instead — that's the contracted surface.
+
+### Mobile (`technician-app/`)
+
+(Scaffolds in Phase 2.) Same convention: `technician-app/src/features/<name>/`.
+
+Respect the dependency rules in `ARCHITECTURE.md`. The most common mistake on
+the web side is reaching into another feature's `pages`/barrel; on the backend
+side it's reaching past `service.py` into another slice's internals.
 
 ## Tests
 
@@ -70,13 +128,26 @@ path instead, and keep the dependency one-directional.
 
 ## Opening a pull request
 
-Before you push, make sure all of these pass locally — CI runs the same gates:
+Before you push, make sure the gates for the side(s) you touched pass locally —
+CI runs both jobs (frontend + backend) on every PR:
+
+**Web:**
 
 ```bash
 npm run lint
 npm run format:check
 npm test
 npm run build
+```
+
+**Backend:**
+
+```bash
+cd backend
+ruff format --check .
+ruff check .
+mypy app
+pytest
 ```
 
 Then open a PR into `main`. The template will prompt you for a summary, the

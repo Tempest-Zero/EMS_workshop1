@@ -1,18 +1,65 @@
 # Architecture
 
-FixFlow is a **modular monolith** built as a single React SPA. The codebase is
-organized into **vertical slices**: code is grouped by _business capability_
-(jobs, technicians, attendance, …) rather than by technical layer
-(components/, pages/, data/). A team can own and ship a slice end-to-end with
-minimal cross-talk.
+FixFlow is a **modular monolith** delivered through **three runtimes** that
+live together in this monorepo:
 
-> Today the app runs entirely on in-browser mock data — there is no backend yet.
-> The structure below is designed so a real backend can be added later as its own
-> set of modules without reshuffling the frontend.
+- **Web manager app** — React + Vite (current root `src/`, served as a SPA).
+- **Technician mobile app** — Expo (React Native), Android target.
+- **Backend** — FastAPI (Python 3.12) + Supabase (Postgres + Storage).
+
+Code is grouped by **business capability** (jobs, technicians, attendance,
+media, invoices, …), **not** by technical layer. A slice is the same concept
+on every runtime: the `media` slice has a folder on the backend, a folder in
+the Expo app, and (where relevant) a folder in the web app. One person can
+own and ship a slice **end-to-end across all three sides** with minimal
+cross-talk to other slices.
 
 ---
 
-## The three layers
+## Repo layout (monorepo)
+
+```
+EMS_workshop1/
+  src/                    # web manager app (React + Vite)            ← will move to frontend/ later
+  backend/                # FastAPI + Alembic + Supabase
+    app/
+      main.py             # app factory; mounts every feature router
+      core/               # config (pydantic-settings), async DB session
+      features/<slice>/   # router · schemas · models · service · repository · tests/
+      shared/             # cross-slice helpers (errors, pagination, base schemas)
+    alembic/              # database migrations
+    tests/                # cross-cutting integration tests
+    pyproject.toml        # deps, ruff, mypy, pytest config
+    Dockerfile
+  technician-app/         # Expo (Android demo) — scaffolds in Phase 2
+  docker-compose.yml      # local Postgres + backend dev stack
+  .github/workflows/ci.yml
+```
+
+> The web app stays at the repo root for now (moving it would conflict with
+> in-flight feature branches). When the active branches are merged we'll
+> relocate it to `frontend/` so all three runtimes are siblings.
+
+---
+
+## Vertical slices span the whole stack
+
+A real vertical slice is end-to-end — UI → API → domain → database. So the
+**same slice name** appears on every runtime that needs it:
+
+```
+EMS_workshop1/
+  src/features/jobs/                     ⇄    backend/app/features/jobs/
+  src/features/media/  (web tile/play)   ⇄    backend/app/features/media/      ⇄    technician-app/src/features/media/
+  src/features/invoices/  (manager view) ⇄    backend/app/features/invoices/
+```
+
+A slice ships when all of its sides ship together — that's how we avoid the
+"backend done but UI not wired" anti-pattern.
+
+---
+
+## Frontend (web manager) — three layers
 
 ```
 src/
@@ -140,11 +187,74 @@ places, kept in sync:
 
 ---
 
+## Backend (FastAPI) — slice-per-folder
+
+Each feature module under `backend/app/features/<slice>/` is self-contained
+and stays inside this rectangle:
+
+```
+features/<slice>/
+  router.py        # APIRouter for this slice
+  schemas.py       # Pydantic request/response models
+  models.py        # SQLAlchemy ORM models
+  service.py       # business logic (the PUBLIC surface for other slices)
+  repository.py    # data access
+  tests/           # unit + integration tests
+```
+
+### Dependency rules
+
+1. **`shared/` is dependency-free in the business sense.** Pure helpers, base
+   schemas, error classes. May depend on third-party libs only.
+2. **Feature slices may depend on `core/` and `shared/`.** Never on another
+   feature's `repository.py` or `models.py`.
+3. **Cross-slice consumption goes through `service.py`.** That's the
+   contracted surface area — repositories and models are private internals.
+4. **`main.py` only composes.** Mounts routers; no business code.
+
+### Signed-URL upload pattern (media)
+
+The mobile app **never holds a Supabase service key**. The flow:
+
+```
+Expo (capture + compress)
+   ├─ 1. POST /api/jobs/{id}/media         (phase, type, filename)
+   ▼
+FastAPI · media slice                       validate rules, create DB row (pending),
+   │                                        mint a short-lived Supabase signed UPLOAD url
+   │  2. returns { signed_url, media_id }
+   ▼
+Expo  ──── 3. PUT bytes DIRECTLY to Supabase Storage via signed_url
+   │  4. POST /api/jobs/{id}/media/{mid}/complete
+   ▼
+FastAPI · media slice                       mark row uploaded; persist playback url
+```
+
+Supabase is the persistence layer **behind** the monolith — not the app's
+direct backend. Bytes still flow phone↔storage (no double bandwidth); only
+control messages traverse FastAPI.
+
+---
+
+## Mobile (Expo technician app)
+
+See [`technician-app/README.md`](./technician-app/README.md) for the planned
+layout and stack. Same vertical-slice convention:
+`technician-app/src/features/<slice>/`. Native modules (`react-native-compressor`,
+`expo-video`) require an **EAS development build** — Expo Go is not enough.
+
+---
+
 ## Tooling
 
-- **Vite** — dev server + production build.
-- **ESLint** (flat config) — `npm run lint`.
-- **Prettier** — formatting; `npm run format` / `npm run format:check`.
-- **Vitest + Testing Library** — unit/component tests; `npm test`.
-- **GitHub Actions** — `.github/workflows/ci.yml` runs lint, format check, tests
-  and build on every PR and push to `main`.
+| Side       | Tools                                                          | Commands                                   |
+| ---------- | -------------------------------------------------------------- | ------------------------------------------ |
+| Web        | Vite · ESLint · Prettier · Vitest + Testing Library            | `npm run lint · format · test · build`     |
+| Backend    | Ruff (lint + format) · Mypy (strict) · Pytest + pytest-asyncio | `ruff check · ruff format · mypy · pytest` |
+| Mobile     | Expo · EAS Build · TypeScript (scaffolds in Phase 2)           | (TBD)                                      |
+| Migrations | Alembic (SQLAlchemy 2.0 async)                                 | `alembic upgrade head` / `revision -m`     |
+| Local DB   | docker-compose (Postgres 16) — `docker compose up`             |                                            |
+
+**GitHub Actions** (`.github/workflows/ci.yml`) runs both the **frontend**
+and **backend** jobs on every PR and push to `main`. The mobile job is added
+when the Expo project scaffolds.

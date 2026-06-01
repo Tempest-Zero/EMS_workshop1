@@ -1,0 +1,42 @@
+# Local dev stack: Postgres + the FastAPI backend.
+#
+# Once the Supabase project is provisioned you can stop the `postgres` service
+# and point FIXFLOW_DATABASE_URL at Supabase's Postgres directly — the backend
+# stays the same.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fixflow-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fixflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fixflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: fixflow-backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      FIXFLOW_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/fixflow
+      # Surface other FIXFLOW_* vars from your shell / backend/.env when needed.
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Bind-mount source for hot reload during dev.
+      - ./backend:/code
+
+volumes:
+  pg_data:

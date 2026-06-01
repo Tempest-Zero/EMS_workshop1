@@ -22,3 +22,26 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ── Backend (Python / FastAPI) ────────────────────────────────────────────
+backend/.env
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/htmlcov/
+backend/.coverage
+backend/*.egg-info/
+backend/build/
+backend/dist/
+
+# ── Mobile (Expo / EAS) ───────────────────────────────────────────────────
+technician-app/node_modules/
+technician-app/.expo/
+technician-app/dist/
+technician-app/web-build/
+technician-app/*.log
+technician-app/.env
+technician-app/.env.local
