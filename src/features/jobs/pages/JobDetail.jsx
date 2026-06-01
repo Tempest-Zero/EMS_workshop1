@@ -37,6 +37,8 @@ import {
 } from "@shared/lib/job";
 import { fmtDate, daysSince } from "@shared/lib/date";
 import { techById } from "@features/technicians/data/technicians";
+import BeforeAfterMedia from "@features/jobs/components/BeforeAfterMedia";
+import { missingReadyMedia, anyMedia } from "@features/jobs/lib/media";
 
 function kindDot(kind) {
   const map = {
@@ -82,6 +84,10 @@ export default function JobDetail({ tech = false }) {
   const bal = balance(job);
   const closed = job.status === "closed";
   const back = tech ? "/tech/jobs" : "/jobs";
+
+  // SOP gate (technician only): require a before + after video before Mark Ready.
+  const sopMissing = tech ? missingReadyMedia(job) : [];
+  const sopBlocked = sopMissing.length > 0;
 
   return (
     <div className={tech ? "p-4 space-y-4 pb-24" : "space-y-5"}>
@@ -223,6 +229,9 @@ export default function JobDetail({ tech = false }) {
           </div>
         </div>
       </Card>
+
+      {/* Before / After proof (technician SOP) */}
+      {(tech || anyMedia(job)) && <BeforeAfterMedia job={job} canCapture={tech} />}
 
       {/* Estimate */}
       <Card className="p-4 md:p-5">
@@ -366,7 +375,12 @@ export default function JobDetail({ tech = false }) {
         <div className="sticky bottom-0 -mx-4 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur md:mx-0 md:rounded-xl md:border md:shadow-lg">
           <div className="flex flex-wrap gap-2">
             {job.estimate?.status === "approved" && job.status !== "ready" && (
-              <Button variant="success" onClick={() => app.markReady(job.id)}>
+              <Button
+                variant="success"
+                disabled={sopBlocked}
+                title={sopBlocked ? `Capture ${sopMissing.join(" and ")} first` : undefined}
+                onClick={() => app.markReady(job.id)}
+              >
                 <BellRing className="h-4 w-4" /> Mark Ready & SMS
               </Button>
             )}

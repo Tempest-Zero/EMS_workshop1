@@ -88,6 +88,7 @@ export function AppProvider({ children }) {
         payment: { method: "pending", paid: 0 },
         notes: [],
         photos: [{ label: "Intake" }],
+        media: { before: [], after: [] },
         timeline: [
           nowEntry("Job created by Manager", "create"),
           nowEntry(
@@ -111,6 +112,34 @@ export function AppProvider({ children }) {
         (j) => ({ ...j, notes: [...(j.notes || []), { label: e.label, by: byName, text }] }),
         e
       );
+    },
+    [patchJob]
+  );
+
+  // Before/after capture (technician SOP proof). See features/jobs/lib/media.js.
+  const addJobMedia = useCallback(
+    (jobId, phase, item) => {
+      patchJob(
+        jobId,
+        (j) => {
+          const media = j.media || { before: [], after: [] };
+          return { ...j, media: { ...media, [phase]: [...(media[phase] || []), item] } };
+        },
+        nowEntry(`${phase === "before" ? "Before" : "After"} ${item.type} captured`, "note")
+      );
+    },
+    [patchJob]
+  );
+
+  const removeJobMedia = useCallback(
+    (jobId, phase, mediaId) => {
+      patchJob(jobId, (j) => {
+        const media = j.media || { before: [], after: [] };
+        return {
+          ...j,
+          media: { ...media, [phase]: (media[phase] || []).filter((m) => m.id !== mediaId) },
+        };
+      });
     },
     [patchJob]
   );
@@ -313,6 +342,8 @@ export function AppProvider({ children }) {
     // mutators
     addJob,
     addNote,
+    addJobMedia,
+    removeJobMedia,
     setEstimate,
     addEstimateLineItem,
     setEstimateStatus,
