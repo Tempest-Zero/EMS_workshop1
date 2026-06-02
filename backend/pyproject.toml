@@ -56,7 +56,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]      # `assert` is fine in tests
+# `assert` is fine in tests; same for test-only string constants like fake "tokens"
+"**/tests/**" = ["S101", "S105", "S106"]
 "alembic/env.py" = ["E402"] # alembic's env.py legitimately mixes imports + setup
 
 # ── Mypy (static types) ──────────────────────────────────────────────────────

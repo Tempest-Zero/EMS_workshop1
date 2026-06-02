@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.features.health.router import router as health_router
+from app.features.media.router import router as media_router
 
 
 def create_app() -> FastAPI:
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
 
     # Feature routers — add new slices here as they come online.
     app.include_router(health_router, prefix="/api")
+    app.include_router(media_router, prefix="/api")
 
     return app
 

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
@@ -25,6 +26,11 @@ SessionLocal = async_sessionmaker(
     expire_on_commit=False,
     class_=AsyncSession,
 )
+
+
+class Base(DeclarativeBase):
+    """Base for all ORM models. Every feature slice's models subclass this so
+    they show up under `Base.metadata` for Alembic and test schema creation."""
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

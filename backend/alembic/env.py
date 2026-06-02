@@ -4,9 +4,9 @@ We use SQLAlchemy 2.0's `async_engine_from_config` and run migrations through
 `connection.run_sync(...)` so the same migration scripts work whether they're
 run from a sync (`alembic upgrade head`) or async context.
 
-`target_metadata` is `None` for Phase 0. Once feature slices declare their
-ORM models we'll aggregate them into a single `Base.metadata` and assign it
-here so `--autogenerate` picks up schema changes.
+`target_metadata` is sourced from `app.registry`, which side-effect imports
+every feature's `models` module so the autogenerate detector sees the whole
+schema. Add new features to that registry, not here.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from app.core.config import settings
+from app.registry import Base
 
 config = context.config
 
@@ -29,7 +30,7 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
