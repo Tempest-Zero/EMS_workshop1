@@ -43,6 +43,33 @@ jobs:
       - name: Production build
         run: npm run build
 
+  # ── Mobile (Expo technician app) ──────────────────────────────────────────
+  mobile:
+    name: Mobile · TypeScript · Jest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: technician-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: technician-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript
+        run: npm run tsc
+
+      - name: Jest
+        run: npm test -- --ci --passWithNoTests
+
   # ── Backend (FastAPI) ─────────────────────────────────────────────────────
   backend:
     name: Backend · Ruff · Mypy · Pytest
