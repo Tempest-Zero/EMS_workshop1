@@ -1,10 +1,13 @@
 /**
- * App configuration sourced from EXPO_PUBLIC_* env vars (inlined at bundle time).
+ * App configuration from EXPO_PUBLIC_* env vars (inlined into the JS bundle at
+ * build time). Where EXPO_PUBLIC_API_URL comes from depends on the build:
  *
- * `apiUrl` defaults to 10.0.2.2:8000 — the Android-emulator special IP that
- * tunnels to the host machine's localhost. For a real phone on the same LAN
- * as the dev machine, set EXPO_PUBLIC_API_URL to that machine's LAN IP in
- * `.env`.
+ *   - development : local `.env` (Metro reads it) → your dev machine's LAN IP
+ *   - preview     : eas.json `build.preview.env`   → deployed staging API
+ *   - production  : eas.json `build.production.env` → deployed prod API
+ *
+ * The fallback below is only used if nothing set it: 10.0.2.2 is the Android
+ * emulator's host-loopback IP, handy for a quick emulator run with no .env.
  */
 const apiUrl = process.env.EXPO_PUBLIC_API_URL ?? "http://10.0.2.2:8000";
 

@@ -39,52 +39,93 @@ technician-app/
 | File I/O | `expo-file-system` (`uploadAsync` does the PUT to Supabase) |
 | Tests | jest + jest-expo |
 
-## Local dev setup
+## Two ways to run it
+
+There are two independent connections, and conflating them is the classic
+mistake:
+
+- **A · your JS → the phone** (the edit/reload loop) — Metro over LAN.
+- **B · the app → the backend API** (the data) — a URL baked in per build profile.
+
+Pick the path that matches what you're doing.
+
+### A) Daily iteration — `development` build + LAN
+
+For coding at your own desk with hot reload. The API URL comes from your local
+`.env`; the JS is served live by Metro.
 
 ```bash
 cd technician-app
-npm install                # ~2 min, ~1 GB node_modules
+npm install                # ~2 min
 cp .env.example .env
-# edit .env if running on a real phone:
+# point it at your dev machine on the LAN (find it with `ipconfig`):
 #   EXPO_PUBLIC_API_URL=http://<your-LAN-IP>:8000
 ```
 
-### Run the backend so the app can talk to it
+Run the backend so the phone can reach it (bind 0.0.0.0, not localhost):
 
 ```bash
-# in another terminal, from repo root
-cd backend
+cd ../backend
 .venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Listening on `0.0.0.0` is important — otherwise the phone can't reach it.
-Sanity-check from a regular browser: `http://<dev-machine-LAN-IP>:8000/api/health`.
-
-### Build a dev APK with EAS (one time, ~10 min)
-
-`react-native-compressor` and `expo-video` are native modules → Expo Go cannot
-run them. You need an **EAS development build** installed on the test device.
+Build the dev client once (native modules → Expo Go won't work), then run Metro:
 
 ```bash
-npm install -g eas-cli
-eas login                                       # free Expo account
-eas build --profile development --platform android
+npm install -g eas-cli && eas login          # free Expo account
+cd ../technician-app
+eas build --profile development --platform android   # ~10 min, install the APK
+npm start                                            # Metro; open the dev app, scan QR
 ```
 
-When the build completes EAS gives you a downloadable APK URL. Install it on
-the Android device (one-time).
+> ⚠️ LAN requires phone + laptop on the **same Wi-Fi with no client isolation**
+> — which public/venue Wi-Fi often blocks. Tunnel (`npx expo start --tunnel`)
+> works around it but is slow and drops often. **Don't demo this way** — use (B).
 
-### Run the app
+### B) Demo / testers — `preview` build + deployed backend ⭐
 
-```bash
-npm start                  # starts Metro / dev server
+This is the build you hand to a technician or your mentor. It embeds the JS
+bundle and points at a **deployed** backend, so it needs **no laptop, no Metro,
+no shared Wi-Fi** — they just open the app and it works.
+
+1. **Deploy the backend** (see below) → get a stable `https://…` URL.
+2. Put that URL in `eas.json` → `build.preview.env.EXPO_PUBLIC_API_URL`
+   (replace the `https://staging.fixflow.example` placeholder).
+3. Build + distribute:
+   ```bash
+   eas build --profile preview --platform android
+   ```
+   EAS returns an install link (internal distribution). Send it to anyone — they
+   install the APK and it talks straight to the deployed API.
+
+New tester later? Send the same link. New developer? They clone the repo and the
+URL is already in `eas.json` — no per-machine IP hunting.
+
+## Deploy the backend
+
+Because the database + storage are already on **Supabase** (cloud), deploying
+the API is just "run the container with the right env vars" — there's no DB to
+provision. The image already respects `$PORT`, so it runs as-is on Railway,
+Render, or Fly (all can build straight from `backend/Dockerfile`).
+
+Set these env vars on the host (same values as `backend/.env`):
+
+```
+FIXFLOW_DATABASE_URL          # Supabase Postgres (postgresql+asyncpg://…)
+FIXFLOW_SUPABASE_URL
+FIXFLOW_SUPABASE_SERVICE_KEY  # backend-only secret
+FIXFLOW_SUPABASE_STORAGE_BUCKET=job-media
+FIXFLOW_CORS_ORIGINS          # JSON list incl. the web manager's origin
 ```
 
-Open the dev-build app on the phone → scan the QR code (or pick from the
-dev menu) → the JS loads. Edit code, save, the app hot-reloads.
+Then point `eas.json`'s `preview` (and later `production`) profile at the URL
+the host gives you.
 
-> **Android emulator** also works for the demo if you set
-> `EXPO_PUBLIC_API_URL=http://10.0.2.2:8000` (the emulator's host-loopback IP).
+> ⚠️ **Iteration-phase gotcha:** `env` in `eas.json` is **build-time only** — it
+> is **not** carried by `eas update` (OTA). If you later push JS via `eas update`
+> without rebuilding, the API URL won't update with it, so a build and an OTA
+> update can silently point at different backends. Re-build (not just update)
+> when the API URL changes.
 
 ## Quality gates
 

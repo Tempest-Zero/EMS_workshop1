@@ -12,15 +12,26 @@
       }
     },
     "preview": {
+      "extends": "production",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://staging.fixflow.example"
       }
     },
     "production": {
+      "autoIncrement": true,
       "android": {
-        "buildType": "apk"
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://api.fixflow.example"
       }
     }
+  },
+  "submit": {
+    "production": {}
   }
 }
