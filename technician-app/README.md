@@ -103,19 +103,20 @@ URL is already in `eas.json` — no per-machine IP hunting.
 
 ## Deploy the backend
 
-Because the database + storage are already on **Supabase** (cloud), deploying
-the API is just "run the container with the right env vars" — there's no DB to
-provision. The image already respects `$PORT`, so it runs as-is on Railway,
-Render, or Fly (all can build straight from `backend/Dockerfile`).
+The database is on **Supabase** (Postgres) and media is on **Cloudflare R2** —
+both cloud — so deploying the API is just "run the container with the right env
+vars"; there's nothing to provision. The image respects `$PORT`, so it runs
+as-is on Railway, Render, or Fly (all build straight from `backend/Dockerfile`).
 
 Set these env vars on the host (same values as `backend/.env`):
 
 ```
-FIXFLOW_DATABASE_URL          # Supabase Postgres (postgresql+asyncpg://…)
-FIXFLOW_SUPABASE_URL
-FIXFLOW_SUPABASE_SERVICE_KEY  # backend-only secret
-FIXFLOW_SUPABASE_STORAGE_BUCKET=job-media
-FIXFLOW_CORS_ORIGINS          # JSON list incl. the web manager's origin
+FIXFLOW_DATABASE_URL            # Supabase Postgres (postgresql+asyncpg://…)
+FIXFLOW_R2_ACCOUNT_ID
+FIXFLOW_R2_ACCESS_KEY_ID        # backend-only secret
+FIXFLOW_R2_SECRET_ACCESS_KEY    # backend-only secret
+FIXFLOW_R2_BUCKET=job-media
+FIXFLOW_CORS_ORIGINS            # JSON list incl. the web manager's origin
 ```
 
 Then point `eas.json`'s `preview` (and later `production`) profile at the URL

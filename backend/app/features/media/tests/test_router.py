@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.db import get_session
 from app.features.media.router import get_service
 from app.features.media.schemas import MediaList, MediaUploadResponse
-from app.features.media.service import MediaNotFoundError, MediaService
+from app.features.media.service import MediaNotFoundError, MediaService, MediaTooLargeError
 from app.main import app
 
 
@@ -101,3 +101,12 @@ async def test_delete_unknown_returns_404(client: AsyncClient, fake_service: Asy
     fake_service.delete.side_effect = MediaNotFoundError("nope")
     response = await client.delete(f"/api/jobs/job-1/media/{uuid4()}")
     assert response.status_code == 404
+
+
+async def test_complete_too_large_returns_413(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.complete_upload.side_effect = MediaTooLargeError("too big")
+    response = await client.post(
+        f"/api/jobs/job-1/media/{uuid4()}/complete",
+        json={"size_bytes": 99_999_999},
+    )
+    assert response.status_code == 413

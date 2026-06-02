@@ -13,7 +13,7 @@ import pytest
 from app.core.storage import SignedUpload
 from app.features.media.models import JobMedia, MediaStatus
 from app.features.media.schemas import MediaUploadRequest
-from app.features.media.service import MediaNotFoundError, MediaService
+from app.features.media.service import MediaNotFoundError, MediaService, MediaTooLargeError
 
 
 def _media(**overrides: object) -> JobMedia:
@@ -201,3 +201,19 @@ async def test_list_for_job_does_not_mint_playback_for_pending(
 
     assert out.before[0].playback_url is None
     storage.mint_playback_url.assert_not_called()
+
+
+async def test_complete_upload_rejects_oversized(
+    service: tuple[MediaService, MagicMock, MagicMock],
+) -> None:
+    # Default ceiling is 30 MB; a 40 MB finalize must be rejected + purged.
+    svc, repo, storage = service
+    target = _media(storage_path="job-1/before/big.mp4")
+    repo.get.return_value = target
+
+    with pytest.raises(MediaTooLargeError):
+        await svc.complete_upload(job_id="job-1", media_id=target.id, size_bytes=40 * 1024 * 1024)
+
+    storage.delete.assert_called_once_with("job-1/before/big.mp4")
+    repo.delete.assert_awaited_once_with(target)
+    repo.mark_uploaded.assert_not_awaited()

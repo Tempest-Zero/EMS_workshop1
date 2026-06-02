@@ -17,6 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_session
 from app.core.storage import StorageClient, get_storage
 from app.features.media.repository import MediaRepository
@@ -27,7 +28,11 @@ from app.features.media.schemas import (
     MediaUploadRequest,
     MediaUploadResponse,
 )
-from app.features.media.service import MediaNotFoundError, MediaService
+from app.features.media.service import (
+    MediaNotFoundError,
+    MediaService,
+    MediaTooLargeError,
+)
 
 router = APIRouter(prefix="/jobs/{job_id}/media", tags=["media"])
 
@@ -36,7 +41,7 @@ StorageDep = Annotated[StorageClient, Depends(get_storage)]
 
 
 def get_service(session: SessionDep, storage: StorageDep) -> MediaService:
-    return MediaService(MediaRepository(session), storage)
+    return MediaService(MediaRepository(session), storage, settings.r2_max_upload_bytes)
 
 
 ServiceDep = Annotated[MediaService, Depends(get_service)]
@@ -77,6 +82,8 @@ async def complete_upload(
         )
     except MediaNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except MediaTooLargeError as e:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, str(e)) from e
     await session.commit()
     return item
 

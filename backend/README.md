@@ -5,8 +5,9 @@ business rules, persistence, and (later) auth. Each business capability lives as
 a self-contained module under `app/features/<slice>/`, mirroring the frontend's
 vertical-slice layout.
 
-> ⚠️ **Phase 0.** Only the application skeleton + `/api/health` exists.
-> Real feature modules (`media`, `jobs`, `invoices`, …) land in later phases.
+> ⚠️ **Early stage.** The app skeleton, `/api/health`, and the `media` slice
+> (Cloudflare R2-backed before/after capture) exist. Other slices (`jobs`,
+> `invoices`, …) land in later phases.
 
 ## Layout
 
@@ -41,7 +42,7 @@ python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-# copy the env template and fill in your Supabase keys
+# copy the env template and fill in your DB URL + Cloudflare R2 keys
 cp .env.example .env
 
 # run the API
@@ -87,8 +88,8 @@ Alembic is wired for SQLAlchemy 2.0 async (see `alembic/env.py`).
 - **No cross-slice imports of internals.** Talk to another slice via its
   service layer (the public surface), not its repository or model.
 - **`shared/` is dependency-free.** Pure helpers, base classes, error types.
-- **The phone never holds a service key.** The mobile app only ever sees
-  short-lived signed URLs minted by this backend.
+- **The phone never holds storage credentials.** The mobile app only ever sees
+  short-lived signed R2 URLs minted by this backend.
 
 See the top-level [`ARCHITECTURE.md`](../ARCHITECTURE.md) for how the backend
 slices map to the frontend ones.

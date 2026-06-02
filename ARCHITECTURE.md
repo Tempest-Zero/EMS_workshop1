@@ -5,7 +5,7 @@ live together in this monorepo:
 
 - **Web manager app** — React + Vite (current root `src/`, served as a SPA).
 - **Technician mobile app** — Expo (React Native), Android target.
-- **Backend** — FastAPI (Python 3.12) + Supabase (Postgres + Storage).
+- **Backend** — FastAPI (Python 3.12) + Supabase Postgres (data) + Cloudflare R2 (media).
 
 Code is grouped by **business capability** (jobs, technicians, attendance,
 media, invoices, …), **not** by technical layer. A slice is the same concept
@@ -214,25 +214,30 @@ features/<slice>/
 
 ### Signed-URL upload pattern (media)
 
-The mobile app **never holds a Supabase service key**. The flow:
+Media bytes live in **Cloudflare R2** (10 GB free, **$0 egress** — the decisive
+factor for video playback). The mobile app **never holds R2 credentials**. The
+flow:
 
 ```
-Expo (capture + compress)
+Expo (capture + compress to 720p)
    ├─ 1. POST /api/jobs/{id}/media         (phase, type, filename)
    ▼
 FastAPI · media slice                       validate rules, create DB row (pending),
-   │                                        mint a short-lived Supabase signed UPLOAD url
+   │                                        mint a short-lived R2 signed PUT url
    │  2. returns { signed_url, media_id }
    ▼
-Expo  ──── 3. PUT bytes DIRECTLY to Supabase Storage via signed_url
-   │  4. POST /api/jobs/{id}/media/{mid}/complete
+Expo  ──── 3. PUT bytes DIRECTLY to R2 via signed_url
+   │  4. POST /api/jobs/{id}/media/{mid}/complete   (reports size)
    ▼
-FastAPI · media slice                       mark row uploaded; persist playback url
+FastAPI · media slice                       reject+purge if oversized, else mark
+                                            uploaded; mint a signed playback url
 ```
 
-Supabase is the persistence layer **behind** the monolith — not the app's
-direct backend. Bytes still flow phone↔storage (no double bandwidth); only
-control messages traverse FastAPI.
+R2 is the media store **behind** the monolith; Supabase Postgres holds the
+rows. Bytes flow phone↔R2 directly (no double bandwidth); only control
+messages traverse FastAPI. Because a pre-signed PUT can't bound size
+server-side, the `/complete` step enforces `r2_max_upload_bytes` (client-side
+720p compression keeps clips well under it).
 
 ---
 

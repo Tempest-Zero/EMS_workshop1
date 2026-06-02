@@ -1,18 +1,25 @@
-"""Supabase Storage adapter — used by any feature that needs signed URLs.
+"""Cloudflare R2 storage adapter (S3-compatible) — signed URLs for media.
 
-The mobile app NEVER holds the Supabase service key. It only sees short-lived
-signed URLs minted here on its behalf. This module is the single point that
-talks to `supabase-py`; feature services depend on the `StorageClient`
+The mobile app NEVER holds R2 credentials. It only sees short-lived signed
+URLs minted here on its behalf. Feature services depend on the `StorageClient`
 Protocol so unit tests can substitute a fake.
+
+We use pre-signed **PUT** (not a POST policy): PUT is the reliably-supported
+path on R2, and the mobile client just PUTs the bytes to the URL. Because a
+pre-signed PUT can't enforce `Content-Length` server-side, upload size is
+bounded two ways instead: client-side compression (720p) before upload, and a
+finalize-time size check in `MediaService` (see `r2_max_upload_bytes`) that
+rejects + purges anything oversized.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Protocol
+from typing import Any, Protocol
 
-from supabase import Client, create_client
+import boto3
+from botocore.config import Config
 
 from app.core.config import settings
 
@@ -28,7 +35,7 @@ DEFAULT_PLAYBACK_TTL = 3600
 @dataclass(frozen=True)
 class SignedUpload:
     signed_url: str
-    token: str
+    token: str  # unused for R2 PUT; kept so the response shape is provider-agnostic
     expires_in: int
 
 
@@ -40,44 +47,50 @@ class StorageClient(Protocol):
     def delete(self, path: str) -> None: ...
 
 
-class SupabaseStorage:
-    """Concrete `StorageClient` backed by `supabase-py`."""
+class R2Storage:
+    """Concrete `StorageClient` backed by Cloudflare R2 via the AWS S3 SDK."""
 
-    def __init__(self, client: Client, bucket: str) -> None:
+    def __init__(self, client: Any, bucket: str) -> None:  # client: botocore S3 client
         self._client = client
         self._bucket = bucket
 
     def mint_upload_url(self, path: str) -> SignedUpload:
-        resp = self._client.storage.from_(self._bucket).create_signed_upload_url(path)
-        return SignedUpload(
-            signed_url=_pluck(resp, "signed_url", "signedUrl"),
-            token=_pluck(resp, "token"),
-            expires_in=DEFAULT_UPLOAD_TTL,
+        url = str(
+            self._client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self._bucket, "Key": path},
+                ExpiresIn=DEFAULT_UPLOAD_TTL,
+            )
         )
+        return SignedUpload(signed_url=url, token="", expires_in=DEFAULT_UPLOAD_TTL)
 
     def mint_playback_url(self, path: str, expires_in: int = DEFAULT_PLAYBACK_TTL) -> str:
-        resp = self._client.storage.from_(self._bucket).create_signed_url(path, expires_in)
-        return _pluck(resp, "signed_url", "signedUrl")
+        return str(
+            self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self._bucket, "Key": path},
+                ExpiresIn=expires_in,
+            )
+        )
 
     def delete(self, path: str) -> None:
-        self._client.storage.from_(self._bucket).remove([path])
-
-
-def _pluck(obj: object, *keys: str) -> str:
-    """Read first matching key from a dict OR attribute from an object.
-
-    supabase-py occasionally swaps return shapes between minor releases; this
-    keeps us resilient to that without complicating call sites.
-    """
-    for k in keys:
-        v = obj.get(k) if isinstance(obj, dict) else getattr(obj, k, None)
-        if v:
-            return str(v)
-    return ""
+        self._client.delete_object(Bucket=self._bucket, Key=path)
 
 
 @lru_cache(maxsize=1)
-def get_storage() -> SupabaseStorage:
-    """FastAPI dependency: returns a process-wide SupabaseStorage."""
-    client = create_client(settings.supabase_url, settings.supabase_service_key)
-    return SupabaseStorage(client, settings.supabase_storage_bucket)
+def get_storage() -> R2Storage:
+    """FastAPI dependency: returns a process-wide R2Storage.
+
+    The boto3 client is lazy — it validates nothing at construction — so the
+    app imports fine without R2 credentials (handy for tests, which mock the
+    Protocol and never reach here).
+    """
+    client = boto3.client(
+        "s3",
+        endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=settings.r2_access_key_id,
+        aws_secret_access_key=settings.r2_secret_access_key,
+        region_name="auto",
+        config=Config(signature_version="s3v4"),
+    )
+    return R2Storage(client, settings.r2_bucket)
