@@ -19,14 +19,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Database (SQLAlchemy async URL) ──────────────────────────────────
+    # ── Database (SQLAlchemy async URL) — Supabase Postgres ──────────────
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/fixflow"
 
-    # ── Supabase (Storage; signed URLs minted server-side) ───────────────
-    # SERVICE key is backend-only; never expose to the mobile app.
-    supabase_url: str = ""
-    supabase_service_key: str = ""
-    supabase_storage_bucket: str = "job-media"
+    # ── Cloudflare R2 (media object storage; S3-compatible) ──────────────
+    # Backend mints short-lived signed URLs; the mobile app never holds these.
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket: str = "job-media"
+    # Hard ceiling enforced at finalize: oversized uploads are rejected + purged.
+    # 30 MB comfortably fits a 60s 720p clip while blocking abuse.
+    r2_max_upload_bytes: int = 30 * 1024 * 1024
 
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
