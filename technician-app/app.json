@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "FixFlow Technician",
+    "slug": "fixflow-technician",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "platforms": ["android"],
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#0f172a"
+    },
+    "android": {
+      "package": "com.fixflow.technician",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      "expo-video",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "FixFlow needs the camera to capture before/after proof of repairs.",
+          "microphonePermission": "FixFlow needs the microphone to record before/after videos."
+        }
+      ]
+    ]
+  }
+}

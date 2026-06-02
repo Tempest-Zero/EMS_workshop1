@@ -5,7 +5,9 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import { defineConfig, globalIgnores } from "eslint/config";
 
 export default defineConfig([
-  globalIgnores(["dist"]),
+  // Each sibling runtime owns its own quality gates. This config covers only
+  // the web manager app at the repo root.
+  globalIgnores(["dist", "backend", "technician-app"]),
   {
     files: ["**/*.{js,jsx}"],
     extends: [

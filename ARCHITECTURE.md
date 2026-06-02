@@ -238,10 +238,16 @@ control messages traverse FastAPI.
 
 ## Mobile (Expo technician app)
 
-See [`technician-app/README.md`](./technician-app/README.md) for the planned
-layout and stack. Same vertical-slice convention:
-`technician-app/src/features/<slice>/`. Native modules (`react-native-compressor`,
-`expo-video`) require an **EAS development build** — Expo Go is not enough.
+Same vertical-slice convention: `technician-app/src/features/<slice>/`. The
+app is the mobile half of the `media` slice — the technician captures
+Before/After media, the JS compresses it, and the upload pipeline talks to
+the FastAPI backend exactly like any other consumer. The app never holds a
+Supabase key.
+
+Native modules (`react-native-compressor`, `expo-video`) require an
+**EAS development build** — Expo Go is not enough. See
+[`technician-app/README.md`](./technician-app/README.md) for the local-dev
+setup and EAS instructions.
 
 ---
 
@@ -251,10 +257,9 @@ layout and stack. Same vertical-slice convention:
 | ---------- | -------------------------------------------------------------- | ------------------------------------------ |
 | Web        | Vite · ESLint · Prettier · Vitest + Testing Library            | `npm run lint · format · test · build`     |
 | Backend    | Ruff (lint + format) · Mypy (strict) · Pytest + pytest-asyncio | `ruff check · ruff format · mypy · pytest` |
-| Mobile     | Expo · EAS Build · TypeScript (scaffolds in Phase 2)           | (TBD)                                      |
+| Mobile     | Expo · EAS Build · TypeScript strict · Jest (jest-expo)        | `npm run tsc · npm test · eas build`       |
 | Migrations | Alembic (SQLAlchemy 2.0 async)                                 | `alembic upgrade head` / `revision -m`     |
 | Local DB   | docker-compose (Postgres 16) — `docker compose up`             |                                            |
 
-**GitHub Actions** (`.github/workflows/ci.yml`) runs both the **frontend**
-and **backend** jobs on every PR and push to `main`. The mobile job is added
-when the Expo project scaffolds.
+**GitHub Actions** (`.github/workflows/ci.yml`) runs the **frontend**,
+**backend**, and **mobile** jobs in parallel on every PR and push to `main`.
