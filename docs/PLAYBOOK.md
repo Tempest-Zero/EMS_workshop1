@@ -55,7 +55,9 @@ open; pass ids explicitly (e.g. `job_id`, `tech_id`) for now.
 5. **Railway team-scoped API tokens fail `whoami`/`list`** — don't validate a token that way and conclude it's bad. Browser `railway login` works fine.
 6. **Expo + Google login = no password** → the terminal email/password login can't work. Use **`EXPO_TOKEN`** (from `expo.dev/settings/access-tokens`): `$env:EXPO_TOKEN="..."` then `eas build`.
 7. **Native modules** (`react-native-compressor`, `expo-video`) require an **EAS build** — Expo Go can't run them. The `preview` profile = standalone APK pointing at the deployed backend. The API URL lives in `eas.json` and is **build-time only** — `eas update` (OTA) does **not** carry it, so rebuild when the URL changes.
-8. **Don't churn the architecture.** It cost us the most. It's decided above — lock per-slice scope before building.
+8. **`expo-asset` must be in `dependencies`.** Expo SDK 52's Metro config requires it at bundle time but does NOT auto-install it. Missing → `eas build` fails at the **Bundle JavaScript** step with `The required package 'expo-asset' cannot be found`. Always run `npx expo-doctor` before `eas build` (CI doesn't run it for you) — 17/17 means clear-to-build.
+9. **Don't churn the architecture.** It cost us the most. It's decided above — lock per-slice scope before building.
+10. **Doc-rot is on the slice owner.** When you ship a slice, update `README.md` + `ARCHITECTURE.md` + the affected runtime's `README.md` in the same PR. The phrases that go stale fastest: "X is upcoming / Phase N", placeholder URLs, script names, and "uploads to Supabase" (the storage backend changed to R2 — search-and-replace before opening a PR).
 
 ---
 

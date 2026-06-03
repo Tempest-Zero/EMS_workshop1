@@ -6,8 +6,12 @@ a self-contained module under `app/features/<slice>/`, mirroring the frontend's
 vertical-slice layout.
 
 > ⚠️ **Early stage.** The app skeleton, `/api/health`, and the `media` slice
-> (Cloudflare R2-backed before/after capture) exist. Other slices (`jobs`,
-> `invoices`, …) land in later phases.
+> (Cloudflare R2-backed before/after capture) exist and are **live** at
+> `https://efficient-tenderness-production-2d09.up.railway.app` (Railway).
+> Other slices (`jobs`, `attendance`, `invoices`, …) land in later phases.
+> Auth is **not** built yet — endpoints currently pass ids explicitly (e.g.
+> `job_id`). See [`docs/PLAYBOOK.md`](../docs/PLAYBOOK.md) before starting a
+> new slice.
 
 ## Layout
 

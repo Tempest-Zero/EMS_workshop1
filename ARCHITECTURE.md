@@ -262,7 +262,7 @@ setup and EAS instructions.
 | ---------- | -------------------------------------------------------------- | ------------------------------------------ |
 | Web        | Vite · ESLint · Prettier · Vitest + Testing Library            | `npm run lint · format · test · build`     |
 | Backend    | Ruff (lint + format) · Mypy (strict) · Pytest + pytest-asyncio | `ruff check · ruff format · mypy · pytest` |
-| Mobile     | Expo · EAS Build · TypeScript strict · Jest (jest-expo)        | `npm run tsc · npm test · eas build`       |
+| Mobile     | Expo · EAS Build · TypeScript strict · Jest (jest-expo)        | `npm run typecheck · npm test · eas build` |
 | Migrations | Alembic (SQLAlchemy 2.0 async)                                 | `alembic upgrade head` / `revision -m`     |
 | Local DB   | docker-compose (Postgres 16) — `docker compose up`             |                                            |
 

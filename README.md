@@ -5,19 +5,22 @@ A clickable **strawman prototype** for a small home-appliance repair workshop in
 scheduling, and the full carry-in repair lifecycle across a **manager desktop view** and a
 **technician mobile view** — all from a single app.
 
-> ⚠️ **Prototype data, product foundation.** The web app currently runs on in-browser mock data — no
-> login, no real SMS or payment processing, and changes **reset on refresh**. A FastAPI backend
-> (Supabase-backed) is being wired in alongside it; an Expo technician app will follow. The codebase
-> is structured as a **modular monolith with vertical slices spanning all three runtimes** (see
-> [`ARCHITECTURE.md`](./ARCHITECTURE.md)) so a small team can grow it into the real product.
+> ⚠️ **Prototype data on the web side, real backend underneath.** The web manager app currently
+> runs on in-browser mock data — no login, and changes **reset on refresh**. Alongside it, a
+> FastAPI backend (Supabase Postgres + Cloudflare R2) is **live on Railway** and the **Expo
+> technician app** ships the `media` slice end-to-end (capture → compress → signed-URL upload).
+> The codebase is a **modular monolith with vertical slices spanning all three runtimes** (see
+> [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`docs/PLAYBOOK.md`](./docs/PLAYBOOK.md)) so a small
+> team can grow it into the real product one slice at a time.
 
 ## 📦 Repo layout (monorepo)
 
 ```
 EMS_workshop1/
   src/                # web manager app (React + Vite)        — this README's "Getting Started"
-  backend/            # FastAPI + Alembic + Supabase           — backend/README.md
-  technician-app/     # Expo (Android) — Phase 2               — technician-app/README.md
+  backend/            # FastAPI + Alembic + Supabase + R2     — backend/README.md
+  technician-app/     # Expo (Android, media slice live)      — technician-app/README.md
+  docs/PLAYBOOK.md    # build/handoff playbook (read before starting a slice)
   docker-compose.yml  # local Postgres + backend dev stack
 ```
 
@@ -131,8 +134,10 @@ The key flow to show: open the **Jobs** board → **New Job** → open it → **
 
 ---
 
-## 📌 Out of Scope (intentionally)
+## 📌 Out of Scope (currently)
 
-No authentication, no backend/database, no real SMS or payments, no supplier catalogue, no
-customer portal, no maps/GPS, and no drag-and-drop scheduling. The dashed "🔗 integration" badges
-mark where real services would plug in.
+No authentication yet (endpoints are open; the next auth slice will wire Supabase GoTrue +
+JWT), no real SMS or payments, no supplier catalogue, no customer portal, no maps/GPS, and no
+drag-and-drop scheduling. The dashed "🔗 integration" badges in the web app mark where real
+services plug in. The web manager hasn't yet been migrated off mock data onto the live API —
+that lands as each business slice ships.

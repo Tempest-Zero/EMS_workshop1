@@ -47,8 +47,17 @@ alembic upgrade head
 
 ### Mobile (technician-app)
 
-Scaffolds in **Phase 2** of the media slice. See
-[`technician-app/README.md`](./technician-app/README.md) for the planned setup.
+```bash
+cd technician-app
+npm install
+npm run typecheck                   # tsc --noEmit
+npm test                            # jest
+npx expo-doctor                     # pre-flight before any eas build
+```
+
+Native modules (`react-native-compressor`, `expo-video`) need an **EAS dev build** —
+Expo Go can't run them. See [`technician-app/README.md`](./technician-app/README.md)
+for the two run modes (LAN dev vs. preview/demo APK).
 
 ### Whole stack via Docker Compose
 
@@ -129,7 +138,7 @@ side it's reaching past `service.py` into another slice's internals.
 ## Opening a pull request
 
 Before you push, make sure the gates for the side(s) you touched pass locally —
-CI runs both jobs (frontend + backend) on every PR:
+CI runs all three jobs (frontend + backend + mobile) on every PR:
 
 **Web:**
 
@@ -148,6 +157,14 @@ ruff format --check .
 ruff check .
 mypy app
 pytest
+```
+
+**Mobile:**
+
+```bash
+cd technician-app
+npm run typecheck
+npm test -- --ci --passWithNoTests
 ```
 
 Then open a PR into `main`. The template will prompt you for a summary, the
