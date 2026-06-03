@@ -65,7 +65,7 @@ jobs:
         run: npm ci
 
       - name: TypeScript
-        run: npm run tsc
+        run: npm run typecheck
 
       - name: Jest
         run: npm test -- --ci --passWithNoTests
