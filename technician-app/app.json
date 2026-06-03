@@ -4,7 +4,9 @@
     "slug": "fixflow-technician",
     "version": "0.1.0",
     "orientation": "portrait",
-    "platforms": ["android"],
+    "platforms": [
+      "android"
+    ],
     "userInterfaceStyle": "light",
     "splash": {
       "backgroundColor": "#0f172a"
@@ -27,6 +29,11 @@
           "microphonePermission": "FixFlow needs the microphone to record before/after videos."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "14f9b2cf-ec32-4ae7-9fa3-462ba675d821"
+      }
+    }
   }
 }
