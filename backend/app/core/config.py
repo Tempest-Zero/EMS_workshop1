@@ -7,6 +7,7 @@ that needs config — never read env vars directly.
 
 from __future__ import annotations
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +38,20 @@ class Settings(BaseSettings):
         "http://localhost:5173",  # web (manager / Vite dev server)
         "http://localhost:8081",  # Expo dev server (Metro)
     ]
+
+    @field_validator("database_url")
+    @classmethod
+    def _ensure_async_driver(cls, v: str) -> str:
+        """Coerce a bare ``postgresql://`` scheme to the async driver.
+
+        Supabase (and most dashboards) hand you a ``postgresql://`` URL. Left
+        as-is, SQLAlchemy picks the psycopg2 dialect — which we don't install —
+        and the app crashes on boot. Rewriting to ``postgresql+asyncpg://``
+        means a pasted pooler/Supabase string just works.
+        """
+        if v.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + v[len("postgresql://") :]
+        return v
 
 
 settings = Settings()
