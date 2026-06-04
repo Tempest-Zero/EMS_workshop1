@@ -87,7 +87,7 @@ Auth (Supabase GoTrue + JWT verified in FastAPI), manager-side media viewing
 
 ---
 
-## Attendance slice (in progress)
+## Attendance slice (v1 complete)
 
 Honest clock-in/out. Security model = **evidence, not proof**: selfie (WHO), GPS
 flagged-not-blocked + Android mock-location (WHERE), authoritative server timestamp
@@ -103,8 +103,16 @@ media passes `job_id`). Delivered as four phased PRs: backend → mobile → man
   no DB — so it's unit-tested like the media service. Selfies **reuse R2** via the
   signed-PUT pattern (an `attendance/` key prefix in the `job-media` bucket).
   Endpoints under `/api/attendance/*`. Apply `0002` + `railway up` to activate.
-- **Next:** Expo clock-in/out (selfie + GPS + offline queue, last-write-wins) →
-  manager web (board/grid/per-tech detail off the live API, via a shared
-  `src/shared/lib/api.js`) → audited-adjustments UI.
-- **Correction to an earlier note:** attendance **does** use R2 (selfie evidence);
-  the old "DB-only, no R2" line predated the evidence-based security model.
+- **Mobile — done (PR2).** Offline-first Expo clock-in/out: selfie + GPS (Android
+  mock flag) + WiFi BSSID → AsyncStorage queue → instant success → background sync
+  (idempotent on `client_id`, last-write-wins). WiFi delta = migration `0003`.
+- **Manager web — done (PR3).** First web→API integration via a shared
+  `src/shared/lib/api.js`: today board + monthly grid + per-tech detail
+  (selfie/location/flags) read the live API; the rest of the app stays on mock.
+- **Adjustments — done (PR4).** `GET /api/attendance/adjustments` + a manager
+  correction form on the per-tech detail that appends an audited manual punch.
+- **To activate (human steps):** apply migrations `0002`+`0003` to Supabase,
+  `railway up`, set the real geofence coords + workshop WiFi BSSID(s) via
+  `PUT /api/attendance/geofences`, and rebuild the Expo app via EAS (native
+  `expo-location`). Selfies **reuse R2** — the old "DB-only, no R2" note predated
+  the evidence-based security model.

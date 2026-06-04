@@ -279,3 +279,26 @@ async def test_board_surfaces_wifi_match(
     board = await service.board(shop_id="default", day=date(2026, 6, 3), tech_ids=["t1"])
 
     assert board.rows[0].wifi_match is True
+
+
+async def test_list_adjustments_joins_reason_and_event(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    adj = MagicMock(
+        id=uuid4(),
+        original_event_id=None,
+        reason="forgot to clock out",
+        manager_id="m1",
+        created_at=SIX_PM_PKT,
+    )
+    ev = _event(kind="clock_out", server_time=SIX_PM_PKT, tech_id="t1")
+    repo.list_adjustments = AsyncMock(return_value=[(adj, ev)])
+
+    items = await service.list_adjustments(shop_id="default", tech_id="t1")
+
+    assert len(items) == 1
+    assert items[0].reason == "forgot to clock out"
+    assert items[0].tech_id == "t1"
+    assert items[0].kind == "clock_out"
+    assert items[0].manager_id == "m1"

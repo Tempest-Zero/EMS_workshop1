@@ -28,6 +28,7 @@ from app.features.attendance.derive import (
 from app.features.attendance.models import AttendanceEvent, AttendanceShift
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.schemas import (
+    AdjustmentItem,
     AdjustmentRequest,
     AdjustmentResponse,
     Board,
@@ -206,6 +207,31 @@ class AttendanceService:
             new_event_id=event.id,
             original_event_id=body.original_event_id,
         )
+
+    async def list_adjustments(
+        self,
+        *,
+        shop_id: str,
+        tech_id: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[AdjustmentItem]:
+        rows = await self._repo.list_adjustments(
+            shop_id=shop_id, tech_id=tech_id, start=start, end=end
+        )
+        return [
+            AdjustmentItem(
+                id=adj.id,
+                tech_id=ev.tech_id,
+                kind=ev.kind,  # type: ignore[arg-type]
+                server_time=ev.server_time,
+                original_event_id=adj.original_event_id,
+                reason=adj.reason,
+                manager_id=adj.manager_id,
+                created_at=adj.created_at,
+            )
+            for adj, ev in rows
+        ]
 
     # ── Queries: technician ──────────────────────────────────────────────
     async def today_status(self, *, tech_id: str, shop_id: str) -> TodayStatus:

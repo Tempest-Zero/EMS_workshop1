@@ -23,6 +23,7 @@ from app.core.storage import StorageClient, get_storage
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.schemas import (
     DEFAULT_SHOP_ID,
+    AdjustmentItem,
     AdjustmentRequest,
     AdjustmentResponse,
     Board,
@@ -176,6 +177,21 @@ async def create_adjustment(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     await session.commit()
     return response
+
+
+@router.get(
+    "/adjustments",
+    response_model=list[AdjustmentItem],
+    summary="List audited manager corrections",
+)
+async def list_adjustments(
+    service: ServiceDep,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+    tech_id: Annotated[str | None, Query()] = None,
+    start: Annotated[datetime | None, Query()] = None,
+    end: Annotated[datetime | None, Query()] = None,
+) -> list[AdjustmentItem]:
+    return await service.list_adjustments(shop_id=shop_id, tech_id=tech_id, start=start, end=end)
 
 
 # ── Manager: config ──────────────────────────────────────────────────────────

@@ -138,3 +138,10 @@ async def test_post_adjustment_unknown_original_returns_404(
         },
     )
     assert resp.status_code == 404
+
+
+async def test_get_adjustments_returns_200(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.list_adjustments.return_value = []
+    resp = await client.get("/api/attendance/adjustments?shop_id=default&tech_id=t1")
+    assert resp.status_code == 200
+    assert resp.json() == []

@@ -240,3 +240,28 @@ class AttendanceRepository:
         await self._session.flush()
         await self._session.refresh(adjustment)
         return adjustment
+
+    async def list_adjustments(
+        self,
+        *,
+        shop_id: str,
+        tech_id: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[AttendanceAdjustment, AttendanceEvent]]:
+        """Adjustments joined to the new (corrected) event they created, so the
+        audit trail can show the tech/kind/time alongside the reason."""
+        stmt = (
+            select(AttendanceAdjustment, AttendanceEvent)
+            .join(AttendanceEvent, AttendanceAdjustment.new_event_id == AttendanceEvent.id)
+            .where(AttendanceEvent.shop_id == shop_id)
+        )
+        if tech_id is not None:
+            stmt = stmt.where(AttendanceEvent.tech_id == tech_id)
+        if start is not None:
+            stmt = stmt.where(AttendanceEvent.server_time >= start)
+        if end is not None:
+            stmt = stmt.where(AttendanceEvent.server_time < end)
+        stmt = stmt.order_by(AttendanceEvent.server_time.desc())
+        result = await self._session.execute(stmt)
+        return [(row[0], row[1]) for row in result.all()]

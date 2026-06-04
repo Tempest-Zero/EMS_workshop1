@@ -226,3 +226,16 @@ class AdjustmentResponse(BaseModel):
     adjustment_id: UUID
     new_event_id: UUID
     original_event_id: UUID | None = None
+
+
+class AdjustmentItem(BaseModel):
+    """An entry in the manager-correction audit trail (joined to its new event)."""
+
+    id: UUID
+    tech_id: str
+    kind: PunchKind
+    server_time: datetime
+    original_event_id: UUID | None = None
+    reason: str
+    manager_id: str
+    created_at: datetime

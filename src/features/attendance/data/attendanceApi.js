@@ -5,7 +5,7 @@
  * the known tech ids as `tech_ids` so absentees show up even before they punch.
  */
 
-import { apiGet } from "@shared/lib/api";
+import { apiGet, apiSend } from "@shared/lib/api";
 
 export const SHOP_ID = "default";
 
@@ -29,4 +29,13 @@ export function fetchGrid(month, techIds) {
 export function fetchTechDays(techId, start, end) {
   const params = new URLSearchParams({ shop_id: SHOP_ID, start, end });
   return apiGet(`/api/attendance/techs/${encodeURIComponent(techId)}/days?${params.toString()}`);
+}
+
+export function fetchAdjustments(techId) {
+  const params = new URLSearchParams({ shop_id: SHOP_ID, tech_id: techId });
+  return apiGet(`/api/attendance/adjustments?${params.toString()}`);
+}
+
+export function createAdjustment(body) {
+  return apiSend("/api/attendance/adjustments", "POST", { shop_id: SHOP_ID, ...body });
 }
