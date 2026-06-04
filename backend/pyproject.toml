@@ -16,6 +16,9 @@ dependencies = [
   "asyncpg>=0.30,<1.0",
   "alembic>=1.13,<2.0",
   "boto3>=1.35,<2.0",
+  # IANA timezone DB — Windows has no system tzdb, so ship it for ZoneInfo
+  # (attendance converts the authoritative UTC server_time to shop-local).
+  "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

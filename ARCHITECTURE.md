@@ -202,6 +202,11 @@ features/<slice>/
   tests/           # unit + integration tests
 ```
 
+A slice may add a **pure helper module** for logic worth unit-testing without a DB
+or network — e.g. `attendance/derive.py` (geofence math + the daily status rollup),
+imported only by `service.py`. New ORM models are registered in `app/registry.py`
+so Alembic and the test schema see them.
+
 ### Dependency rules
 
 1. **`shared/` is dependency-free in the business sense.** Pure helpers, base

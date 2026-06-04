@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # 30 MB comfortably fits a 60s 720p clip while blocking abuse.
     r2_max_upload_bytes: int = 30 * 1024 * 1024
 
+    # ── Attendance ───────────────────────────────────────────────────────
+    # A selfie is a single still — far smaller than a 720p video clip.
+    attendance_selfie_max_bytes: int = 5 * 1024 * 1024
+    # Device-clock drift beyond this (seconds) is flagged for manager review.
+    attendance_drift_flag_seconds: int = 120
+
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
         "http://localhost:5173",  # web (manager / Vite dev server)

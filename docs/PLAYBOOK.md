@@ -87,8 +87,24 @@ Auth (Supabase GoTrue + JWT verified in FastAPI), manager-side media viewing
 
 ---
 
-## Next slice: Attendance
+## Attendance slice (in progress)
 
-- **Mock today (web):** `src/features/attendance/` — `data/attendance.js`, `Attendance.jsx` (manager monthly grid), `ClockIn.jsx` (tech), `MonthDots.jsx`, `lib/cells.js`. Domain: clock in/out, monthly grid, statuses `present | absent | field | half | leave | holiday`.
-- **DB-only — no R2** (no files), so it's simpler than media. Build `backend/app/features/attendance/` per the recipe (records + queries), add the migration, then wire the web `Attendance`/`ClockIn` screens (and the Expo `ClockIn` if in scope) to the API.
-- **Decide upfront:** real auth vs. pass `tech_id` explicitly for now. Recommended: pass `tech_id` (like media passes `job_id`) and defer auth to its own slice.
+Honest clock-in/out. Security model = **evidence, not proof**: selfie (WHO), GPS
+flagged-not-blocked + Android mock-location (WHERE), authoritative server timestamp
+(WHEN), append-only log (NOT TAMPERED). Trust is enforced in the **service layer**;
+RLS is deferred to the auth slice; callers pass `tech_id`/`shop_id` explicitly (like
+media passes `job_id`). Delivered as four phased PRs: backend → mobile → manager web
+→ audited adjustments.
+
+- **Backend — done (PR1).** `backend/app/features/attendance/`: four tables via
+  migration `0002` (append-only `attendance_event`, `attendance_shift`,
+  `attendance_geofence`, `attendance_adjustment`). `derive.py` computes the daily
+  rollup (`present | late | field | half | absent | holiday`) as pure functions —
+  no DB — so it's unit-tested like the media service. Selfies **reuse R2** via the
+  signed-PUT pattern (an `attendance/` key prefix in the `job-media` bucket).
+  Endpoints under `/api/attendance/*`. Apply `0002` + `railway up` to activate.
+- **Next:** Expo clock-in/out (selfie + GPS + offline queue, last-write-wins) →
+  manager web (board/grid/per-tech detail off the live API, via a shared
+  `src/shared/lib/api.js`) → audited-adjustments UI.
+- **Correction to an earlier note:** attendance **does** use R2 (selfie evidence);
+  the old "DB-only, no R2" line predated the evidence-based security model.

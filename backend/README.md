@@ -8,10 +8,11 @@ vertical-slice layout.
 > ⚠️ **Early stage.** The app skeleton, `/api/health`, and the `media` slice
 > (Cloudflare R2-backed before/after capture) exist and are **live** at
 > `https://efficient-tenderness-production-2d09.up.railway.app` (Railway).
-> Other slices (`jobs`, `attendance`, `invoices`, …) land in later phases.
-> Auth is **not** built yet — endpoints currently pass ids explicitly (e.g.
-> `job_id`). See [`docs/PLAYBOOK.md`](../docs/PLAYBOOK.md) before starting a
-> new slice.
+> The `attendance` slice (selfie + GPS clock-in/out, append-only log, server-side
+> daily rollups) is implemented — apply migration `0002` and redeploy to activate
+> it. Other slices (`jobs`, `invoices`, …) land in later phases. Auth is **not**
+> built yet — endpoints currently pass ids explicitly (e.g. `job_id`, `tech_id`).
+> See [`docs/PLAYBOOK.md`](../docs/PLAYBOOK.md) before starting a new slice.
 
 ## Layout
 
