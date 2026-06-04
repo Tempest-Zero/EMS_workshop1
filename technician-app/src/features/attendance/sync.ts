@@ -1,0 +1,77 @@
+/**
+ * Background sync: drains the offline queue to the backend. Safe to call often
+ * and concurrently (guarded by an in-flight flag). Each pending punch:
+ *   1. POST /punches — idempotent on client_id, so re-sends are no-ops and a
+ *      still-pending selfie gets a fresh signed upload URL.
+ *   2. PUT the selfie bytes to R2 (decoupled — the punch is already valid),
+ *      then POST /selfie/complete.
+ *   3. Mark done once recorded and the selfie has settled (uploaded or absent).
+ * A failure on any item leaves it queued for the next pass.
+ */
+
+import * as FileSystem from "expo-file-system";
+
+import { attendanceApi } from "../../lib/attendanceApi";
+import { pendingPunches, updatePunch, type QueuedPunch } from "./queue";
+
+let syncing = false;
+
+export async function syncNow(): Promise<void> {
+  if (syncing) return;
+  syncing = true;
+  try {
+    for (const item of await pendingPunches()) {
+      try {
+        await syncOne(item);
+      } catch {
+        // Leave it queued; the next trigger retries.
+      }
+    }
+  } finally {
+    syncing = false;
+  }
+}
+
+async function syncOne(item: QueuedPunch): Promise<void> {
+  // 1. Record (idempotent). Re-touching a pending punch re-mints the selfie URL.
+  const resp = await attendanceApi.recordPunch({
+    client_id: item.client_id,
+    tech_id: item.tech_id,
+    kind: item.kind,
+    shop_id: item.shop_id,
+    device_time: item.device_time,
+    lat: item.lat,
+    lng: item.lng,
+    accuracy_m: item.accuracy_m,
+    is_mock_location: item.is_mock_location,
+    wifi_bssid: item.wifi_bssid,
+    wifi_ssid: item.wifi_ssid,
+    selfie_filename: item.selfie_uri ? item.selfie_filename : null,
+    selfie_content_type: item.selfie_uri ? item.selfie_content_type : null,
+  });
+
+  if (!item.server_event_id) {
+    await updatePunch(item.client_id, { server_event_id: resp.event_id });
+  }
+
+  // 2. Selfie upload (best-effort, decoupled from the punch).
+  let selfieDone = !item.selfie_uri || item.selfie_done;
+  if (!selfieDone && item.selfie_uri && resp.selfie) {
+    const put = await FileSystem.uploadAsync(resp.selfie.signed_url, item.selfie_uri, {
+      httpMethod: "PUT",
+      headers: { "Content-Type": item.selfie_content_type ?? "image/jpeg" },
+    });
+    if (put.status < 400) {
+      const info = await FileSystem.getInfoAsync(item.selfie_uri, { size: true });
+      const size = info.exists && "size" in info ? info.size : undefined;
+      await attendanceApi.completeSelfie(resp.event_id, item.tech_id, { size_bytes: size });
+      await updatePunch(item.client_id, { selfie_done: true });
+      selfieDone = true;
+    }
+  }
+
+  // 3. Settled.
+  if (selfieDone) {
+    await updatePunch(item.client_id, { done: true });
+  }
+}

@@ -92,16 +92,20 @@ class AttendanceService:
 
         inside: bool | None = None
         distance: float | None = None
-        if body.lat is not None and body.lng is not None:
+        wifi_match: bool | None = None
+        if (body.lat is not None and body.lng is not None) or body.wifi_bssid is not None:
             geofence = await self._repo.get_active_geofence(shop_id=body.shop_id)
             if geofence is not None:
-                inside, distance = geofence_flags(
-                    body.lat,
-                    body.lng,
-                    center_lat=geofence.center_lat,
-                    center_lng=geofence.center_lng,
-                    radius_m=geofence.radius_m,
-                )
+                if body.lat is not None and body.lng is not None:
+                    inside, distance = geofence_flags(
+                        body.lat,
+                        body.lng,
+                        center_lat=geofence.center_lat,
+                        center_lng=geofence.center_lng,
+                        radius_m=geofence.radius_m,
+                    )
+                if body.wifi_bssid is not None and geofence.wifi_bssids:
+                    wifi_match = _wifi_match(body.wifi_bssid, geofence.wifi_bssids)
 
         selfie_path: str | None = None
         if body.selfie_filename is not None:
@@ -126,6 +130,9 @@ class AttendanceService:
             selfie_path=selfie_path,
             selfie_status="pending",
             created_by=body.tech_id,
+            wifi_bssid=body.wifi_bssid,
+            wifi_ssid=body.wifi_ssid,
+            wifi_match=wifi_match,
         )
 
         signed: SignedSelfie | None = None
@@ -250,6 +257,7 @@ class AttendanceService:
                     first_in=roll.first_in,
                     last_out=roll.last_out,
                     worked_minutes=roll.worked_minutes,
+                    wifi_match=_aggregate_wifi(events),
                     flagged_mock=any(e.is_mock_location for e in events),
                     flagged_outside=any(e.inside_geofence is False for e in events),
                     flagged_drift=any(self._drift_flagged(e.drift_seconds) for e in events),
@@ -340,6 +348,7 @@ class AttendanceService:
             center_lng=body.center_lng,
             radius_m=body.radius_m,
             is_active=body.is_active,
+            wifi_bssids=body.wifi_bssids,
         )
         return Geofence.model_validate(row)
 
@@ -372,6 +381,7 @@ class AttendanceService:
             is_mock_location=event.is_mock_location,
             drift_seconds=event.drift_seconds,
             drift_flagged=self._drift_flagged(event.drift_seconds),
+            wifi_match=event.wifi_match,
             selfie=selfie,
             deduped=deduped,
         )
@@ -427,6 +437,19 @@ def _compute_drift(server_now: datetime, device_time: datetime | None) -> int | 
     if device_time.tzinfo is None:
         device_time = device_time.replace(tzinfo=UTC)
     return int((server_now - device_time).total_seconds())
+
+
+def _wifi_match(bssid: str, configured_csv: str) -> bool:
+    """Case-insensitive membership of a BSSID in the shop's configured AP list."""
+    configured = {b.strip().lower() for b in configured_csv.split(",") if b.strip()}
+    return bssid.strip().lower() in configured
+
+
+def _aggregate_wifi(events: list[AttendanceEvent]) -> bool | None:
+    """Board summary: True if any punch matched a known AP, False if all known
+    results were misses, None if no WiFi info for the day."""
+    flags = [e.wifi_match for e in events if e.wifi_match is not None]
+    return any(flags) if flags else None
 
 
 def _tz_from_shifts(shifts: list[AttendanceShift]) -> ZoneInfo:

@@ -42,6 +42,9 @@ class AttendanceRepository:
         selfie_path: str | None,
         selfie_status: str,
         created_by: str | None,
+        wifi_bssid: str | None = None,
+        wifi_ssid: str | None = None,
+        wifi_match: bool | None = None,
         server_time: datetime | None = None,
     ) -> AttendanceEvent:
         event = AttendanceEvent(
@@ -61,6 +64,9 @@ class AttendanceRepository:
             selfie_path=selfie_path,
             selfie_status=selfie_status,
             created_by=created_by,
+            wifi_bssid=wifi_bssid,
+            wifi_ssid=wifi_ssid,
+            wifi_match=wifi_match,
         )
         # Mobile punches let the DB stamp the authoritative time; manual
         # adjustments pass an explicit (corrected) server_time.
@@ -198,6 +204,7 @@ class AttendanceRepository:
         center_lng: float,
         radius_m: int,
         is_active: bool,
+        wifi_bssids: str | None,
     ) -> AttendanceGeofence:
         geofence = await self.get_geofence(shop_id=shop_id)
         if geofence is None:
@@ -208,6 +215,7 @@ class AttendanceRepository:
         geofence.center_lng = center_lng
         geofence.radius_m = radius_m
         geofence.is_active = is_active
+        geofence.wifi_bssids = wifi_bssids
         geofence.updated_at = datetime.now(UTC)
         await self._session.flush()
         await self._session.refresh(geofence)

@@ -35,6 +35,8 @@ class PunchRequest(BaseModel):
     lng: float | None = Field(default=None, ge=-180, le=180)
     accuracy_m: float | None = Field(default=None, ge=0)
     is_mock_location: bool = False
+    wifi_bssid: str | None = Field(default=None, max_length=64)
+    wifi_ssid: str | None = Field(default=None, max_length=128)
     # If a selfie is being attached, the server mints a signed upload URL.
     selfie_filename: str | None = Field(default=None, max_length=512)
     selfie_content_type: str | None = Field(default=None, max_length=128)
@@ -58,6 +60,7 @@ class PunchResponse(BaseModel):
     is_mock_location: bool
     drift_seconds: int | None
     drift_flagged: bool
+    wifi_match: bool | None = None
     selfie: SignedSelfie | None = None
     deduped: bool = False
 
@@ -88,6 +91,9 @@ class PunchItem(BaseModel):
     inside_geofence: bool | None = None
     distance_m: float | None = None
     is_mock_location: bool
+    wifi_bssid: str | None = None
+    wifi_ssid: str | None = None
+    wifi_match: bool | None = None
     selfie_status: SelfieStatus
     selfie_url: str | None = None  # signed playback URL (present once uploaded)
     created_by: str | None = None
@@ -111,6 +117,7 @@ class BoardRow(BaseModel):
     first_in: datetime | None = None
     last_out: datetime | None = None
     worked_minutes: int | None = None
+    wifi_match: bool | None = None
     flagged_mock: bool = False
     flagged_outside: bool = False
     flagged_drift: bool = False
@@ -189,6 +196,7 @@ class Geofence(BaseModel):
     center_lng: float
     radius_m: int
     is_active: bool
+    wifi_bssids: str | None = None
 
 
 class GeofenceUpdate(BaseModel):
@@ -197,6 +205,7 @@ class GeofenceUpdate(BaseModel):
     center_lng: float = Field(..., ge=-180, le=180)
     radius_m: int = Field(..., gt=0)
     is_active: bool = True
+    wifi_bssids: str | None = Field(default=None, max_length=512)
 
 
 # ── Manager: audited adjustment ──────────────────────────────────────────────

@@ -106,6 +106,11 @@ class AttendanceEvent(Base):
     is_mock_location: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+    # WHERE (corroboration) — workshop WiFi is harder to spoof than GPS and works
+    # indoors where GPS degrades. `wifi_match` = the BSSID is a configured AP.
+    wifi_bssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    wifi_ssid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    wifi_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     # WHO — selfie reference (bytes live in R2; DB holds the key only).
     selfie_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
@@ -168,6 +173,8 @@ class AttendanceGeofence(Base):
     center_lng: Mapped[float] = mapped_column(Float, nullable=False)
     radius_m: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("150"))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    # CSV of the workshop's known AP MAC addresses (BSSIDs) used for wifi_match.
+    wifi_bssids: Mapped[str | None] = mapped_column(String(512), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")

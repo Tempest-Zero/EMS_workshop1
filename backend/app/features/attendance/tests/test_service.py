@@ -230,3 +230,52 @@ async def test_board_classifies_present_day(
     assert row.tech_id == "t1"
     assert row.status == "present"
     assert row.late is False
+
+
+async def test_record_punch_matches_workshop_wifi(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        wifi_bssids="AA:BB:CC:DD:EE:FF, 11:22:33:44:55:66"
+    )
+
+    resp = await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            wifi_bssid="aa:bb:cc:dd:ee:ff",  # case-insensitive match
+        )
+    )
+
+    assert resp.wifi_match is True
+    assert repo.create_event.await_args.kwargs["wifi_match"] is True
+
+
+async def test_record_punch_wifi_miss_when_bssid_not_configured(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(wifi_bssids="AA:BB:CC:DD:EE:FF")
+
+    resp = await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(), tech_id="t1", kind="clock_in", wifi_bssid="00:00:00:00:00:00"
+        )
+    )
+
+    assert resp.wifi_match is False
+
+
+async def test_board_surfaces_wifi_match(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT, wifi_match=True),
+    ]
+
+    board = await service.board(shop_id="default", day=date(2026, 6, 3), tech_ids=["t1"])
+
+    assert board.rows[0].wifi_match is True
