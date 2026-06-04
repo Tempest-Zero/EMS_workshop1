@@ -95,7 +95,7 @@ Routing is role-by-URL-prefix: anything under `/tech/*` renders inside
 ```
 shared/
   ui/        primitives, StatusChip, Avatar, StatCard, Overlay, IntegrationBadge
-  lib/       currency, date, statusConfig, job, text   (pure functions)
+  lib/       api (web→API client), currency, date, statusConfig, job, text
   config/    constants (TODAY, WORKSHOP, APPLIANCE_TYPES, STATUSES, …)
 ```
 

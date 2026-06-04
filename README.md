@@ -139,5 +139,6 @@ The key flow to show: open the **Jobs** board → **New Job** → open it → **
 No authentication yet (endpoints are open; the next auth slice will wire Supabase GoTrue +
 JWT), no real SMS or payments, no supplier catalogue, no customer portal, no maps/GPS, and no
 drag-and-drop scheduling. The dashed "🔗 integration" badges in the web app mark where real
-services plug in. The web manager hasn't yet been migrated off mock data onto the live API —
-that lands as each business slice ships.
+services plug in. The web manager is being migrated off mock data onto the live API slice by
+slice — the **Attendance** board, monthly grid, and per-tech detail now read the live FastAPI
+backend (via `src/shared/lib/api.js`); other modules remain on mock for now.
