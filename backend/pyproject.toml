@@ -43,6 +43,9 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests", "app"]
 addopts = "-ra --strict-markers"
+markers = [
+  "integration: exercises real SQL; needs Postgres via FIXFLOW_TEST_DATABASE_URL (skipped otherwise)",
+]
 
 # ── Ruff (lint + format) ─────────────────────────────────────────────────────
 [tool.ruff]
