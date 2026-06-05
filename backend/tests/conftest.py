@@ -58,28 +58,30 @@ class _FakeStorage:
         return None
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def _engine() -> AsyncIterator[AsyncEngine]:
+    # Function-scoped on purpose: pytest-asyncio gives each test its own event
+    # loop, so a session-scoped engine's connections would belong to a different
+    # loop (→ "attached to a different loop"). A fresh engine per test avoids that.
     assert TEST_DB_URL is not None  # guarded by the skip hook
     engine = create_async_engine(TEST_DB_URL, pool_pre_ping=True)
     # `checkfirst=True` (default) → a no-op if CI already ran `alembic upgrade head`.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    yield engine
-    await engine.dispose()
+    try:
+        yield engine
+    finally:
+        async with engine.begin() as conn:
+            for table in reversed(Base.metadata.sorted_tables):
+                await conn.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def session(_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     maker = async_sessionmaker(bind=_engine, expire_on_commit=False, class_=AsyncSession)
-    sess = maker()
-    try:
+    async with maker() as sess:
         yield sess
-    finally:
-        await sess.close()
-        async with _engine.begin() as conn:
-            for table in reversed(Base.metadata.sorted_tables):
-                await conn.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
 
 
 @pytest_asyncio.fixture
