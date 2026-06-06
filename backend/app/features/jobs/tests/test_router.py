@@ -1,0 +1,102 @@
+"""Router-level tests for the jobs slice. Service + session + auth are overridden
+with fakes so no DB round-trip happens (mirrors the other slices)."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import cast
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from app.core.db import get_session
+from app.features.identity.deps import get_current_principal
+from app.features.identity.schemas import Principal
+from app.features.jobs.router import get_service
+from app.features.jobs.schemas import Job
+from app.features.jobs.service import JobNotFoundError, JobService
+from app.main import app
+
+_FAKE_PRINCIPAL = Principal(tech_id="t1", role="manager", name="Test Manager")
+
+
+def _job() -> Job:
+    now = datetime(2026, 6, 6, 10, 0, tzinfo=UTC)
+    return Job(
+        id=uuid4(),
+        token=1052,
+        shop_id="default",
+        status="open",
+        job_type="carry-in",
+        customer_name="Abdul Rehman",
+        appliance_type="Split AC",
+        problem="not cooling",
+        abandoned=False,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.fixture
+def fake_service() -> AsyncMock:
+    return AsyncMock(spec=JobService)
+
+
+@pytest.fixture
+def fake_session() -> AsyncMock:
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    return session
+
+
+@pytest_asyncio.fixture
+async def client(fake_service: AsyncMock, fake_session: AsyncMock) -> AsyncIterator[AsyncClient]:
+    app.dependency_overrides[get_service] = lambda: cast(JobService, fake_service)
+    app.dependency_overrides[get_session] = lambda: fake_session
+    app.dependency_overrides[get_current_principal] = lambda: _FAKE_PRINCIPAL
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+async def test_list_returns_200(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.list_jobs.return_value = []
+    resp = await client.get("/api/jobs?status=open")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_create_returns_201_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.create_job.return_value = _job()
+    resp = await client.post(
+        "/api/jobs",
+        json={"customer_name": "Abdul Rehman", "appliance_type": "Split AC", "problem": "x"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["token"] == 1052
+    fake_session.commit.assert_awaited()
+
+
+async def test_create_rejects_missing_customer(client: AsyncClient) -> None:
+    resp = await client.post("/api/jobs", json={"appliance_type": "Split AC"})
+    assert resp.status_code == 422
+
+
+async def test_get_unknown_returns_404(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.get_job.side_effect = JobNotFoundError("nope")
+    resp = await client.get(f"/api/jobs/{uuid4()}")
+    assert resp.status_code == 404
+
+
+async def test_jobs_require_auth(client: AsyncClient) -> None:
+    # Drop the auth override so the real guard runs: no token → 401.
+    app.dependency_overrides.pop(get_current_principal, None)
+    resp = await client.get("/api/jobs")
+    assert resp.status_code == 401
