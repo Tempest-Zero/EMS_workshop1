@@ -5,14 +5,17 @@ business rules, persistence, and (later) auth. Each business capability lives as
 a self-contained module under `app/features/<slice>/`, mirroring the frontend's
 vertical-slice layout.
 
-> ⚠️ **Early stage.** The app skeleton, `/api/health`, and the `media` slice
-> (Cloudflare R2-backed before/after capture) exist and are **live** at
+> ⚠️ **Early stage.** The app skeleton, `/api/health`, the `media` slice
+> (Cloudflare R2-backed before/after capture), and the `attendance` slice
+> (selfie + GPS clock-in/out, append-only log, daily rollups) are **live** at
 > `https://efficient-tenderness-production-2d09.up.railway.app` (Railway).
-> The `attendance` slice (selfie + GPS clock-in/out, append-only log, server-side
-> daily rollups) is implemented — apply migration `0002` and redeploy to activate
-> it. Other slices (`jobs`, `invoices`, …) land in later phases. Auth is **not**
-> built yet — endpoints currently pass ids explicitly (e.g. `job_id`, `tech_id`).
-> See [`docs/PLAYBOOK.md`](../docs/PLAYBOOK.md) before starting a new slice.
+> The `identity` slice (Name + PIN → JWT, the technician roster) is the
+> foundation for the **Jobs vertical** — see
+> [`docs/jobs-vertical-plan.md`](../docs/jobs-vertical-plan.md). Auth exists but
+> is **not yet enforced** on attendance/media (so the installed app keeps
+> working); enforcement + client login land in the next PR. Other slices
+> (`jobs`, `invoices`, …) follow. Migrations now run automatically on deploy
+> (`start.sh`). See [`docs/PLAYBOOK.md`](../docs/PLAYBOOK.md) before a new slice.
 
 ## Layout
 
