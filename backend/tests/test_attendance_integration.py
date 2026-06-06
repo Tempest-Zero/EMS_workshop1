@@ -1,6 +1,9 @@
 """End-to-end attendance tests against a **real Postgres** — these exercise the
 actual SQL (inserts, the timezone/date-range windows, the rollup, the adjustment
-join, the unique-client_id constraint) that the mock-based unit tests cannot."""
+join, the unique-client_id constraint) that the mock-based unit tests cannot.
+
+Manager endpoints are auth-guarded, so those calls pass ``auth_headers``; the
+tech-facing punch endpoint stays open (mobile login lands later)."""
 
 from __future__ import annotations
 
@@ -12,8 +15,17 @@ from httpx import AsyncClient
 
 pytestmark = pytest.mark.integration
 
+Headers = dict[str, str]
 
-async def _adjust(client: AsyncClient, tech_id: str, kind: str, when_iso: str, reason: str) -> None:
+
+async def _adjust(
+    client: AsyncClient,
+    tech_id: str,
+    kind: str,
+    when_iso: str,
+    reason: str,
+    headers: Headers,
+) -> None:
     resp = await client.post(
         "/api/attendance/adjustments",
         json={
@@ -23,11 +35,12 @@ async def _adjust(client: AsyncClient, tech_id: str, kind: str, when_iso: str, r
             "reason": reason,
             "manager_id": "m1",
         },
+        headers=headers,
     )
     assert resp.status_code == 201, resp.text
 
 
-async def test_full_attendance_flow(app_client: AsyncClient) -> None:
+async def test_full_attendance_flow(app_client: AsyncClient, auth_headers: Headers) -> None:
     # An all-days-working shift so the assertions don't depend on the weekday.
     r = await app_client.put(
         "/api/attendance/shifts/t1",
@@ -38,18 +51,33 @@ async def test_full_attendance_flow(app_client: AsyncClient) -> None:
             "grace_minutes": 10,
             "timezone": "Asia/Karachi",
         },
+        headers=auth_headers,
     )
     assert r.status_code == 200, r.text
 
     # A fixed recent past day at 09:00 / 18:00 PKT (= 04:00 / 13:00 UTC).
     base = (datetime.now(UTC) - timedelta(days=2)).date()
-    await _adjust(app_client, "t1", "clock_in", f"{base.isoformat()}T04:00:00Z", "missed clock-in")
     await _adjust(
-        app_client, "t1", "clock_out", f"{base.isoformat()}T13:00:00Z", "missed clock-out"
+        app_client,
+        "t1",
+        "clock_in",
+        f"{base.isoformat()}T04:00:00Z",
+        "missed clock-in",
+        auth_headers,
+    )
+    await _adjust(
+        app_client,
+        "t1",
+        "clock_out",
+        f"{base.isoformat()}T13:00:00Z",
+        "missed clock-out",
+        auth_headers,
     )
 
     # Board → present, on time, full hours (real list_events + rollup).
-    b = await app_client.get(f"/api/attendance/board?date={base.isoformat()}&tech_ids=t1")
+    b = await app_client.get(
+        f"/api/attendance/board?date={base.isoformat()}&tech_ids=t1", headers=auth_headers
+    )
     assert b.status_code == 200, b.text
     row = next(x for x in b.json()["rows"] if x["tech_id"] == "t1")
     assert row["status"] == "present"
@@ -58,26 +86,37 @@ async def test_full_attendance_flow(app_client: AsyncClient) -> None:
 
     # Monthly grid → at least that one present day (real grid SQL + month bounds).
     month = base.strftime("%Y-%m")
-    g = await app_client.get(f"/api/attendance/grid?month={month}&tech_ids=t1")
+    g = await app_client.get(
+        f"/api/attendance/grid?month={month}&tech_ids=t1", headers=auth_headers
+    )
     assert g.status_code == 200, g.text
     grow = next(x for x in g.json()["rows"] if x["tech_id"] == "t1")
     assert grow["present"] >= 1
 
     # Per-tech detail → that day has both punches (real tech_days SQL).
     today = datetime.now(UTC).date().isoformat()
-    d = await app_client.get(f"/api/attendance/techs/t1/days?start={month}-01&end={today}")
+    d = await app_client.get(
+        f"/api/attendance/techs/t1/days?start={month}-01&end={today}", headers=auth_headers
+    )
     assert d.status_code == 200, d.text
     day = next(x for x in d.json()["days"] if x["day"] == base.isoformat())
     assert len(day["punches"]) == 2
 
     # Audit trail → both corrections, with reasons (real adjustment↔event join).
-    adj = await app_client.get("/api/attendance/adjustments?tech_id=t1")
+    adj = await app_client.get("/api/attendance/adjustments?tech_id=t1", headers=auth_headers)
     assert adj.status_code == 200, adj.text
     reasons = {a["reason"] for a in adj.json()}
     assert {"missed clock-in", "missed clock-out"} <= reasons
 
 
+async def test_board_requires_auth(app_client: AsyncClient) -> None:
+    # No bearer token → the manager guard rejects it.
+    resp = await app_client.get("/api/attendance/board?shop_id=default")
+    assert resp.status_code == 401, resp.text
+
+
 async def test_punch_is_idempotent_on_client_id(app_client: AsyncClient) -> None:
+    # The punch endpoint stays open (no auth) until the mobile app ships login.
     body = {
         "client_id": str(uuid4()),
         "tech_id": "t2",
@@ -97,7 +136,7 @@ async def test_punch_is_idempotent_on_client_id(app_client: AsyncClient) -> None
     assert second.json()["event_id"] == first.json()["event_id"]
 
 
-async def test_geofence_and_wifi_flagging(app_client: AsyncClient) -> None:
+async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers: Headers) -> None:
     g = await app_client.put(
         "/api/attendance/geofences",
         json={
@@ -108,6 +147,7 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient) -> None:
             "is_active": True,
             "wifi_bssids": "AA:BB:CC:DD:EE:FF",
         },
+        headers=auth_headers,
     )
     assert g.status_code == 200, g.text
 

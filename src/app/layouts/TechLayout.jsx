@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { ClipboardList, Clock, Wrench, User, CalendarDays } from "lucide-react";
 import PhoneFrame from "@app/layouts/PhoneFrame";
 import RoleSwitcher from "@app/components/RoleSwitcher";
+import LogoutButton from "@app/components/LogoutButton";
 import { useApp } from "@app/providers/AppContext";
 import { techById } from "@features/technicians/data/technicians";
 import Avatar from "@shared/ui/Avatar";
@@ -35,6 +36,7 @@ export default function TechLayout() {
             <CalendarDays className="h-5 w-5" />
           </NavLink>
           <RoleSwitcher compact />
+          <LogoutButton compact />
         </div>
       </header>
 

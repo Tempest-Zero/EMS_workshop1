@@ -21,7 +21,11 @@ from app.features.attendance.service import (
     AttendanceService,
     SelfieTooLargeError,
 )
+from app.features.identity.deps import get_current_principal
+from app.features.identity.schemas import Principal
 from app.main import app
+
+_FAKE_PRINCIPAL = Principal(tech_id="t1", role="manager", name="Test Manager")
 
 
 @pytest.fixture
@@ -40,6 +44,8 @@ def fake_session() -> AsyncMock:
 async def client(fake_service: AsyncMock, fake_session: AsyncMock) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[get_service] = lambda: cast(AttendanceService, fake_service)
     app.dependency_overrides[get_session] = lambda: fake_session
+    # Treat the caller as authenticated; the real guard is exercised separately.
+    app.dependency_overrides[get_current_principal] = lambda: _FAKE_PRINCIPAL
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -115,6 +121,13 @@ async def test_get_board_returns_200(client: AsyncClient, fake_service: AsyncMoc
     resp = await client.get("/api/attendance/board?shop_id=default")
     assert resp.status_code == 200
     assert resp.json() == {"shop_id": "default", "date": "2026-06-03", "rows": []}
+
+
+async def test_manager_endpoint_requires_auth(client: AsyncClient) -> None:
+    # Drop the auth override so the real guard runs: no token → 401.
+    app.dependency_overrides.pop(get_current_principal, None)
+    resp = await client.get("/api/attendance/board?shop_id=default")
+    assert resp.status_code == 401
 
 
 async def test_grid_rejects_bad_month(client: AsyncClient) -> None:
