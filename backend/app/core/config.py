@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # Device-clock drift beyond this (seconds) is flagged for manager review.
     attendance_drift_flag_seconds: int = 120
 
+    # ── Auth (Name + PIN → JWT) ──────────────────────────────────────────
+    # HS256 signing secret. The default is for local dev only — production
+    # MUST override it via FIXFLOW_JWT_SECRET (a long random string).
+    jwt_secret: str = "dev-insecure-secret-change-me-in-production-32b"  # noqa: S105 — dev default; prod overrides via env
+    # Long-lived by design: a workshop device stays logged in. Refresh/logout
+    # flows are deferred. 30 days.
+    jwt_expire_minutes: int = 60 * 24 * 30
+
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
         "http://localhost:5173",  # web (manager / Vite dev server)
