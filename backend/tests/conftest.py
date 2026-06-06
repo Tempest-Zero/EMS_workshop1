@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.db import get_session
 from app.core.storage import SignedUpload, get_storage
+from app.features.identity.security import create_access_token
 from app.main import app
 from app.registry import Base
 
@@ -98,3 +99,10 @@ async def app_client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def auth_headers() -> dict[str, str]:
+    """Bearer header for the auth-guarded manager endpoints (real signed token)."""
+    token = create_access_token(tech_id="t1", role="manager", name="Test Manager")
+    return {"Authorization": f"Bearer {token}"}

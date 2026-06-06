@@ -44,11 +44,17 @@ from app.features.attendance.service import (
     AttendanceService,
     SelfieTooLargeError,
 )
+from app.features.identity.deps import get_current_principal
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 StorageDep = Annotated[StorageClient, Depends(get_storage)]
+
+# Manager-facing endpoints require a logged-in caller (any valid token; v1 has
+# flat permissions). The tech-facing punch/today endpoints stay open until the
+# mobile app ships login — see docs/jobs-vertical-plan.md (J0.5).
+MANAGER_AUTH = [Depends(get_current_principal)]
 
 
 def get_service(session: SessionDep, storage: StorageDep) -> AttendanceService:
@@ -126,7 +132,12 @@ async def list_punches(
 
 
 # ── Manager: board / grid / detail ───────────────────────────────────────────
-@router.get("/board", response_model=Board, summary="Today's board for the shop")
+@router.get(
+    "/board",
+    response_model=Board,
+    dependencies=MANAGER_AUTH,
+    summary="Today's board for the shop",
+)
 async def board(
     service: ServiceDep,
     shop_id: ShopId = DEFAULT_SHOP_ID,
@@ -136,7 +147,12 @@ async def board(
     return await service.board(shop_id=shop_id, day=on_date, tech_ids=tech_ids)
 
 
-@router.get("/grid", response_model=Grid, summary="Monthly attendance grid")
+@router.get(
+    "/grid",
+    response_model=Grid,
+    dependencies=MANAGER_AUTH,
+    summary="Monthly attendance grid",
+)
 async def grid(
     service: ServiceDep,
     month: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
@@ -149,6 +165,7 @@ async def grid(
 @router.get(
     "/techs/{tech_id}/days",
     response_model=TechDays,
+    dependencies=MANAGER_AUTH,
     summary="Per-tech daily detail (punches + selfie + location)",
 )
 async def tech_days(
@@ -166,6 +183,7 @@ async def tech_days(
     "/adjustments",
     response_model=AdjustmentResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=MANAGER_AUTH,
     summary="Append an audited manager correction",
 )
 async def create_adjustment(
@@ -182,6 +200,7 @@ async def create_adjustment(
 @router.get(
     "/adjustments",
     response_model=list[AdjustmentItem],
+    dependencies=MANAGER_AUTH,
     summary="List audited manager corrections",
 )
 async def list_adjustments(
@@ -195,12 +214,22 @@ async def list_adjustments(
 
 
 # ── Manager: config ──────────────────────────────────────────────────────────
-@router.get("/shifts/{tech_id}", response_model=Shift, summary="Get a tech's shift")
+@router.get(
+    "/shifts/{tech_id}",
+    response_model=Shift,
+    dependencies=MANAGER_AUTH,
+    summary="Get a tech's shift",
+)
 async def get_shift(tech_id: str, service: ServiceDep, shop_id: ShopId = DEFAULT_SHOP_ID) -> Shift:
     return await service.get_shift(shop_id=shop_id, tech_id=tech_id)
 
 
-@router.put("/shifts/{tech_id}", response_model=Shift, summary="Create/update a tech's shift")
+@router.put(
+    "/shifts/{tech_id}",
+    response_model=Shift,
+    dependencies=MANAGER_AUTH,
+    summary="Create/update a tech's shift",
+)
 async def put_shift(
     tech_id: str,
     body: ShiftUpdate,
@@ -213,12 +242,22 @@ async def put_shift(
     return shift
 
 
-@router.get("/geofences", response_model=Geofence | None, summary="Get the shop geofence")
+@router.get(
+    "/geofences",
+    response_model=Geofence | None,
+    dependencies=MANAGER_AUTH,
+    summary="Get the shop geofence",
+)
 async def get_geofence(service: ServiceDep, shop_id: ShopId = DEFAULT_SHOP_ID) -> Geofence | None:
     return await service.get_geofence(shop_id=shop_id)
 
 
-@router.put("/geofences", response_model=Geofence, summary="Create/update the shop geofence")
+@router.put(
+    "/geofences",
+    response_model=Geofence,
+    dependencies=MANAGER_AUTH,
+    summary="Create/update the shop geofence",
+)
 async def put_geofence(
     body: GeofenceUpdate,
     service: ServiceDep,

@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import ManagerLayout from "@app/layouts/ManagerLayout";
 import TechLayout from "@app/layouts/TechLayout";
 import ToastHost from "@app/components/ToastHost";
+import { useAuth } from "@app/providers/AuthContext";
+import { Login } from "@features/auth";
 
 // Each feature exposes its pages through its public barrel (src/features/<x>/index.js).
 import { Dashboard } from "@features/dashboard";
@@ -13,6 +15,12 @@ import { Troubleshooting, TechTroubleshoot } from "@features/troubleshooting";
 import { Settings } from "@features/settings";
 
 export default function App() {
+  const { isAuthenticated, ready } = useAuth();
+
+  // Wait for the initial token check so we don't flash the login screen.
+  if (!ready) return <div className="min-h-[100svh] bg-[#eef2f6]" />;
+  if (!isAuthenticated) return <Login />;
+
   return (
     <BrowserRouter>
       <Routes>

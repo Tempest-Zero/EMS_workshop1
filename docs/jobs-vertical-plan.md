@@ -38,8 +38,9 @@ and `src/features/jobs/data/jobs.js` (the Job shape).
 
 | PR | Scope | Flips to real |
 | --- | --- | --- |
-| **J0 — Foundation** *(this PR)* | `technician` table + seed; Name/PIN → JWT (`/auth/login`, `/auth/me`); `get_current_principal` dependency; migrations-on-deploy | login capability + roster API |
-| **J0.5 — Clients adopt auth** | Mobile + web login screens, token storage, `Authorization` header; enforce auth on attendance/media; punch identity comes from the token | login screens; existing slices become token-guarded |
+| **J0 — Foundation** ✅ | `technician` table + seed; Name/PIN → JWT (`/auth/login`, `/auth/me`); `get_current_principal` dependency; migrations-on-deploy | login capability + roster API |
+| **J0.5a — Web login + manager guard** *(this PR)* | manager web login screen + token storage + `Authorization` header; enforce auth on the **manager** attendance endpoints (board/grid/tech-days/shifts/geofences/adjustments). Mobile/tech endpoints stay open so the installed APK keeps working | manager web behind login; manager API token-guarded |
+| **J0.5b — Mobile login + tech guard** | mobile login screen, token storage, punch identity from the token; enforce auth on the tech-facing punch/today/media endpoints (needs an APK rebuild) | login on the phone; the rest of the API guarded |
 | **J1 — Jobs core (read)** | `job` table (customer fields + appliance + problem + status + assigned tech + token); list/detail/create endpoints (auth-required) | manager JobsBoard + JobDetail (read), tech MyJobs |
 | **J2 — Lifecycle** | append-only timeline; notes; status transitions (mark-ready, close, abandon, follow-up, reschedule, haul-to-shop) | JobDetail action bar, Dashboard activity |
 | **J3 — Media × Jobs** | capture launches *from a job*; JobDetail Photos shows real thumbnails | wires the existing media slice to the spine |
