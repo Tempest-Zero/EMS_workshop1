@@ -55,7 +55,9 @@ open; pass ids explicitly (e.g. `job_id`, `tech_id`) for now.
 5. **Railway team-scoped API tokens fail `whoami`/`list`** — don't validate a token that way and conclude it's bad. Browser `railway login` works fine.
 6. **Expo + Google login = no password** → the terminal email/password login can't work. Use **`EXPO_TOKEN`** (from `expo.dev/settings/access-tokens`): `$env:EXPO_TOKEN="..."` then `eas build`.
 7. **Native modules** (`react-native-compressor`, `expo-video`) require an **EAS build** — Expo Go can't run them. The `preview` profile = standalone APK pointing at the deployed backend. The API URL lives in `eas.json` and is **build-time only** — `eas update` (OTA) does **not** carry it, so rebuild when the URL changes.
-8. **Don't churn the architecture.** It cost us the most. It's decided above — lock per-slice scope before building.
+8. **`expo-asset` must be in `dependencies`.** Expo SDK 52's Metro config requires it at bundle time but does NOT auto-install it. Missing → `eas build` fails at the **Bundle JavaScript** step with `The required package 'expo-asset' cannot be found`. Always run `npx expo-doctor` before `eas build` (CI doesn't run it for you) — 17/17 means clear-to-build.
+9. **Don't churn the architecture.** It cost us the most. It's decided above — lock per-slice scope before building.
+10. **Doc-rot is on the slice owner.** When you ship a slice, update `README.md` + `ARCHITECTURE.md` + the affected runtime's `README.md` in the same PR. The phrases that go stale fastest: "X is upcoming / Phase N", placeholder URLs, script names, and "uploads to Supabase" (the storage backend changed to R2 — search-and-replace before opening a PR).
 
 ---
 
@@ -85,8 +87,32 @@ Auth (Supabase GoTrue + JWT verified in FastAPI), manager-side media viewing
 
 ---
 
-## Next slice: Attendance
+## Attendance slice (v1 complete)
 
-- **Mock today (web):** `src/features/attendance/` — `data/attendance.js`, `Attendance.jsx` (manager monthly grid), `ClockIn.jsx` (tech), `MonthDots.jsx`, `lib/cells.js`. Domain: clock in/out, monthly grid, statuses `present | absent | field | half | leave | holiday`.
-- **DB-only — no R2** (no files), so it's simpler than media. Build `backend/app/features/attendance/` per the recipe (records + queries), add the migration, then wire the web `Attendance`/`ClockIn` screens (and the Expo `ClockIn` if in scope) to the API.
-- **Decide upfront:** real auth vs. pass `tech_id` explicitly for now. Recommended: pass `tech_id` (like media passes `job_id`) and defer auth to its own slice.
+Honest clock-in/out. Security model = **evidence, not proof**: selfie (WHO), GPS
+flagged-not-blocked + Android mock-location (WHERE), authoritative server timestamp
+(WHEN), append-only log (NOT TAMPERED). Trust is enforced in the **service layer**;
+RLS is deferred to the auth slice; callers pass `tech_id`/`shop_id` explicitly (like
+media passes `job_id`). Delivered as four phased PRs: backend → mobile → manager web
+→ audited adjustments.
+
+- **Backend — done (PR1).** `backend/app/features/attendance/`: four tables via
+  migration `0002` (append-only `attendance_event`, `attendance_shift`,
+  `attendance_geofence`, `attendance_adjustment`). `derive.py` computes the daily
+  rollup (`present | late | field | half | absent | holiday`) as pure functions —
+  no DB — so it's unit-tested like the media service. Selfies **reuse R2** via the
+  signed-PUT pattern (an `attendance/` key prefix in the `job-media` bucket).
+  Endpoints under `/api/attendance/*`. Apply `0002` + `railway up` to activate.
+- **Mobile — done (PR2).** Offline-first Expo clock-in/out: selfie + GPS (Android
+  mock flag) + WiFi BSSID → AsyncStorage queue → instant success → background sync
+  (idempotent on `client_id`, last-write-wins). WiFi delta = migration `0003`.
+- **Manager web — done (PR3).** First web→API integration via a shared
+  `src/shared/lib/api.js`: today board + monthly grid + per-tech detail
+  (selfie/location/flags) read the live API; the rest of the app stays on mock.
+- **Adjustments — done (PR4).** `GET /api/attendance/adjustments` + a manager
+  correction form on the per-tech detail that appends an audited manual punch.
+- **To activate (human steps):** apply migrations `0002`+`0003` to Supabase,
+  `railway up`, set the real geofence coords + workshop WiFi BSSID(s) via
+  `PUT /api/attendance/geofences`, and rebuild the Expo app via EAS (native
+  `expo-location`). Selfies **reuse R2** — the old "DB-only, no R2" note predated
+  the evidence-based security model.

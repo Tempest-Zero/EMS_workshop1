@@ -17,7 +17,10 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_WIFI_STATE"
       ]
     },
     "plugins": [
@@ -27,6 +30,12 @@
         {
           "cameraPermission": "FixFlow needs the camera to capture before/after proof of repairs.",
           "microphonePermission": "FixFlow needs the microphone to record before/after videos."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "FixFlow records your location when you clock in, to flag punches made away from the workshop."
         }
       ]
     ],

@@ -36,7 +36,7 @@ technician-app/
 | Capture | `expo-image-picker` (camera, single shot/clip) |
 | Compression | `react-native-compressor` — 720p @ ~2.5 Mbps, configurable |
 | Playback | `expo-video` (`useVideoPlayer` + `<VideoView>`) — **not** the deprecated `expo-av` |
-| File I/O | `expo-file-system` (`uploadAsync` does the PUT to Supabase) |
+| File I/O | `expo-file-system` (`uploadAsync` does the PUT to R2) |
 | Tests | jest + jest-expo |
 
 ## Two ways to run it
@@ -89,8 +89,10 @@ bundle and points at a **deployed** backend, so it needs **no laptop, no Metro,
 no shared Wi-Fi** — they just open the app and it works.
 
 1. **Deploy the backend** (see below) → get a stable `https://…` URL.
-2. Put that URL in `eas.json` → `build.preview.env.EXPO_PUBLIC_API_URL`
-   (replace the `https://staging.fixflow.example` placeholder).
+2. Put that URL in `eas.json` → `build.preview.env.EXPO_PUBLIC_API_URL`.
+   The current `preview` profile already points at
+   `https://efficient-tenderness-production-2d09.up.railway.app` (the live
+   Railway deployment). Update only when that URL changes.
 3. Build + distribute:
    ```bash
    eas build --profile preview --platform android
@@ -133,15 +135,16 @@ the host gives you.
 Same gates CI runs (under the `mobile` job):
 
 ```bash
-npm run tsc                # tsc --noEmit
+npm run typecheck          # tsc --noEmit
 npm test                   # jest
+npx expo-doctor            # pre-flight check before eas build
 ```
 
 ## Architecture
 
 This app is the **mobile half** of the `media` vertical slice. The other half
-is `backend/app/features/media/`. The app never holds a Supabase key — it
-only ever sees short-lived signed URLs minted by FastAPI:
+is `backend/app/features/media/`. The app never holds an R2 (or any storage)
+credential — it only ever sees short-lived signed URLs minted by FastAPI:
 
 ```
 Expo (capture + compress)
@@ -151,7 +154,7 @@ FastAPI · media slice                       creates DB row (pending),
                                             mints a signed UPLOAD url
    │  2. returns { media_id, signed_url, ... }
    ▼
-Expo  ── 3. PUT bytes DIRECTLY to Supabase via signed_url
+Expo  ── 3. PUT bytes DIRECTLY to R2 via signed_url
    │  4. POST /api/jobs/{id}/media/{m}/complete
    ▼
 FastAPI · media slice                       flips status to "uploaded",

@@ -7,7 +7,7 @@ import ToastHost from "@app/components/ToastHost";
 import { Dashboard } from "@features/dashboard";
 import { JobsBoard, JobDetail, MyJobs, TechJobDetail } from "@features/jobs";
 import { Technicians, TechnicianDetail, Profile } from "@features/technicians";
-import { Attendance, ClockIn } from "@features/attendance";
+import { Attendance, AttendanceTechDetail, ClockIn } from "@features/attendance";
 import { Schedule, MyWeek } from "@features/schedule";
 import { Troubleshooting, TechTroubleshoot } from "@features/troubleshooting";
 import { Settings } from "@features/settings";
@@ -24,6 +24,7 @@ export default function App() {
           <Route path="jobs" element={<JobsBoard />} />
           <Route path="jobs/:id" element={<JobDetail />} />
           <Route path="attendance" element={<Attendance />} />
+          <Route path="attendance/:techId" element={<AttendanceTechDetail />} />
           <Route path="schedule" element={<Schedule />} />
           <Route path="troubleshooting" element={<Troubleshooting />} />
           <Route path="settings" element={<Settings />} />

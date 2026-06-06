@@ -95,7 +95,7 @@ Routing is role-by-URL-prefix: anything under `/tech/*` renders inside
 ```
 shared/
   ui/        primitives, StatusChip, Avatar, StatCard, Overlay, IntegrationBadge
-  lib/       currency, date, statusConfig, job, text   (pure functions)
+  lib/       api (web→API client), currency, date, statusConfig, job, text
   config/    constants (TODAY, WORKSHOP, APPLIANCE_TYPES, STATUSES, …)
 ```
 
@@ -202,6 +202,11 @@ features/<slice>/
   tests/           # unit + integration tests
 ```
 
+A slice may add a **pure helper module** for logic worth unit-testing without a DB
+or network — e.g. `attendance/derive.py` (geofence math + the daily status rollup),
+imported only by `service.py`. New ORM models are registered in `app/registry.py`
+so Alembic and the test schema see them.
+
 ### Dependency rules
 
 1. **`shared/` is dependency-free in the business sense.** Pure helpers, base
@@ -262,7 +267,7 @@ setup and EAS instructions.
 | ---------- | -------------------------------------------------------------- | ------------------------------------------ |
 | Web        | Vite · ESLint · Prettier · Vitest + Testing Library            | `npm run lint · format · test · build`     |
 | Backend    | Ruff (lint + format) · Mypy (strict) · Pytest + pytest-asyncio | `ruff check · ruff format · mypy · pytest` |
-| Mobile     | Expo · EAS Build · TypeScript strict · Jest (jest-expo)        | `npm run tsc · npm test · eas build`       |
+| Mobile     | Expo · EAS Build · TypeScript strict · Jest (jest-expo)        | `npm run typecheck · npm test · eas build` |
 | Migrations | Alembic (SQLAlchemy 2.0 async)                                 | `alembic upgrade head` / `revision -m`     |
 | Local DB   | docker-compose (Postgres 16) — `docker compose up`             |                                            |
 
