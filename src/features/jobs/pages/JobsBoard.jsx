@@ -71,11 +71,15 @@ export default function JobsBoard() {
     else setParams({ status: key });
   };
 
-  const handleCreate = (form) => {
-    const id = addJob(form);
-    setNewOpen(false);
-    addToast(`Job #${id} created`, "ready");
-    nav(`/jobs/${id}`);
+  const handleCreate = async (form) => {
+    try {
+      const job = await addJob(form);
+      setNewOpen(false);
+      addToast(`Job #${job.token} created`, "ready");
+      nav(`/jobs/${job.id}`);
+    } catch {
+      addToast("Couldn't create job — try again", "danger");
+    }
   };
 
   return (

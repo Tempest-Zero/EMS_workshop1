@@ -1,6 +1,8 @@
-import { createContext, useContext, useState, useCallback, useMemo } from "react";
-import { jobs as seedJobs, NEXT_TOKEN } from "@features/jobs/data/jobs";
-import { technicians, techById } from "@features/technicians/data/technicians";
+import { createContext, useContext, useState, useCallback, useMemo, useEffect } from "react";
+import { useAuth } from "@app/providers/AuthContext";
+import { fetchJobs, createJob } from "@features/jobs/data/jobsApi";
+import { mapApiJob, toCreateBody } from "@features/jobs/data/mapJob";
+import { technicians } from "@features/technicians/data/technicians";
 import { todayRecord } from "@features/attendance/data/attendance";
 import { TODAY } from "@shared/config/constants";
 import { nowEntry, fmtTime } from "@shared/lib/date";
@@ -9,10 +11,6 @@ import { estimateTotal } from "@shared/lib/job";
 const RATE = 1200;
 
 const AppContext = createContext(null);
-
-function deepClone(obj) {
-  return JSON.parse(JSON.stringify(obj));
-}
 
 function initAttendanceToday() {
   const map = {};
@@ -29,11 +27,27 @@ function initAttendanceToday() {
 }
 
 export function AppProvider({ children }) {
-  const [jobs, setJobs] = useState(() => deepClone(seedJobs));
-  const [nextToken, setNextToken] = useState(NEXT_TOKEN);
+  const { isAuthenticated } = useAuth();
+  const [jobs, setJobs] = useState([]);
   const [currentTechId, setCurrentTechId] = useState("t1");
   const [attendanceToday, setAttendanceToday] = useState(initAttendanceToday);
   const [toasts, setToasts] = useState([]);
+
+  // Load the real jobs once the user is logged in (the API requires a token).
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    let cancelled = false;
+    fetchJobs()
+      .then((rows) => {
+        if (!cancelled) setJobs(rows.map(mapApiJob));
+      })
+      .catch(() => {
+        /* leave jobs empty; screens show their empty states */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
 
   const addToast = useCallback((message, tone = "default") => {
     const id = Math.random().toString(36).slice(2);
@@ -58,50 +72,14 @@ export function AppProvider({ children }) {
     );
   }, []);
 
-  const addJob = useCallback(
-    (form) => {
-      const token = nextToken;
-      const id = String(token);
-      const tech = techById(form.assignedTechId);
-      const isVisit = form.jobType === "home-visit";
-      const job = {
-        id,
-        token,
-        status: "open",
-        jobType: form.jobType,
-        customer: {
-          name: form.customerName?.trim() || "Walk-in customer",
-          phone: form.customerPhone?.trim() || "",
-          address: isVisit ? form.address?.trim() || "" : "",
-        },
-        appliance: {
-          type: form.applianceType,
-          brand: form.brand?.trim() || "",
-          model: form.model?.trim() || "",
-        },
-        problem: form.problem?.trim() || "",
-        assignedTechId: form.assignedTechId,
-        createdAt: TODAY,
-        preferredDate: isVisit ? form.preferredDate || "" : undefined,
-        timeWindow: isVisit ? form.timeWindow || "" : undefined,
-        estimate: { status: "none", laborHours: 0, laborRate: RATE, parts: [] },
-        payment: { method: "pending", paid: 0 },
-        notes: [],
-        photos: [{ label: "Intake" }],
-        timeline: [
-          nowEntry("Job created by Manager", "create"),
-          nowEntry(
-            `Assigned to ${tech ? tech.name : "technician"}${isVisit ? " — home visit" : ""}`,
-            "assign"
-          ),
-        ],
-      };
-      setJobs((prev) => [job, ...prev]);
-      setNextToken((t) => t + 1);
-      return id;
-    },
-    [nextToken]
-  );
+  // Real create: POST to the API, then prepend the mapped job. Returns the new
+  // job so the caller can navigate to it / toast its token.
+  const addJob = useCallback(async (form) => {
+    const created = await createJob(toCreateBody(form));
+    const job = mapApiJob(created);
+    setJobs((prev) => [job, ...prev]);
+    return job;
+  }, []);
 
   const addNote = useCallback(
     (jobId, text, byName = "Technician") => {
@@ -285,7 +263,12 @@ export function AppProvider({ children }) {
     }));
   }, []);
 
-  const getJob = useCallback((id) => jobs.find((j) => j.id === id), [jobs]);
+  // Resolve by UUID id or by human token, so links built from either (e.g. the
+  // schedule's token references) keep working.
+  const getJob = useCallback(
+    (idOrToken) => jobs.find((j) => j.id === idOrToken || String(j.token) === String(idOrToken)),
+    [jobs]
+  );
   const jobsByStatus = useCallback((status) => jobs.filter((j) => j.status === status), [jobs]);
   const jobsForTech = useCallback(
     (techId, includeClosed = false) =>
