@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.features.attendance.router import router as attendance_router
 from app.features.health.router import router as health_router
 from app.features.identity.router import router as identity_router
+from app.features.jobs.router import router as jobs_router
 from app.features.media.router import router as media_router
 
 
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(identity_router, prefix="/api")
     app.include_router(media_router, prefix="/api")
     app.include_router(attendance_router, prefix="/api")
+    app.include_router(jobs_router, prefix="/api")
 
     return app
 
