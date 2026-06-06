@@ -36,10 +36,13 @@ def test_token_roundtrips_claims() -> None:
     assert claims["name"] == "Imran"
 
 
-def test_decode_rejects_a_tampered_token() -> None:
-    token = create_access_token(tech_id="t1", role="tech", name="x")
-    # Flip the last char of the signature so the structure is intact but the
-    # signature no longer verifies.
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
-    with pytest.raises(jwt.PyJWTError):
-        decode_access_token(tampered)
+def test_decode_rejects_a_token_signed_with_another_secret() -> None:
+    # A token forged with a different secret must fail signature verification.
+    # (Flipping the last signature char is unreliable: a 32-byte HS256 signature
+    # has spare bits in its final base64url char, so some flips decode to the
+    # same bytes and still verify.)
+    forged = jwt.encode(
+        {"sub": "t1", "role": "tech"}, "a-different-secret-not-the-real-one-32b", algorithm="HS256"
+    )
+    with pytest.raises(jwt.InvalidSignatureError):
+        decode_access_token(forged)
