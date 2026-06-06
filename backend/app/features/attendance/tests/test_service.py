@@ -4,11 +4,13 @@ run without a database or R2 (mirrors the media slice)."""
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.core.storage import SignedUpload
 from app.features.attendance.models import AttendanceEvent
@@ -71,6 +73,8 @@ def svc() -> Iterator[tuple[AttendanceService, MagicMock, MagicMock]]:
         return_value=SignedUpload(signed_url="https://s/up", token="", expires_in=600)
     )
     storage.mint_playback_url = MagicMock(return_value="https://s/play")
+    # Default: HEAD can't read a size → service falls back to the client value.
+    storage.head_size = MagicMock(return_value=None)
     storage.delete = MagicMock()
 
     yield AttendanceService(repo, storage), repo, storage
@@ -302,3 +306,59 @@ async def test_list_adjustments_joins_reason_and_event(
     assert items[0].tech_id == "t1"
     assert items[0].kind == "clock_out"
     assert items[0].manager_id == "m1"
+
+
+async def test_record_punch_dedupes_on_raced_insert(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Two requests with the same client_id race: our dedup SELECT sees nothing,
+    # then the INSERT trips UNIQUE(client_id). The service must recover and
+    # return a clean deduped response instead of bubbling a 500.
+    service, repo, _ = svc
+    client_id = uuid4()
+    winner = _event(client_id=client_id)
+    repo.create_event = AsyncMock(side_effect=IntegrityError("dup", {}, Exception()))
+    repo.rollback = AsyncMock()
+    # First call (initial dedup check) → None; second (post-rollback) → winner.
+    repo.get_event_by_client_id = AsyncMock(side_effect=[None, winner])
+
+    resp = await service.record_punch(
+        PunchRequest(client_id=client_id, tech_id="t1", kind="clock_in")
+    )
+
+    assert resp.deduped is True
+    assert resp.event_id == winner.id
+    repo.rollback.assert_awaited_once()
+
+
+async def test_complete_selfie_enforces_real_size_over_client_report(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Client claims 100 bytes; R2 says 99 MB. The real size wins → rejected.
+    service, repo, storage = svc
+    event = _event(selfie_path="attendance/default/t1/liar.jpg", selfie_status="pending")
+    repo.get_event.return_value = event
+    storage.head_size.return_value = 99 * 1024 * 1024
+
+    with pytest.raises(SelfieTooLargeError):
+        await service.complete_selfie(tech_id="t1", event_id=event.id, size_bytes=100)
+
+    storage.delete.assert_called_once_with("attendance/default/t1/liar.jpg")
+    repo.reject_selfie.assert_awaited_once_with(event)
+    repo.finalize_selfie.assert_not_awaited()
+
+
+async def test_tech_days_does_not_roll_past_today(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # A range ending in the future must be capped at today, so future days
+    # aren't mislabelled "absent" (classify_day's documented contract).
+    service, repo, _ = svc
+    today = datetime.now(UTC).astimezone(ZoneInfo("Asia/Karachi")).date()
+    start = today - timedelta(days=1)
+    future = today + timedelta(days=5)
+
+    out = await service.tech_days(tech_id="t1", shop_id="default", from_date=start, to_date=future)
+
+    assert out.to_date == today
+    assert all(day.day <= today for day in out.days)

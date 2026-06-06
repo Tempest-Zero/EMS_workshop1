@@ -122,5 +122,8 @@ jobs:
       - name: Apply migrations (validates 0001→0003 on real Postgres)
         run: alembic upgrade head
 
+      - name: Check models match migrations (no drift)
+        run: alembic check
+
       - name: Pytest (unit + real-DB integration)
         run: pytest

@@ -16,6 +16,8 @@ from pathlib import PurePosixPath
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import IntegrityError
+
 from app.core.storage import DEFAULT_UPLOAD_TTL, StorageClient
 from app.features.attendance.derive import (
     DEFAULT_SHIFT,
@@ -113,28 +115,39 @@ class AttendanceService:
             ext = PurePosixPath(body.selfie_filename).suffix.lstrip(".").lower() or "jpg"
             selfie_path = f"attendance/{body.shop_id}/{body.tech_id}/{uuid4()}.{ext}"
 
-        event = await self._repo.create_event(
-            client_id=body.client_id,
-            shop_id=body.shop_id,
-            tech_id=body.tech_id,
-            kind=body.kind,
-            source="mobile",
-            server_time=server_now,
-            device_time=body.device_time,
-            drift_seconds=drift,
-            lat=body.lat,
-            lng=body.lng,
-            accuracy_m=body.accuracy_m,
-            inside_geofence=inside,
-            distance_m=distance,
-            is_mock_location=body.is_mock_location,
-            selfie_path=selfie_path,
-            selfie_status="pending",
-            created_by=body.tech_id,
-            wifi_bssid=body.wifi_bssid,
-            wifi_ssid=body.wifi_ssid,
-            wifi_match=wifi_match,
-        )
+        try:
+            event = await self._repo.create_event(
+                client_id=body.client_id,
+                shop_id=body.shop_id,
+                tech_id=body.tech_id,
+                kind=body.kind,
+                source="mobile",
+                server_time=server_now,
+                device_time=body.device_time,
+                drift_seconds=drift,
+                lat=body.lat,
+                lng=body.lng,
+                accuracy_m=body.accuracy_m,
+                inside_geofence=inside,
+                distance_m=distance,
+                is_mock_location=body.is_mock_location,
+                selfie_path=selfie_path,
+                selfie_status="pending",
+                created_by=body.tech_id,
+                wifi_bssid=body.wifi_bssid,
+                wifi_ssid=body.wifi_ssid,
+                wifi_match=wifi_match,
+            )
+        except IntegrityError:
+            # A concurrent request inserted the same client_id between our
+            # dedup check above and this insert (double-tap / two devices). The
+            # UNIQUE(client_id) constraint caught it — recover by treating it as
+            # the no-op it is, rather than surfacing a 500.
+            await self._repo.rollback()
+            raced = await self._repo.get_event_by_client_id(body.client_id)
+            if raced is None:
+                raise
+            return self._punch_response(raced, selfie=self._resume_selfie(raced), deduped=True)
 
         signed: SignedSelfie | None = None
         if selfie_path is not None:
@@ -155,7 +168,13 @@ class AttendanceService:
         if event.selfie_path is None:
             raise AttendanceNotFoundError(f"no pending selfie for event {event_id}")
 
-        if size_bytes is not None and size_bytes > self._selfie_max_bytes:
+        # Trust R2's real byte count over the client-reported size (which a
+        # client could under-report to slip a huge file past the ceiling);
+        # fall back to the reported value only if the HEAD can't be read.
+        actual = self._storage.head_size(event.selfie_path)
+        effective = actual if actual is not None else size_bytes
+
+        if effective is not None and effective > self._selfie_max_bytes:
             path = event.selfie_path
             try:
                 self._storage.delete(path)
@@ -163,10 +182,10 @@ class AttendanceService:
                 logger.warning("failed to purge oversized selfie %s", path, exc_info=True)
             await self._repo.reject_selfie(event)
             raise SelfieTooLargeError(
-                f"selfie {size_bytes} bytes exceeds limit {self._selfie_max_bytes}"
+                f"selfie {effective} bytes exceeds limit {self._selfie_max_bytes}"
             )
 
-        await self._repo.finalize_selfie(event, size_bytes=size_bytes)
+        await self._repo.finalize_selfie(event, size_bytes=effective)
         return self._to_item(event)
 
     async def create_adjustment(self, body: AdjustmentRequest) -> AdjustmentResponse:
@@ -268,7 +287,7 @@ class AttendanceService:
         tz, shifts = await self._tz_and_shifts(shop_id)
         if day is None:
             day = datetime.now(UTC).astimezone(tz).date()
-        bucket, roster = await self._window(shop_id, day, day, tz, tech_ids)
+        bucket, roster = await self._window(shop_id, day, day, tz, tech_ids, set(shifts))
         rows: list[BoardRow] = []
         for tech_id in roster:
             events = bucket.get(tech_id, {}).get(day, [])
@@ -294,7 +313,7 @@ class AttendanceService:
     async def grid(self, *, shop_id: str, month: str, tech_ids: list[str] | None = None) -> Grid:
         tz, shifts = await self._tz_and_shifts(shop_id)
         first, last = _month_bounds(month, tz)
-        bucket, roster = await self._window(shop_id, first, last, tz, tech_ids)
+        bucket, roster = await self._window(shop_id, first, last, tz, tech_ids, set(shifts))
         days = _date_range(first, last)
         rows: list[GridRow] = []
         for tech_id in roster:
@@ -316,7 +335,12 @@ class AttendanceService:
         self, *, tech_id: str, shop_id: str, from_date: date, to_date: date
     ) -> TechDays:
         tz, shifts = await self._tz_and_shifts(shop_id)
-        bucket, _ = await self._window(shop_id, from_date, to_date, tz, [tech_id])
+        # classify_day mislabels a future day with no punches as "absent", so
+        # never roll past today (board/grid already cap their ranges).
+        today = datetime.now(UTC).astimezone(tz).date()
+        if to_date > today:
+            to_date = today
+        bucket, _ = await self._window(shop_id, from_date, to_date, tz, [tech_id], set(shifts))
         shift = _shift_for(tech_id, shifts)
         days: list[TechDay] = []
         for d in _date_range(from_date, to_date):
@@ -436,6 +460,7 @@ class AttendanceService:
         to_date: date,
         tz: ZoneInfo,
         tech_ids: list[str] | None,
+        shift_techs: set[str],
     ) -> tuple[dict[str, dict[date, list[AttendanceEvent]]], list[str]]:
         start, _ = _local_day_window_utc(from_date, tz)
         _, end = _local_day_window_utc(to_date, tz)
@@ -451,7 +476,9 @@ class AttendanceService:
         if tech_ids is not None:
             roster = list(tech_ids)
         else:
-            shift_techs = {s.tech_id for s in await self._repo.list_shifts(shop_id=shop_id)}
+            # Roster = everyone who punched in the window ∪ everyone with a
+            # configured shift. `shift_techs` is passed in (the caller already
+            # loaded shifts for the timezone) so we don't re-query them here.
             roster = sorted(set(bucket.keys()) | shift_techs)
         return bucket, roster
 

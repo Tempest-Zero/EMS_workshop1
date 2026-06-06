@@ -79,11 +79,17 @@ class MediaService:
 
         A pre-signed PUT can't cap size server-side, so this is where we
         enforce it: an oversized upload is purged from storage, its pending
-        row deleted, and the call rejected.
+        row deleted, and the call rejected. The size is read from R2 itself
+        (``head_size``) so a client can't slip a huge file past the ceiling by
+        under-reporting ``size_bytes``; the client value is only a fallback if
+        the HEAD can't be read.
         """
         media = await self._load(job_id, media_id)
 
-        if size_bytes is not None and size_bytes > self._max_upload_bytes:
+        actual = self._storage.head_size(media.storage_path)
+        effective = actual if actual is not None else size_bytes
+
+        if effective is not None and effective > self._max_upload_bytes:
             try:
                 self._storage.delete(media.storage_path)
             except Exception:  # noqa: BLE001 — best-effort purge of the rejected object
@@ -92,12 +98,12 @@ class MediaService:
                 )
             await self._repo.delete(media)
             raise MediaTooLargeError(
-                f"upload {size_bytes} bytes exceeds limit {self._max_upload_bytes}"
+                f"upload {effective} bytes exceeds limit {self._max_upload_bytes}"
             )
 
         await self._repo.mark_uploaded(
             media,
-            size_bytes=size_bytes,
+            size_bytes=effective,
             uploaded_at=datetime.now(UTC),
         )
         return self._to_item(media)

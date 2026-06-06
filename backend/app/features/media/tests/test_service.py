@@ -55,6 +55,8 @@ def service() -> Iterator[tuple[MediaService, MagicMock, MagicMock]]:
         )
     )
     storage.mint_playback_url = MagicMock(return_value="https://signed.example/play")
+    # Default: HEAD can't read a size → service falls back to the client value.
+    storage.head_size = MagicMock(return_value=None)
     storage.delete = MagicMock()
 
     yield MediaService(repo, storage), repo, storage
@@ -217,3 +219,43 @@ async def test_complete_upload_rejects_oversized(
     storage.delete.assert_called_once_with("job-1/before/big.mp4")
     repo.delete.assert_awaited_once_with(target)
     repo.mark_uploaded.assert_not_awaited()
+
+
+async def test_complete_upload_enforces_real_size_over_client_report(
+    service: tuple[MediaService, MagicMock, MagicMock],
+) -> None:
+    # Client under-reports (10 bytes) but R2 says the object is 40 MB. The
+    # real size must win, so the oversized upload is rejected + purged.
+    svc, repo, storage = service
+    target = _media(storage_path="job-1/before/liar.mp4")
+    repo.get.return_value = target
+    storage.head_size.return_value = 40 * 1024 * 1024
+
+    with pytest.raises(MediaTooLargeError):
+        await svc.complete_upload(job_id="job-1", media_id=target.id, size_bytes=10)
+
+    storage.delete.assert_called_once_with("job-1/before/liar.mp4")
+    repo.delete.assert_awaited_once_with(target)
+    repo.mark_uploaded.assert_not_awaited()
+
+
+async def test_complete_upload_stores_real_size_when_head_available(
+    service: tuple[MediaService, MagicMock, MagicMock],
+) -> None:
+    # When the HEAD succeeds, the stored size is R2's number, not the client's.
+    svc, repo, storage = service
+    target = _media()
+    repo.get.return_value = target
+    storage.head_size.return_value = 2048
+
+    async def _mark_uploaded(
+        media: JobMedia, *, size_bytes: int | None, uploaded_at: datetime
+    ) -> None:
+        media.size_bytes = size_bytes
+
+    repo.mark_uploaded.side_effect = _mark_uploaded
+
+    item = await svc.complete_upload(job_id="job-1", media_id=target.id, size_bytes=999)
+
+    assert item.size_bytes == 2048
+    assert repo.mark_uploaded.await_args.kwargs["size_bytes"] == 2048
