@@ -8,12 +8,15 @@ We use pre-signed **PUT** (not a POST policy): PUT is the reliably-supported
 path on R2, and the mobile client just PUTs the bytes to the URL. Because a
 pre-signed PUT can't enforce `Content-Length` server-side, upload size is
 bounded two ways instead: client-side compression (720p) before upload, and a
-finalize-time size check in `MediaService` (see `r2_max_upload_bytes`) that
-rejects + purges anything oversized.
+finalize-time size check (see `r2_max_upload_bytes`) that rejects + purges
+anything oversized. That check reads the object's **real** size via
+`head_size()` (a `HEAD` on R2), so it can't be bypassed by a client
+under-reporting the byte count.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Protocol
@@ -22,6 +25,8 @@ import boto3
 from botocore.config import Config
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # How long a signed UPLOAD url stays valid. 10 minutes is generous for a
 # technician on a phone (capture → compress → upload over mobile data).
@@ -44,6 +49,7 @@ class StorageClient(Protocol):
 
     def mint_upload_url(self, path: str) -> SignedUpload: ...
     def mint_playback_url(self, path: str, expires_in: int = DEFAULT_PLAYBACK_TTL) -> str: ...
+    def head_size(self, path: str) -> int | None: ...
     def delete(self, path: str) -> None: ...
 
 
@@ -72,6 +78,22 @@ class R2Storage:
                 ExpiresIn=expires_in,
             )
         )
+
+    def head_size(self, path: str) -> int | None:
+        """The object's real byte size from R2, or ``None`` if it can't be read.
+
+        Used at finalize to enforce the upload ceiling against the *actual*
+        bytes that landed, not a self-reported number the client could lie
+        about (a pre-signed PUT can't cap size server-side). A missing object
+        or transient error returns ``None`` so the caller can fall back.
+        """
+        try:
+            head = self._client.head_object(Bucket=self._bucket, Key=path)
+        except Exception:  # noqa: BLE001 — object absent / transient → caller falls back
+            logger.warning("head_object failed for %s", path, exc_info=True)
+            return None
+        size = head.get("ContentLength")
+        return int(size) if size is not None else None
 
     def delete(self, path: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=path)

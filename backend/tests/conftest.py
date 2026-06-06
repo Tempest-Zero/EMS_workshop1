@@ -54,6 +54,11 @@ class _FakeStorage:
     def mint_playback_url(self, path: str, expires_in: int = 3600) -> str:
         return f"https://fake/play/{path}"
 
+    def head_size(self, path: str) -> int | None:
+        # No real object in the fake store → fall back to the client-reported
+        # size, preserving the integration tests' existing behavior.
+        return None
+
     def delete(self, path: str) -> None:
         return None
 

@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, String, text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,6 +40,9 @@ class JobMedia(Base):
         CheckConstraint("phase IN ('before', 'after')", name="job_media_phase_check"),
         CheckConstraint("type IN ('video', 'photo')", name="job_media_type_check"),
         CheckConstraint("status IN ('pending', 'uploaded')", name="job_media_status_check"),
+        # Declared here so it matches migration 0001 (otherwise `alembic check`
+        # reports drift). `job_id` gets its index from `index=True` below.
+        Index("ix_job_media_status", "status"),
     )
 
     id: Mapped[UUID] = mapped_column(

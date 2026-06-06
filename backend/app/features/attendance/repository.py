@@ -22,6 +22,11 @@ class AttendanceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def rollback(self) -> None:
+        """Abort the current transaction. Used by the service to recover from a
+        raced UNIQUE(client_id) insert and return a clean dedup response."""
+        await self._session.rollback()
+
     # ── Events (append-only) ─────────────────────────────────────────────
     async def create_event(
         self,
@@ -114,17 +119,6 @@ class AttendanceRepository:
         if tech_id is not None:
             stmt = stmt.where(AttendanceEvent.tech_id == tech_id)
         stmt = stmt.order_by(AttendanceEvent.server_time.asc())
-        result = await self._session.execute(stmt)
-        return list(result.scalars())
-
-    async def distinct_tech_ids(self, *, shop_id: str, start: datetime, end: datetime) -> list[str]:
-        stmt = (
-            select(AttendanceEvent.tech_id)
-            .where(AttendanceEvent.shop_id == shop_id)
-            .where(AttendanceEvent.server_time >= start)
-            .where(AttendanceEvent.server_time < end)
-            .distinct()
-        )
         result = await self._session.execute(stmt)
         return list(result.scalars())
 
