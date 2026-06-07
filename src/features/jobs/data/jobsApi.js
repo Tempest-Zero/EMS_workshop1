@@ -19,3 +19,22 @@ export function fetchJob(id) {
 export function createJob(body) {
   return apiSend("/api/jobs", "POST", body);
 }
+
+/** Append a note to a job. Returns the full job detail (with the fresh timeline). */
+export function addJobNote(id, text) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/notes`, "POST", { text });
+}
+
+/** Log a follow-up on a job. Returns the full job detail. */
+export function addJobFollowup(id, text) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/followups`, "POST", { text });
+}
+
+/**
+ * Change a job's status / schedule. `body` is
+ * `{ action: "ready"|"close"|"abandon"|"reschedule"|"haul", reason?, preferred_date?, time_window? }`.
+ * Returns the full job detail.
+ */
+export function transitionJob(id, body) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/transition`, "POST", body);
+}
