@@ -3,13 +3,16 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, Search, ClipboardList } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import JobCard from "@features/jobs/components/JobCard";
+import WorkListCard from "@features/jobs/components/WorkListCard";
 import { Button, EmptyState } from "@shared/ui/primitives";
 import { SlideOver } from "@shared/ui/Overlay";
 import NewJobForm from "@features/jobs/components/NewJobForm";
 import { statusConfig } from "@shared/lib/statusConfig";
+import { isUnassigned } from "@shared/lib/job";
 
 const TABS = [
   { key: "all", label: "All Active" },
+  { key: "unassigned", label: "Unassigned" },
   { key: "open", label: "Open" },
   { key: "waiting", label: "Waiting" },
   { key: "ready", label: "Ready" },
@@ -26,12 +29,13 @@ export default function JobsBoard() {
   const [newOpen, setNewOpen] = useState(false);
 
   const counts = useMemo(() => {
-    const c = { all: 0, open: 0, waiting: 0, ready: 0, history: 0 };
+    const c = { all: 0, unassigned: 0, open: 0, waiting: 0, ready: 0, history: 0 };
     jobs.forEach((j) => {
       if (j.status === "closed") c.history += 1;
       else {
         c.all += 1;
         c[j.status] += 1;
+        if (isUnassigned(j)) c.unassigned += 1;
       }
     });
     return c;
@@ -41,9 +45,11 @@ export default function JobsBoard() {
     let list = jobs.filter((j) =>
       tab === "history"
         ? j.status === "closed"
-        : tab === "all"
-          ? j.status !== "closed"
-          : j.status === tab
+        : tab === "unassigned"
+          ? j.status !== "closed" && isUnassigned(j)
+          : tab === "all"
+            ? j.status !== "closed"
+            : j.status === tab
     );
     const term = q.trim().toLowerCase();
     if (term) {
@@ -130,18 +136,36 @@ export default function JobsBoard() {
         })}
       </div>
 
+      {/* Work-list hint */}
+      {tab === "unassigned" && visible.length > 0 && (
+        <p className="-mt-2 text-sm text-slate-500">
+          Unassigned jobs — a technician can <span className="font-semibold">Claim</span> one, or a
+          manager can <span className="font-semibold">Assign</span> it.
+        </p>
+      )}
+
       {/* Grid */}
       {visible.length ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {visible.map((j) => (
-            <JobCard key={j.id} job={j} />
-          ))}
+          {visible.map((j) =>
+            tab === "unassigned" ? (
+              <WorkListCard key={j.id} job={j} />
+            ) : (
+              <JobCard key={j.id} job={j} />
+            )
+          )}
         </div>
       ) : (
         <EmptyState
           icon={ClipboardList}
-          title="No jobs here"
-          sub={q ? "Try a different search term." : "Jobs in this status will appear here."}
+          title={tab === "unassigned" ? "No unassigned jobs" : "No jobs here"}
+          sub={
+            tab === "unassigned"
+              ? "New jobs created without a technician land here for pickup."
+              : q
+                ? "Try a different search term."
+                : "Jobs in this status will appear here."
+          }
         />
       )}
 

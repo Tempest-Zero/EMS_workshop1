@@ -23,6 +23,7 @@ import {
   ClipboardList,
   Clock,
   Fuel,
+  Hand,
 } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import JobMediaGallery from "@features/media/components/JobMediaGallery";
@@ -49,6 +50,7 @@ import {
   hasCompletion,
   materialsTotal,
   completionLabor,
+  isUnassigned,
   ESTIMATE_LABEL,
 } from "@shared/lib/job";
 import { fmtDate, daysSince } from "@shared/lib/date";
@@ -170,13 +172,45 @@ export default function JobDetail({ tech = false }) {
               <div className="text-xs font-bold uppercase tracking-wide text-slate-400">
                 Assigned To
               </div>
-              <div className="mt-1.5 flex items-center gap-2">
-                <Avatar name={technician?.name || "?"} color={technician?.avatar} size="sm" />
-                <div>
-                  <div className="text-sm font-bold text-slate-800">{technician?.name}</div>
-                  <div className="text-xs text-slate-500">{technician?.specialty}</div>
+              {isUnassigned(job) ? (
+                <div className="mt-1.5">
+                  <div className="text-sm font-bold text-amber-600">Unassigned · in work list</div>
+                  {!closed && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => app.claimJob(job.id, app.currentTechId)}
+                      >
+                        <Hand className="h-4 w-4" /> Claim
+                      </Button>
+                      <select
+                        defaultValue=""
+                        onChange={(e) => e.target.value && app.assignJob(job.id, e.target.value)}
+                        aria-label="Assign to technician"
+                        className="flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm font-semibold text-slate-700 focus:border-slate-400 focus:outline-none"
+                      >
+                        <option value="" disabled>
+                          Assign to…
+                        </option>
+                        {app.technicians.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
-              </div>
+              ) : (
+                <div className="mt-1.5 flex items-center gap-2">
+                  <Avatar name={technician?.name || "?"} color={technician?.avatar} size="sm" />
+                  <div>
+                    <div className="text-sm font-bold text-slate-800">{technician?.name}</div>
+                    <div className="text-xs text-slate-500">{technician?.specialty}</div>
+                  </div>
+                </div>
+              )}
               <div className="mt-2 text-xs text-slate-400">
                 Opened {fmtDate(job.createdAt, true)}
               </div>
