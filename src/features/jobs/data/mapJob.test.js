@@ -74,9 +74,7 @@ describe("mapApiJob", () => {
     expect(job.timeline[1].text).toBe("Note: check capacitor");
     expect(job.timeline[1].by).toBe("t2");
     // note-kind events surface in the notes list with the "Note: " prefix stripped
-    expect(job.notes).toEqual([
-      { text: "check capacitor", by: "t2", label: expect.any(String) },
-    ]);
+    expect(job.notes).toEqual([{ text: "check capacitor", by: "t2", label: expect.any(String) }]);
   });
 
   it("treats a missing events array as an empty timeline", () => {

@@ -1,11 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  fetchJobs,
-  createJob,
-  addJobNote,
-  addJobFollowup,
-  transitionJob,
-} from "./jobsApi";
+import { fetchJobs, createJob, addJobNote, addJobFollowup, transitionJob } from "./jobsApi";
 
 beforeEach(() => {
   globalThis.fetch = vi.fn(() =>
