@@ -45,3 +45,7 @@ technician-app/web-build/
 technician-app/*.log
 technician-app/.env
 technician-app/.env.local
+
+# EAS build token (local only, never commit)
+technician-app/.eastoken
+.eastoken

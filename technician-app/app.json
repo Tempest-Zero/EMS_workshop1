@@ -2,6 +2,7 @@
   "expo": {
     "name": "FixFlow Technician",
     "slug": "fixflow-technician",
+    "owner": "instant_fidelity",
     "version": "0.1.0",
     "orientation": "portrait",
     "platforms": [
@@ -41,7 +42,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "14f9b2cf-ec32-4ae7-9fa3-462ba675d821"
+        "projectId": "eb1d2f9f-2427-4aaf-934b-0e996b290692"
       }
     }
   }
