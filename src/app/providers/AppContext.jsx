@@ -1,16 +1,46 @@
-import { createContext, useContext, useState, useCallback, useMemo, useEffect } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useMemo,
+  useEffect,
+  useRef,
+} from "react";
 import { useAuth } from "@app/providers/AuthContext";
-import { fetchJobs, createJob } from "@features/jobs/data/jobsApi";
+import {
+  fetchJobs,
+  fetchJob,
+  createJob,
+  addJobNote,
+  addJobFollowup,
+  transitionJob,
+} from "@features/jobs/data/jobsApi";
 import { mapApiJob, toCreateBody } from "@features/jobs/data/mapJob";
 import { technicians } from "@features/technicians/data/technicians";
 import { todayRecord } from "@features/attendance/data/attendance";
-import { TODAY } from "@shared/config/constants";
 import { nowEntry, fmtTime } from "@shared/lib/date";
 import { estimateTotal } from "@shared/lib/job";
 
 const RATE = 1200;
 
+// Fields the API doesn't own yet (J4) — preserved across server refreshes so a
+// locally-set estimate/payment isn't wiped when a lifecycle action returns the
+// authoritative job.
+const LOCAL_ONLY_FIELDS = ["estimate", "payment", "photos", "followUps"];
+
 const AppContext = createContext(null);
+
+/** Overlay a server-authoritative job onto the list, keeping local-only fields. */
+function applyServerJob(prevJobs, mapped) {
+  const idx = prevJobs.findIndex((j) => j.id === mapped.id);
+  if (idx === -1) return [mapped, ...prevJobs];
+  const server = { ...mapped };
+  LOCAL_ONLY_FIELDS.forEach((k) => delete server[k]);
+  const next = [...prevJobs];
+  next[idx] = { ...next[idx], ...server };
+  return next;
+}
 
 function initAttendanceToday() {
   const map = {};
@@ -49,6 +79,35 @@ export function AppProvider({ children }) {
     };
   }, [isAuthenticated]);
 
+  // A live mirror of `jobs` so the detail loader can resolve a token → id
+  // without taking `jobs` as a dependency (which would re-fire the detail fetch
+  // on every job mutation).
+  const jobsRef = useRef(jobs);
+  useEffect(() => {
+    jobsRef.current = jobs;
+  }, [jobs]);
+
+  // Replace a job from a full detail response (job + timeline), keeping any
+  // local-only estimate/payment. Returns the mapped job.
+  const replaceFromDetail = useCallback((detail) => {
+    const mapped = mapApiJob(detail);
+    setJobs((prev) => applyServerJob(prev, mapped));
+    return mapped;
+  }, []);
+
+  // Fetch a single job's detail (the only response that carries the timeline)
+  // and merge it in. Accepts a uuid or a human token.
+  const loadJobDetail = useCallback(
+    async (idOrToken) => {
+      const known = jobsRef.current.find(
+        (j) => j.id === idOrToken || String(j.token) === String(idOrToken)
+      );
+      const detail = await fetchJob(known?.id || idOrToken);
+      return replaceFromDetail(detail);
+    },
+    [replaceFromDetail]
+  );
+
   const addToast = useCallback((message, tone = "default") => {
     const id = Math.random().toString(36).slice(2);
     setToasts((t) => [...t, { id, message, tone }]);
@@ -82,15 +141,15 @@ export function AppProvider({ children }) {
   }, []);
 
   const addNote = useCallback(
-    (jobId, text, byName = "Technician") => {
-      const e = nowEntry(`${byName} added note: ${text}`, "note");
-      patchJob(
-        jobId,
-        (j) => ({ ...j, notes: [...(j.notes || []), { label: e.label, by: byName, text }] }),
-        e
-      );
+    async (jobId, text) => {
+      try {
+        const detail = await addJobNote(jobId, text);
+        replaceFromDetail(detail);
+      } catch {
+        addToast("Couldn't save note — please retry", "danger");
+      }
     },
-    [patchJob]
+    [replaceFromDetail, addToast]
   );
 
   const setEstimate = useCallback(
@@ -145,15 +204,16 @@ export function AppProvider({ children }) {
   );
 
   const markReady = useCallback(
-    (jobId) => {
-      patchJob(
-        jobId,
-        (j) => ({ ...j, status: "ready", readySince: TODAY }),
-        nowEntry("Marked Ready — SMS sent to customer", "ready")
-      );
-      addToast("SMS notification sent to customer", "ready");
+    async (jobId) => {
+      try {
+        const detail = await transitionJob(jobId, { action: "ready" });
+        replaceFromDetail(detail);
+        addToast("Job marked ready for pickup", "ready");
+      } catch {
+        addToast("Couldn't mark ready — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const logPayment = useCallback(
@@ -175,70 +235,72 @@ export function AppProvider({ children }) {
   );
 
   const closeJob = useCallback(
-    (jobId) => {
-      patchJob(
-        jobId,
-        (j) => ({ ...j, status: "closed", closedAt: TODAY }),
-        nowEntry("Job closed", "status")
-      );
-      addToast("Job closed and moved to history", "default");
+    async (jobId) => {
+      try {
+        const detail = await transitionJob(jobId, { action: "close" });
+        replaceFromDetail(detail);
+        addToast("Job closed and moved to history", "default");
+      } catch {
+        addToast("Couldn't close job — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const followUp = useCallback(
-    (jobId, text) => {
-      const e = nowEntry(`Follow-up: ${text}`, "followup");
-      patchJob(
-        jobId,
-        (j) => ({ ...j, followUps: [...(j.followUps || []), { label: e.label, text }] }),
-        e
-      );
-      addToast("Follow-up logged", "default");
+    async (jobId, text) => {
+      try {
+        const detail = await addJobFollowup(jobId, text);
+        replaceFromDetail(detail);
+        addToast("Follow-up logged", "default");
+      } catch {
+        addToast("Couldn't log follow-up — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const abandonJob = useCallback(
-    (jobId, reason) => {
-      patchJob(
-        jobId,
-        (j) => ({
-          ...j,
-          status: "closed",
-          closedAt: TODAY,
-          abandoned: true,
-          abandonReason: reason,
-        }),
-        nowEntry(`Job abandoned — ${reason}`, "status")
-      );
-      addToast("Job marked abandoned", "danger");
+    async (jobId, reason) => {
+      try {
+        const detail = await transitionJob(jobId, { action: "abandon", reason });
+        replaceFromDetail(detail);
+        addToast("Job marked abandoned", "danger");
+      } catch {
+        addToast("Couldn't abandon job — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const haulToShop = useCallback(
-    (jobId) => {
-      patchJob(
-        jobId,
-        (j) => ({ ...j, jobType: "carry-in" }),
-        nowEntry("Converted home visit to carry-in (hauled to shop)", "status")
-      );
-      addToast("Converted to carry-in", "default");
+    async (jobId) => {
+      try {
+        const detail = await transitionJob(jobId, { action: "haul" });
+        replaceFromDetail(detail);
+        addToast("Converted to carry-in", "default");
+      } catch {
+        addToast("Couldn't convert job — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const reschedule = useCallback(
-    (jobId, { preferredDate, timeWindow }) => {
-      patchJob(
-        jobId,
-        (j) => ({ ...j, preferredDate, timeWindow }),
-        nowEntry("Home visit rescheduled", "status")
-      );
-      addToast("Visit rescheduled", "default");
+    async (jobId, { preferredDate, timeWindow }) => {
+      try {
+        const detail = await transitionJob(jobId, {
+          action: "reschedule",
+          preferred_date: preferredDate || null,
+          time_window: timeWindow || null,
+        });
+        replaceFromDetail(detail);
+        addToast("Visit rescheduled", "default");
+      } catch {
+        addToast("Couldn't reschedule — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const clockIn = useCallback((techId) => {
@@ -295,6 +357,7 @@ export function AppProvider({ children }) {
     removeToast,
     // mutators
     addJob,
+    loadJobDetail,
     addNote,
     setEstimate,
     addEstimateLineItem,

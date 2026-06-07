@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fetchJobs, createJob } from "./jobsApi";
+import {
+  fetchJobs,
+  createJob,
+  addJobNote,
+  addJobFollowup,
+  transitionJob,
+} from "./jobsApi";
 
 beforeEach(() => {
   globalThis.fetch = vi.fn(() =>
@@ -29,5 +35,29 @@ describe("jobsApi", () => {
     expect(url).toContain("/api/jobs");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body).customer_name).toBe("A");
+  });
+
+  it("addJobNote posts the text to the notes endpoint", async () => {
+    await addJobNote("job-1", "check capacitor");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/notes");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ text: "check capacitor" });
+  });
+
+  it("addJobFollowup posts to the followups endpoint", async () => {
+    await addJobFollowup("job-1", "called customer");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/followups");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body).text).toBe("called customer");
+  });
+
+  it("transitionJob posts the action body to the transition endpoint", async () => {
+    await transitionJob("job-1", { action: "abandon", reason: "irreparable" });
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/transition");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ action: "abandon", reason: "irreparable" });
   });
 });

@@ -1,9 +1,14 @@
 /**
  * Maps the snake_case API job to the nested camelCase shape the existing job
- * components expect (customer/appliance objects, etc.). The estimate / payment /
- * notes / timeline / photos fields aren't backed by the API yet, so they're
- * filled with empty defaults — the UI renders, and persisting them is J2/J4.
+ * components expect (customer/appliance objects, etc.).
+ *
+ * The job's append-only `events` timeline (J2) is mapped to the view's
+ * `timeline` and the `note`-kind events are surfaced in `notes`. The
+ * estimate / payment / photos fields aren't backed by the API yet (J4), so they
+ * stay empty — the UI renders, and persisting them is a later slice.
  */
+
+import { fmtDateTime } from "@shared/lib/date";
 
 const DEFAULT_LABOR_RATE = 1200;
 
@@ -11,7 +16,32 @@ function dateOnly(value) {
   return value ? String(value).slice(0, 10) : undefined;
 }
 
+/** One API timeline event → the view entry shape `{ ts, label, text, kind, by }`. */
+function mapEvent(e) {
+  const when = e.created_at ? new Date(e.created_at) : new Date();
+  return {
+    ts: e.created_at || when.toISOString(),
+    label: fmtDateTime(when),
+    text: e.text,
+    kind: e.kind,
+    by: e.actor || undefined,
+  };
+}
+
+/** Map the API `events` array (present on job-detail responses) to the timeline. */
+export function mapEvents(events) {
+  return (events || []).map(mapEvent);
+}
+
+/** The `note`-kind events, shaped for the Problem & Diagnosis notes list. */
+function notesFromTimeline(timeline) {
+  return timeline
+    .filter((e) => e.kind === "note")
+    .map((e) => ({ text: e.text.replace(/^Note:\s*/, ""), by: e.by, label: e.label }));
+}
+
 export function mapApiJob(api) {
+  const timeline = mapEvents(api.events);
   return {
     id: api.id,
     token: api.token,
@@ -38,11 +68,12 @@ export function mapApiJob(api) {
     timeWindow: api.time_window || undefined,
     abandoned: Boolean(api.abandoned),
     abandonReason: api.abandon_reason || undefined,
-    // Not yet API-backed — empty so the existing detail view renders cleanly.
+    // J2 — the append-only timeline + notes come from the API's `events`.
+    notes: notesFromTimeline(timeline),
+    timeline,
+    // Not yet API-backed (J4) — empty so the existing detail view renders cleanly.
     estimate: { status: "none", laborHours: 0, laborRate: DEFAULT_LABOR_RATE, parts: [] },
     payment: { method: "pending", paid: 0 },
-    notes: [],
-    timeline: [],
     photos: [],
     followUps: [],
   };

@@ -41,6 +41,59 @@ describe("mapApiJob", () => {
     expect(job.timeline).toEqual([]);
   });
 
+  it("maps the events array to the timeline and surfaces note-kind events", () => {
+    const job = mapApiJob({
+      id: "u",
+      token: 1,
+      status: "open",
+      job_type: "carry-in",
+      customer_name: "A",
+      appliance_type: "Split AC",
+      problem: "",
+      abandoned: false,
+      events: [
+        {
+          id: "e1",
+          kind: "create",
+          text: "Job created",
+          actor: null,
+          created_at: "2026-06-01T09:00:00Z",
+        },
+        {
+          id: "e2",
+          kind: "note",
+          text: "Note: check capacitor",
+          actor: "t2",
+          created_at: "2026-06-01T10:00:00Z",
+        },
+      ],
+    });
+
+    expect(job.timeline).toHaveLength(2);
+    expect(job.timeline[0].kind).toBe("create");
+    expect(job.timeline[1].text).toBe("Note: check capacitor");
+    expect(job.timeline[1].by).toBe("t2");
+    // note-kind events surface in the notes list with the "Note: " prefix stripped
+    expect(job.notes).toEqual([
+      { text: "check capacitor", by: "t2", label: expect.any(String) },
+    ]);
+  });
+
+  it("treats a missing events array as an empty timeline", () => {
+    const job = mapApiJob({
+      id: "u",
+      token: 1,
+      status: "open",
+      job_type: "carry-in",
+      customer_name: "A",
+      appliance_type: "AC",
+      problem: "",
+      abandoned: false,
+    });
+    expect(job.timeline).toEqual([]);
+    expect(job.notes).toEqual([]);
+  });
+
   it("defaults missing optional fields", () => {
     const job = mapApiJob({
       id: "x",

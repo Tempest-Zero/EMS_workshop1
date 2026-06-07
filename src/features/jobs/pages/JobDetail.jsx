@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -59,8 +59,14 @@ export default function JobDetail({ tech = false }) {
   const { id } = useParams();
   const nav = useNavigate();
   const app = useApp();
+  const { loadJobDetail } = app;
   const job = app.getJob(id);
   const [modal, setModal] = useState(null);
+
+  // Pull the full detail (the only response carrying the timeline) on open.
+  useEffect(() => {
+    loadJobDetail(id).catch(() => {});
+  }, [id, loadJobDetail]);
 
   if (!job) {
     return (
@@ -74,7 +80,6 @@ export default function JobDetail({ tech = false }) {
   }
 
   const technician = techById(job.assignedTechId);
-  const byName = tech ? technician?.name : technician?.name || "Manager";
   const isVisit = job.jobType === "home-visit";
   const est = job.estimate;
   const owed = amountOwed(job);
@@ -403,7 +408,7 @@ export default function JobDetail({ tech = false }) {
         open={modal === "note"}
         onClose={() => setModal(null)}
         onSave={(text) => {
-          app.addNote(job.id, text, byName);
+          app.addNote(job.id, text);
           setModal(null);
         }}
       />
