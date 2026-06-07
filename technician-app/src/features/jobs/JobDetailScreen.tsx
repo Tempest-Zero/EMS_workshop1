@@ -23,6 +23,7 @@ import {
 
 import { JobMediaCapture } from "../media/JobMediaCapture";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
+import { formatPaisa } from "../../lib/money";
 import type { JobsStackParamList } from "./types";
 
 type Props = NativeStackScreenProps<JobsStackParamList, "JobDetail">;
@@ -36,8 +37,8 @@ const STATUS_COLOR: Record<string, string> = {
   closed: "#64748b",
 };
 
-export function JobDetailScreen({ route }: Props) {
-  const { id } = route.params;
+export function JobDetailScreen({ route, navigation }: Props) {
+  const { id, token } = route.params;
   const [job, setJob] = useState<JobDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
@@ -180,6 +181,48 @@ export function JobDetailScreen({ route }: Props) {
         </View>
       </View>
 
+      <View style={styles.card}>
+        <Text style={styles.label}>WORK &amp; BILL</Text>
+        {job.bill_original_paisa != null ? (
+          <>
+            <View style={styles.billGrid}>
+              <View style={styles.billBox}>
+                <Text style={styles.billBoxLabel}>Original</Text>
+                <Text style={styles.billBoxValue}>{formatPaisa(job.bill_original_paisa)}</Text>
+              </View>
+              <View style={styles.billBox}>
+                <Text style={styles.billBoxLabel}>Negotiated</Text>
+                <Text style={styles.billBoxValue}>
+                  {job.bill_negotiated_paisa != null ? formatPaisa(job.bill_negotiated_paisa) : "—"}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.billGrid}>
+              <View style={styles.billBox}>
+                <Text style={styles.billBoxLabel}>Received</Text>
+                <Text style={styles.billBoxValue}>{formatPaisa(job.received_paisa)}</Text>
+              </View>
+              <View style={styles.billBox}>
+                <Text style={styles.billBoxLabel}>Balance</Text>
+                <Text style={styles.billBoxValue}>{formatPaisa(job.balance_paisa)}</Text>
+              </View>
+            </View>
+          </>
+        ) : (
+          <Text style={styles.sub}>Not completed yet — log materials, time and fuel.</Text>
+        )}
+        {job.status !== "closed" ? (
+          <Pressable
+            style={styles.completeBtn}
+            onPress={() => navigation.navigate("CompleteJob", { id, token })}
+          >
+            <Text style={styles.completeBtnText}>
+              {job.completion ? "Edit completion" : "Complete Job"}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+
       <Text style={styles.sectionHeader}>PHOTOS · BEFORE / AFTER</Text>
       <JobMediaCapture jobKey={String(job.token)} />
 
@@ -230,6 +273,18 @@ const styles = StyleSheet.create({
   },
   value: { fontSize: 15, fontWeight: "600", color: "#1e293b" },
   sub: { fontSize: 13, color: "#64748b", marginTop: 2 },
+  billGrid: { flexDirection: "row", gap: 8, marginTop: 8 },
+  billBox: { flex: 1, backgroundColor: "#f8fafc", borderRadius: 8, padding: 10 },
+  billBoxLabel: { fontSize: 10, fontWeight: "800", color: "#94a3b8", letterSpacing: 0.5 },
+  billBoxValue: { fontSize: 16, fontWeight: "800", color: "#0f172a", marginTop: 2 },
+  completeBtn: {
+    marginTop: 12,
+    backgroundColor: "#059669",
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  completeBtnText: { color: "white", fontWeight: "800", fontSize: 15 },
   input: {
     backgroundColor: "#f8fafc",
     borderColor: "#cbd5e1",

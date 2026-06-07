@@ -38,7 +38,9 @@
         {
           "locationWhenInUsePermission": "FixFlow records your location when you clock in, to flag punches made away from the workshop."
         }
-      ]
+      ],
+      "expo-audio",
+      "expo-font"
     ],
     "extra": {
       "eas": {

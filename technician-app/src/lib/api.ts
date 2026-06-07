@@ -7,8 +7,8 @@
 import { config } from "./config";
 import { getToken, setToken } from "./auth";
 
-export type Phase = "before" | "after";
-export type MediaType = "video" | "photo";
+export type Phase = "before" | "after" | "remark" | "closing";
+export type MediaType = "video" | "photo" | "audio";
 export type MediaStatus = "pending" | "uploaded";
 
 export interface MediaItem {
