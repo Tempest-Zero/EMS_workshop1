@@ -13,10 +13,14 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.core.db import get_session
+from app.features.identity.deps import get_current_principal
+from app.features.identity.schemas import Principal
 from app.features.media.router import get_service
 from app.features.media.schemas import MediaList, MediaUploadResponse
 from app.features.media.service import MediaNotFoundError, MediaService, MediaTooLargeError
 from app.main import app
+
+_FAKE_PRINCIPAL = Principal(tech_id="t1", role="manager", name="Test Manager")
 
 
 @pytest.fixture
@@ -35,6 +39,7 @@ def fake_session() -> AsyncMock:
 async def client(fake_service: AsyncMock, fake_session: AsyncMock) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[get_service] = lambda: cast(MediaService, fake_service)
     app.dependency_overrides[get_session] = lambda: fake_session
+    app.dependency_overrides[get_current_principal] = lambda: _FAKE_PRINCIPAL
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -110,3 +115,10 @@ async def test_complete_too_large_returns_413(client: AsyncClient, fake_service:
         json={"size_bytes": 99_999_999},
     )
     assert response.status_code == 413
+
+
+async def test_media_requires_auth(client: AsyncClient) -> None:
+    # Drop the auth override so the real guard runs: no token → 401.
+    app.dependency_overrides.pop(get_current_principal, None)
+    response = await client.get("/api/jobs/job-1/media")
+    assert response.status_code == 401
