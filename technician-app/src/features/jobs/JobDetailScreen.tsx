@@ -21,6 +21,7 @@ import {
   View,
 } from "react-native";
 
+import { JobMediaCapture } from "../media/JobMediaCapture";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import type { JobsStackParamList } from "./types";
 
@@ -179,6 +180,9 @@ export function JobDetailScreen({ route }: Props) {
         </View>
       </View>
 
+      <Text style={styles.sectionHeader}>PHOTOS · BEFORE / AFTER</Text>
+      <JobMediaCapture jobKey={String(job.token)} />
+
       <View style={styles.card}>
         <Text style={styles.label}>TIMELINE</Text>
         {job.events.length === 0 ? (
@@ -216,6 +220,14 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   label: { fontSize: 11, fontWeight: "800", color: "#94a3b8", letterSpacing: 0.5, marginBottom: 4 },
+  sectionHeader: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#94a3b8",
+    letterSpacing: 0.5,
+    marginBottom: 8,
+    marginLeft: 2,
+  },
   value: { fontSize: 15, fontWeight: "600", color: "#1e293b" },
   sub: { fontSize: 13, color: "#64748b", marginTop: 2 },
   input: {
