@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import get_session
 from app.core.storage import StorageClient, get_storage
+from app.features.identity.deps import get_current_principal
 from app.features.media.repository import MediaRepository
 from app.features.media.schemas import (
     MediaCompleteRequest,
@@ -34,7 +35,14 @@ from app.features.media.service import (
     MediaTooLargeError,
 )
 
-router = APIRouter(prefix="/jobs/{job_id}/media", tags=["media"])
+# Media carries customer/job evidence → every endpoint requires a logged-in
+# caller (flat permissions; any valid token). The mobile + web clients both send
+# the bearer token. (J0.5b — tech-facing endpoints are no longer open.)
+router = APIRouter(
+    prefix="/jobs/{job_id}/media",
+    tags=["media"],
+    dependencies=[Depends(get_current_principal)],
+)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 StorageDep = Annotated[StorageClient, Depends(get_storage)]

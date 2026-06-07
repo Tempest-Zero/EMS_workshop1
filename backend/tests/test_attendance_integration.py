@@ -2,8 +2,7 @@
 actual SQL (inserts, the timezone/date-range windows, the rollup, the adjustment
 join, the unique-client_id constraint) that the mock-based unit tests cannot.
 
-Manager endpoints are auth-guarded, so those calls pass ``auth_headers``; the
-tech-facing punch endpoint stays open (mobile login lands later)."""
+All endpoints are auth-guarded now (J0.5b), so every call passes ``auth_headers``."""
 
 from __future__ import annotations
 
@@ -115,8 +114,10 @@ async def test_board_requires_auth(app_client: AsyncClient) -> None:
     assert resp.status_code == 401, resp.text
 
 
-async def test_punch_is_idempotent_on_client_id(app_client: AsyncClient) -> None:
-    # The punch endpoint stays open (no auth) until the mobile app ships login.
+async def test_punch_is_idempotent_on_client_id(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    # Punches require auth now (J0.5b); re-sending the same client_id is a no-op.
     body = {
         "client_id": str(uuid4()),
         "tech_id": "t2",
@@ -125,12 +126,12 @@ async def test_punch_is_idempotent_on_client_id(app_client: AsyncClient) -> None
         "lng": 67.0,
         "is_mock_location": False,
     }
-    first = await app_client.post("/api/attendance/punches", json=body)
+    first = await app_client.post("/api/attendance/punches", json=body, headers=auth_headers)
     assert first.status_code == 201, first.text
     assert first.json()["deduped"] is False
 
     # Re-sending the same client_id (an offline retry) must be a safe no-op.
-    second = await app_client.post("/api/attendance/punches", json=body)
+    second = await app_client.post("/api/attendance/punches", json=body, headers=auth_headers)
     assert second.status_code == 201, second.text
     assert second.json()["deduped"] is True
     assert second.json()["event_id"] == first.json()["event_id"]
@@ -163,6 +164,7 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
             "is_mock_location": False,
             "wifi_bssid": "aa:bb:cc:dd:ee:ff",
         },
+        headers=auth_headers,
     )
     assert r.status_code == 201, r.text
     body = r.json()

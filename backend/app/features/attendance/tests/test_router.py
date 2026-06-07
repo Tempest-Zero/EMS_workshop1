@@ -130,6 +130,16 @@ async def test_manager_endpoint_requires_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
+async def test_punch_requires_auth(client: AsyncClient) -> None:
+    # Tech-facing endpoints are guarded now too (J0.5b): no token → 401.
+    app.dependency_overrides.pop(get_current_principal, None)
+    resp = await client.post(
+        "/api/attendance/punches",
+        json={"client_id": str(uuid4()), "tech_id": "t1", "kind": "clock_in"},
+    )
+    assert resp.status_code == 401
+
+
 async def test_grid_rejects_bad_month(client: AsyncClient) -> None:
     resp = await client.get("/api/attendance/grid?month=2026-6")
     assert resp.status_code == 422

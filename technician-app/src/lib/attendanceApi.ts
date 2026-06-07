@@ -3,9 +3,13 @@
  * consume (see `lib/api.ts` for media). Hand-typed — clearer than generated
  * types for a small surface. Mirrors the backend Pydantic schemas in
  * `backend/app/features/attendance/schemas.py`.
+ *
+ * Uses the shared auth-aware `request` from `./api`, so every call carries the
+ * bearer token (attendance endpoints are auth-guarded since J0.5b) and a 401
+ * triggers the same auto sign-out as the media/jobs slices.
  */
 
-import { config } from "./config";
+import { request } from "./api";
 
 export type PunchKind = "clock_in" | "clock_out";
 export type SelfieStatus = "pending" | "uploaded";
@@ -78,20 +82,6 @@ export interface TodayStatus {
   last_out: string | null;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${config.apiUrl}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    const method = init?.method ?? "GET";
-    throw new Error(`${method} ${path} failed (${response.status}): ${text.slice(0, 300)}`);
-  }
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
-}
-
 const q = (v: string) => encodeURIComponent(v);
 
 export const attendanceApi = {
@@ -102,10 +92,10 @@ export const attendanceApi = {
     }),
 
   completeSelfie: (eventId: string, techId: string, body: { size_bytes?: number }) =>
-    request<PunchItem>(
-      `/api/attendance/punches/${q(eventId)}/selfie/complete?tech_id=${q(techId)}`,
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+    request<PunchItem>(`/api/attendance/punches/${q(eventId)}/selfie/complete?tech_id=${q(techId)}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   today: (techId: string, shopId = "default") =>
     request<TodayStatus>(`/api/attendance/today?tech_id=${q(techId)}&shop_id=${q(shopId)}`),
