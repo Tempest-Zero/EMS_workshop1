@@ -5,6 +5,7 @@
  */
 
 import { config } from "./config";
+import { getToken, setToken } from "./auth";
 
 export type Phase = "before" | "after";
 export type MediaType = "video" | "photo";
@@ -44,11 +45,26 @@ export interface MediaUploadRequest {
   content_type?: string;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+let onUnauthorized: (() => void) | null = null;
+/** Register a callback fired when any request 401s (token already cleared). */
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
   const response = await fetch(`${config.apiUrl}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
   });
+  if (response.status === 401) {
+    await setToken(null);
+    onUnauthorized?.();
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     const method = init?.method ?? "GET";
