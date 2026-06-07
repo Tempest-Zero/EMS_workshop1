@@ -2,6 +2,7 @@
 
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
+import { CompleteJobScreen } from "./CompleteJobScreen";
 import { JobDetailScreen } from "./JobDetailScreen";
 import { JobsListScreen } from "./JobsListScreen";
 import type { JobsStackParamList } from "./types";
@@ -16,6 +17,11 @@ export function JobsStack() {
         name="JobDetail"
         component={JobDetailScreen}
         options={({ route }) => ({ title: `Job #${route.params.token}` })}
+      />
+      <Stack.Screen
+        name="CompleteJob"
+        component={CompleteJobScreen}
+        options={({ route }) => ({ title: `Complete #${route.params.token}` })}
       />
     </Stack.Navigator>
   );

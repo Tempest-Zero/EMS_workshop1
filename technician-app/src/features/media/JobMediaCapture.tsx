@@ -15,7 +15,9 @@ import type { MediaType, Phase } from "../../lib/api";
 import { MediaTile } from "./MediaTile";
 import { useMedia } from "./useMedia";
 
-const PHASES: readonly Phase[] = ["before", "after"];
+// This component only handles the before/after evidence columns (remark/closing
+// media are uploaded elsewhere). Narrow to those two keys of MediaList.
+const PHASES = ["before", "after"] as const;
 
 export function JobMediaCapture({ jobKey }: { jobKey: string }) {
   const media = useMedia(jobKey);
