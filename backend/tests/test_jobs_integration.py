@@ -122,6 +122,63 @@ async def test_abandon_requires_reason(app_client: AsyncClient, auth_headers: He
     assert ok.json()["status"] == "closed"
 
 
+async def test_completion_generates_bill_then_negotiate(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+
+    # Completion form → original bill (integer paisa): 120000 materials +
+    # 120000 labour (1h @ Rs1200) + 50000 fuel = 290000.
+    comp = await app_client.post(
+        f"/api/jobs/{job_id}/completion",
+        json={
+            "materials": [{"name": "Run capacitor", "qty": 2, "unit_paisa": 60000}],
+            "time_spent_mins": 60,
+            "fuel_paisa": 50000,
+            "remarks_text": "Replaced capacitor + topped gas",
+        },
+        headers=auth_headers,
+    )
+    assert comp.status_code == 200, comp.text
+    body = comp.json()
+    assert body["bill_original_paisa"] == 290000
+    assert body["bill_status"] == "generated"
+    assert body["completion"]["materials"][0]["name"] == "Run capacitor"
+    assert any(e["kind"] == "complete" for e in body["events"])
+
+    # Re-submit (upsert) replaces materials + regenerates the bill.
+    comp2 = await app_client.post(
+        f"/api/jobs/{job_id}/completion",
+        json={"materials": [{"name": "Compressor", "qty": 1, "unit_paisa": 800000}]},
+        headers=auth_headers,
+    )
+    assert comp2.json()["bill_original_paisa"] == 800000
+    assert len(comp2.json()["completion"]["materials"]) == 1  # replaced, not appended
+
+    # Negotiate → original kept, negotiated stored separately.
+    neg = await app_client.post(
+        f"/api/jobs/{job_id}/bill/negotiate",
+        json={"amount_paisa": 700000, "note": "regular customer"},
+        headers=auth_headers,
+    )
+    assert neg.status_code == 200, neg.text
+    assert neg.json()["bill_original_paisa"] == 800000
+    assert neg.json()["bill_negotiated_paisa"] == 700000
+    assert neg.json()["bill_status"] == "negotiated"
+
+
+async def test_negotiate_without_completion_is_400(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+    resp = await app_client.post(
+        f"/api/jobs/{job_id}/bill/negotiate", json={"amount_paisa": 1000}, headers=auth_headers
+    )
+    assert resp.status_code == 400, resp.text
+
+
 async def test_jobs_require_auth(app_client: AsyncClient) -> None:
     assert (await app_client.get("/api/jobs")).status_code == 401
     assert (await app_client.post("/api/jobs", json=_INTAKE)).status_code == 401

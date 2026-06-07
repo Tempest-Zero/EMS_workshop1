@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Device-clock drift beyond this (seconds) is flagged for manager review.
     attendance_drift_flag_seconds: int = 120
 
+    # ── Jobs / billing ───────────────────────────────────────────────────
+    # Labour rate used to auto-generate the bill from time on-site. Integer
+    # paisa (Rs 1200/hour). Money is ALWAYS integer paisa, never floats.
+    labour_rate_paisa: int = 1200 * 100
+
     # ── Auth (Name + PIN → JWT) ──────────────────────────────────────────
     # HS256 signing secret. The default is for local dev only — production
     # MUST override it via FIXFLOW_JWT_SECRET (a long random string).

@@ -158,3 +158,47 @@ async def test_claim_returns_200_and_commits(
     assert resp.status_code == 200, resp.text
     assert resp.json()["assigned_tech_id"] == "t1"
     fake_session.commit.assert_awaited()
+
+
+async def test_submit_completion_returns_200_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.submit_completion.return_value = _detail(
+        bill_original_paisa=290000, bill_status="generated"
+    )
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/completion",
+        json={
+            "materials": [{"name": "Relay", "qty": 2, "unit_paisa": 60000}],
+            "time_spent_mins": 60,
+            "fuel_paisa": 50000,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["bill_original_paisa"] == 290000
+    fake_session.commit.assert_awaited()
+
+
+async def test_completion_rejects_negative_money(client: AsyncClient) -> None:
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/completion",
+        json={"materials": [{"name": "x", "qty": 1, "unit_paisa": -5}]},
+    )
+    assert resp.status_code == 422
+
+
+async def test_negotiate_returns_200(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.negotiate_bill.return_value = _detail(
+        bill_original_paisa=500000, bill_negotiated_paisa=420000, bill_status="negotiated"
+    )
+    resp = await client.post(f"/api/jobs/{uuid4()}/bill/negotiate", json={"amount_paisa": 420000})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["bill_negotiated_paisa"] == 420000
+
+
+async def test_negotiate_without_bill_returns_400(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.negotiate_bill.side_effect = JobActionError("no bill yet")
+    resp = await client.post(f"/api/jobs/{uuid4()}/bill/negotiate", json={"amount_paisa": 1000})
+    assert resp.status_code == 400

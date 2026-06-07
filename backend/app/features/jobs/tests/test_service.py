@@ -10,8 +10,8 @@ from uuid import uuid4
 import pytest
 
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.models import JobEvent
-from app.features.jobs.schemas import JobCreate, TransitionRequest
+from app.features.jobs.models import JobCompletion, JobEvent
+from app.features.jobs.schemas import CompletionRequest, JobCreate, MaterialIn, TransitionRequest
 from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
 
 
@@ -30,6 +30,7 @@ def _persist(job: JobRow) -> JobRow:
     """Mimic the repo flush+refresh: populate the server-default columns."""
     job.id = uuid4()
     job.abandoned = False
+    job.bill_status = "none"
     job.created_at = datetime.now(UTC)
     job.updated_at = datetime.now(UTC)
     return job
@@ -44,6 +45,11 @@ def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo.create = AsyncMock(side_effect=_persist)
     repo.add_event = AsyncMock(side_effect=lambda e: e)
     repo.list_events = AsyncMock(return_value=[])
+    repo.get_completion = AsyncMock(return_value=None)
+    repo.list_materials = AsyncMock(return_value=[])
+    repo.add_completion = AsyncMock(side_effect=lambda c: c)
+    repo.clear_materials = AsyncMock()
+    repo.add_material = AsyncMock(side_effect=lambda m: m)
     yield JobService(repo), repo
 
 
@@ -239,3 +245,65 @@ async def test_claim_sets_tech_and_logs_claim_event(svc: tuple[JobService, Magic
     )
     assert detail.assigned_tech_id == "t2"
     assert repo.add_event.await_args.args[0].kind == "claim"
+
+
+# ── completion + bill (paisa) ────────────────────────────────────────────────
+async def test_submit_completion_generates_bill_in_paisa(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    body = CompletionRequest(
+        materials=[MaterialIn(name="Relay", qty=2, unit_paisa=60000)],  # 120000
+        time_spent_mins=60,  # labour = 1h × Rs1200 = 120000
+        fuel_paisa=50000,
+    )
+    detail = await service.submit_completion(
+        job_id=job.id, shop_id="default", body=body, actor="t1"
+    )
+    assert detail.bill_original_paisa == 290000  # 120000 + 120000 + 50000
+    assert detail.bill_status == "generated"
+    repo.add_material.assert_awaited_once()
+    assert repo.add_event.await_args.args[0].kind == "complete"
+
+
+async def test_completion_upsert_clears_old_materials(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    existing = JobCompletion(job_id=job.id)
+    existing.id = uuid4()
+    repo.get_completion.return_value = existing
+    await service.submit_completion(
+        job_id=job.id,
+        shop_id="default",
+        body=CompletionRequest(materials=[MaterialIn(name="x", qty=1, unit_paisa=1000)]),
+        actor="t1",
+    )
+    repo.clear_materials.assert_awaited_once_with(existing.id)
+    repo.add_completion.assert_not_awaited()  # reused the existing row
+
+
+async def test_negotiate_requires_a_generated_bill(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()  # bill_original_paisa is None
+    repo.get.return_value = job
+    with pytest.raises(JobActionError):
+        await service.negotiate_bill(
+            job_id=job.id, shop_id="default", amount_paisa=100000, note=None, actor="t1"
+        )
+
+
+async def test_negotiate_sets_amount_keeps_original(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.bill_original_paisa = 500000
+    repo.get.return_value = job
+    detail = await service.negotiate_bill(
+        job_id=job.id, shop_id="default", amount_paisa=420000, note="waived call-out", actor="t1"
+    )
+    assert detail.bill_original_paisa == 500000  # kept
+    assert detail.bill_negotiated_paisa == 420000
+    assert detail.bill_status == "negotiated"
+    assert repo.add_event.await_args.args[0].kind == "bill"

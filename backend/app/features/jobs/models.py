@@ -15,6 +15,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -47,6 +48,8 @@ class JobEventKind(StrEnum):
     APPROVED = "approved"
     DECLINED = "declined"
     PAYMENT = "payment"
+    COMPLETE = "complete"
+    BILL = "bill"
 
 
 class JobStatus(StrEnum):
@@ -112,6 +115,14 @@ class Job(Base):
     )
     abandon_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
+    # Bill (Module 4). Both amounts kept separately — the auto-generated
+    # original and the on-site negotiated figure. Integer paisa, never floats.
+    bill_original_paisa: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bill_negotiated_paisa: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bill_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=sa_text("'none'")
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )
@@ -137,3 +148,45 @@ class JobEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )
+
+
+class JobCompletion(Base):
+    """The technician's post-job work-completion form (Module 3). One per job
+    (upsert). Drives the auto-generated original bill."""
+
+    __tablename__ = "job_completion"
+    __table_args__ = (UniqueConstraint("job_id", name="uq_job_completion_job"),)
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
+    )
+    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("job.id"), nullable=False)
+    time_spent_mins: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa_text("0")
+    )
+    fuel_paisa: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa_text("0"))
+    remarks_text: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Loose reference to a job_media row (type=audio) — no hard FK so the voice
+    # note can upload after the form submits (offline-friendly).
+    remarks_audio_media_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    submitted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+
+
+class JobMaterial(Base):
+    """A part/material line on a completion. Money is integer paisa."""
+
+    __tablename__ = "job_material"
+    __table_args__ = (Index("ix_job_material_completion", "completion_id"),)
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
+    )
+    completion_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("job_completion.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
+    unit_paisa: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa_text("0"))

@@ -20,10 +20,12 @@ from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     DEFAULT_SHOP_ID,
     AssignRequest,
+    CompletionRequest,
     Job,
     JobCreate,
     JobDetail,
     JobStatus,
+    NegotiateRequest,
     NoteRequest,
     TransitionRequest,
 )
@@ -176,6 +178,56 @@ async def claim(
     principal: CurrentPrincipal,
 ) -> JobDetail:
     detail = await _assign(service, job_id, principal.tech_id, principal.tech_id, claimed=True)
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/completion",
+    response_model=JobDetail,
+    summary="Submit the work-completion form (generates the bill)",
+)
+async def submit_completion(
+    job_id: UUID,
+    body: CompletionRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    try:
+        detail = await service.submit_completion(
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/bill/negotiate",
+    response_model=JobDetail,
+    summary="Record the negotiated bill amount (keeps the original)",
+)
+async def negotiate_bill(
+    job_id: UUID,
+    body: NegotiateRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    try:
+        detail = await service.negotiate_bill(
+            job_id=job_id,
+            shop_id=DEFAULT_SHOP_ID,
+            amount_paisa=body.amount_paisa,
+            note=body.note,
+            actor=principal.tech_id,
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobActionError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     await session.commit()
     return detail
 
