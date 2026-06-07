@@ -17,8 +17,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_session
 from app.features.identity.deps import CurrentPrincipal
 from app.features.jobs.repository import JobRepository
-from app.features.jobs.schemas import DEFAULT_SHOP_ID, Job, JobCreate, JobStatus
-from app.features.jobs.service import JobNotFoundError, JobService
+from app.features.jobs.schemas import (
+    DEFAULT_SHOP_ID,
+    Job,
+    JobCreate,
+    JobDetail,
+    JobStatus,
+    NoteRequest,
+    TransitionRequest,
+)
+from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -65,14 +73,85 @@ async def create_job(
     return job
 
 
-@router.get("/{job_id}", response_model=Job, summary="Job detail")
+@router.get("/{job_id}", response_model=JobDetail, summary="Job detail + timeline")
 async def get_job(
     job_id: UUID,
     service: ServiceDep,
     _principal: CurrentPrincipal,
     shop_id: ShopId = DEFAULT_SHOP_ID,
-) -> Job:
+) -> JobDetail:
     try:
         return await service.get_job(job_id=job_id, shop_id=shop_id)
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+
+
+@router.post(
+    "/{job_id}/notes",
+    response_model=JobDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a note to a job",
+)
+async def add_note(
+    job_id: UUID,
+    body: NoteRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    detail = await _note(service, job_id, body.text, principal.tech_id, kind="note")
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/followups",
+    response_model=JobDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="Log a follow-up on a job",
+)
+async def add_followup(
+    job_id: UUID,
+    body: NoteRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    detail = await _note(service, job_id, body.text, principal.tech_id, kind="followup")
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/transition",
+    response_model=JobDetail,
+    summary="Change a job's status / schedule (ready, close, abandon, reschedule, haul)",
+)
+async def transition(
+    job_id: UUID,
+    body: TransitionRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    try:
+        detail = await service.transition(
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobActionError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    await session.commit()
+    return detail
+
+
+async def _note(
+    service: JobService, job_id: UUID, text: str, actor: str, *, kind: str
+) -> JobDetail:
+    try:
+        return await service.add_note(
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, text=text, actor=actor, kind=kind
+        )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e

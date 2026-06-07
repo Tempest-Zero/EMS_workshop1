@@ -39,11 +39,12 @@ and `src/features/jobs/data/jobs.js` (the Job shape).
 | PR | Scope | Flips to real |
 | --- | --- | --- |
 | **J0 — Foundation** ✅ | `technician` table + seed; Name/PIN → JWT (`/auth/login`, `/auth/me`); `get_current_principal` dependency; migrations-on-deploy | login capability + roster API |
-| **J0.5a — Web login + manager guard** *(this PR)* | manager web login screen + token storage + `Authorization` header; enforce auth on the **manager** attendance endpoints (board/grid/tech-days/shifts/geofences/adjustments). Mobile/tech endpoints stay open so the installed APK keeps working | manager web behind login; manager API token-guarded |
+| **J0.5a — Web login + manager guard** ✅ | manager web login screen + token storage + `Authorization` header; enforce auth on the **manager** attendance endpoints (board/grid/tech-days/shifts/geofences/adjustments). Mobile/tech endpoints stay open so the installed APK keeps working | manager web behind login; manager API token-guarded |
 | **J0.5b — Mobile login + tech guard** | mobile login screen, token storage, punch identity from the token; enforce auth on the tech-facing punch/today/media endpoints (needs an APK rebuild) | login on the phone; the rest of the API guarded |
 | **J1 — Jobs core backend** ✅ | `job` table (customer fields + appliance + problem + status + assigned tech + token) + seed of the 17 prototype jobs; `GET /jobs` (filter by status/tech/search), `GET /jobs/{id}`, `POST /jobs` — all auth-required | live jobs API |
-| **J1b — Jobs read UI** *(this PR)* | AppContext loads jobs from the API (mapped to the view shape) once logged in; `New Job` POSTs for real. JobsBoard/JobDetail/MyJobs/Dashboard now render live data. The lifecycle write-actions (estimate/payment/status/notes) stay **in-session only** until J2 persists them | manager JobsBoard + JobDetail + Dashboard, tech MyJobs |
-| **J2 — Lifecycle** | append-only timeline; notes; status transitions (mark-ready, close, abandon, follow-up, reschedule, haul-to-shop) | JobDetail action bar, Dashboard activity |
+| **J1b — Jobs read UI** ✅ | AppContext loads jobs from the API (mapped to the view shape) once logged in; `New Job` POSTs for real. JobsBoard/JobDetail/MyJobs/Dashboard now render live data | manager JobsBoard + JobDetail + Dashboard, tech MyJobs |
+| **J2a — Lifecycle backend** *(this PR)* | append-only `job_event` timeline; `POST /jobs/{id}/notes`, `/followups`, `/transition` (ready, close, abandon, reschedule, haul); `GET /jobs/{id}` returns the timeline | live timeline + status API |
+| **J2b — Lifecycle UI** | wire JobDetail's note/follow-up/status actions to the API so they persist (removes J1b's in-session-only gap); render the real timeline | JobDetail action bar persists |
 | **J3 — Media × Jobs** | capture launches *from a job*; JobDetail Photos shows real thumbnails | wires the existing media slice to the spine |
 | **J4 — Money** | estimate (parts/labor, **paisa**) + approve/decline + payment | JobDetail Estimate + Payment cards |
 | **J5 — Mobile parity** | My Jobs + Job Detail (+ static Diagnose + Profile) in the actual APK | the app matches `TechLayout` |

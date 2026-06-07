@@ -17,8 +17,8 @@ from app.core.db import get_session
 from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
 from app.features.jobs.router import get_service
-from app.features.jobs.schemas import Job
-from app.features.jobs.service import JobNotFoundError, JobService
+from app.features.jobs.schemas import Job, JobDetail
+from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
 from app.main import app
 
 _FAKE_PRINCIPAL = Principal(tech_id="t1", role="manager", name="Test Manager")
@@ -100,3 +100,36 @@ async def test_jobs_require_auth(client: AsyncClient) -> None:
     app.dependency_overrides.pop(get_current_principal, None)
     resp = await client.get("/api/jobs")
     assert resp.status_code == 401
+
+
+def _detail(**over: object) -> JobDetail:
+    return JobDetail(**{**_job().model_dump(), **over}, events=[])
+
+
+async def test_add_note_returns_201_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.add_note.return_value = _detail()
+    resp = await client.post(f"/api/jobs/{uuid4()}/notes", json={"text": "check the capacitor"})
+    assert resp.status_code == 201, resp.text
+    fake_session.commit.assert_awaited()
+
+
+async def test_add_note_rejects_empty_text(client: AsyncClient) -> None:
+    resp = await client.post(f"/api/jobs/{uuid4()}/notes", json={"text": ""})
+    assert resp.status_code == 422
+
+
+async def test_transition_returns_200(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.transition.return_value = _detail(status="ready")
+    resp = await client.post(f"/api/jobs/{uuid4()}/transition", json={"action": "ready"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ready"
+
+
+async def test_transition_action_error_returns_400(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.transition.side_effect = JobActionError("abandon requires a reason")
+    resp = await client.post(f"/api/jobs/{uuid4()}/transition", json={"action": "abandon"})
+    assert resp.status_code == 400

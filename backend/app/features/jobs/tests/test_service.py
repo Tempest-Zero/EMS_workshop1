@@ -10,8 +10,20 @@ from uuid import uuid4
 import pytest
 
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.schemas import JobCreate
-from app.features.jobs.service import JobNotFoundError, JobService
+from app.features.jobs.models import JobEvent
+from app.features.jobs.schemas import JobCreate, TransitionRequest
+from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
+
+
+def _event(kind: str, text: str = "x") -> JobEvent:
+    return JobEvent(
+        id=uuid4(),
+        job_id=uuid4(),
+        kind=kind,
+        text=text,
+        actor="t1",
+        created_at=datetime.now(UTC),
+    )
 
 
 def _persist(job: JobRow) -> JobRow:
@@ -27,10 +39,26 @@ def _persist(job: JobRow) -> JobRow:
 def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
-    repo.list = AsyncMock(return_value=[])
+    repo.list_jobs = AsyncMock(return_value=[])
     repo.next_token = AsyncMock(return_value=1052)
     repo.create = AsyncMock(side_effect=_persist)
+    repo.add_event = AsyncMock(side_effect=lambda e: e)
+    repo.list_events = AsyncMock(return_value=[])
     yield JobService(repo), repo
+
+
+def _open_job() -> JobRow:
+    return _persist(
+        JobRow(
+            token=1052,
+            shop_id="default",
+            status="open",
+            job_type="home-visit",
+            customer_name="Yusuf",
+            appliance_type="Split AC",
+            problem="leaking",
+        )
+    )
 
 
 async def test_create_assigns_token_and_open_status(
@@ -110,6 +138,82 @@ async def test_get_wrong_shop_raises_not_found(svc: tuple[JobService, MagicMock]
 async def test_list_passes_filters_through(svc: tuple[JobService, MagicMock]) -> None:
     service, repo = svc
     await service.list_jobs(shop_id="default", status="ready", assigned_tech_id="t2", search="ac")
-    repo.list.assert_awaited_once_with(
+    repo.list_jobs.assert_awaited_once_with(
         shop_id="default", status="ready", assigned_tech_id="t2", search="ac"
     )
+
+
+# ── lifecycle / timeline ─────────────────────────────────────────────────────
+async def test_create_appends_a_create_event(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    await service.create_job(JobCreate(customer_name="A", appliance_type="AC"))
+    kinds = [call.args[0].kind for call in repo.add_event.await_args_list]
+    assert "create" in kinds
+
+
+async def test_get_returns_detail_with_timeline(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_events.return_value = [_event("note", "Note: hi")]
+    detail = await service.get_job(job_id=job.id, shop_id="default")
+    assert len(detail.events) == 1
+    assert detail.events[0].kind == "note"
+
+
+async def test_add_note_appends_note_event(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    await service.add_note(job_id=job.id, shop_id="default", text="  check capacitor  ", actor="t1")
+    ev = repo.add_event.await_args.args[0]
+    assert ev.kind == "note"
+    assert "check capacitor" in ev.text
+    assert ev.actor == "t1"
+
+
+async def test_transition_ready_sets_status(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    detail = await service.transition(
+        job_id=job.id, shop_id="default", body=TransitionRequest(action="ready"), actor="t1"
+    )
+    assert detail.status == "ready"
+    assert job.ready_since is not None
+    assert repo.add_event.await_args.args[0].kind == "ready"
+
+
+async def test_transition_abandon_requires_reason(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    with pytest.raises(JobActionError):
+        await service.transition(
+            job_id=job.id, shop_id="default", body=TransitionRequest(action="abandon"), actor="t1"
+        )
+
+
+async def test_transition_abandon_with_reason(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    detail = await service.transition(
+        job_id=job.id,
+        shop_id="default",
+        body=TransitionRequest(action="abandon", reason="irreparable"),
+        actor="t1",
+    )
+    assert detail.status == "closed"
+    assert detail.abandoned is True
+    assert detail.abandon_reason == "irreparable"
+
+
+async def test_transition_haul_converts_to_carry_in(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()  # home-visit
+    repo.get.return_value = job
+    detail = await service.transition(
+        job_id=job.id, shop_id="default", body=TransitionRequest(action="haul"), actor="t1"
+    )
+    assert detail.job_type == "carry-in"

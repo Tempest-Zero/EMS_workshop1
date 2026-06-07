@@ -19,16 +19,34 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     String,
     UniqueConstraint,
-    text,
+)
+from sqlalchemy import (
+    text as sa_text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
+
+
+class JobEventKind(StrEnum):
+    """Timeline entry kinds (mirror the web mock's vocabulary)."""
+
+    CREATE = "create"
+    ASSIGN = "assign"
+    NOTE = "note"
+    FOLLOWUP = "followup"
+    STATUS = "status"
+    READY = "ready"
+    ESTIMATE = "estimate"
+    APPROVED = "approved"
+    DECLINED = "declined"
+    PAYMENT = "payment"
 
 
 class JobStatus(StrEnum):
@@ -56,15 +74,17 @@ class Job(Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     token: Mapped[int] = mapped_column(Integer, nullable=False)
     shop_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, server_default=text("'default'")
+        String(64), nullable=False, server_default=sa_text("'default'")
     )
-    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'open'"))
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=sa_text("'open'")
+    )
     job_type: Mapped[str] = mapped_column(
-        String(16), nullable=False, server_default=text("'carry-in'")
+        String(16), nullable=False, server_default=sa_text("'carry-in'")
     )
 
     # Customer (embedded)
@@ -77,7 +97,7 @@ class Job(Base):
     appliance_brand: Mapped[str | None] = mapped_column(String(64), nullable=True)
     appliance_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    problem: Mapped[str] = mapped_column(String(2048), nullable=False, server_default=text("''"))
+    problem: Mapped[str] = mapped_column(String(2048), nullable=False, server_default=sa_text("''"))
     assigned_tech_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Scheduling / lifecycle dates (set on intake or by later status actions).
@@ -87,12 +107,33 @@ class Job(Base):
     waiting_since: Mapped[date | None] = mapped_column(Date, nullable=True)
     ready_since: Mapped[date | None] = mapped_column(Date, nullable=True)
     closed_at: Mapped[date | None] = mapped_column(Date, nullable=True)
-    abandoned: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    abandoned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa_text("false")
+    )
     abandon_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+
+
+class JobEvent(Base):
+    """Append-only timeline entry for a job (notes, follow-ups, status changes).
+    The job row holds current state; this is the audit trail behind it."""
+
+    __tablename__ = "job_event"
+    __table_args__ = (Index("ix_job_event_job_time", "job_id", "created_at"),)
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
+    )
+    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("job.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    text: Mapped[str] = mapped_column(String(1024), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )

@@ -33,6 +33,35 @@ class JobCreate(BaseModel):
     shop_id: str = Field(default=DEFAULT_SHOP_ID, max_length=64)
 
 
+class JobEventOut(BaseModel):
+    """One timeline entry."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    kind: str
+    text: str
+    actor: str | None = None
+    created_at: datetime
+
+
+class NoteRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=1024)
+
+
+TransitionAction = Literal["ready", "close", "abandon", "reschedule", "haul"]
+
+
+class TransitionRequest(BaseModel):
+    """A status/lifecycle change. ``reason`` is required for ``abandon``;
+    ``preferred_date``/``time_window`` for ``reschedule``."""
+
+    action: TransitionAction
+    reason: str | None = Field(default=None, max_length=256)
+    preferred_date: date | None = None
+    time_window: str | None = Field(default=None, max_length=64)
+
+
 class Job(BaseModel):
     """Full read model of a job (built straight from the ORM row)."""
 
@@ -61,3 +90,9 @@ class Job(BaseModel):
     abandon_reason: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class JobDetail(Job):
+    """A job plus its timeline (returned by the detail / mutation endpoints)."""
+
+    events: list[JobEventOut] = []
