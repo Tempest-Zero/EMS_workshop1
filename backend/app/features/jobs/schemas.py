@@ -49,6 +49,10 @@ class NoteRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=1024)
 
 
+class AssignRequest(BaseModel):
+    tech_id: str = Field(..., min_length=1, max_length=64)
+
+
 TransitionAction = Literal["ready", "close", "abandon", "reschedule", "haul"]
 
 

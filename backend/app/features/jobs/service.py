@@ -86,6 +86,21 @@ class JobService:
         row.updated_at = datetime.now(UTC)
         return await self._detail(row)
 
+    async def assign_job(
+        self, *, job_id: UUID, shop_id: str, tech_id: str, actor: str | None, claimed: bool = False
+    ) -> JobDetail:
+        """Assign a job to a technician. ``claimed`` distinguishes a tech
+        free-picking it from the work list (claim) from a manager assigning it."""
+        row = await self._load(job_id, shop_id)
+        row.assigned_tech_id = tech_id
+        row.updated_at = datetime.now(UTC)
+        kind = "claim" if claimed else "assign"
+        verb = "Claimed by" if claimed else "Assigned to"
+        await self._repo.add_event(
+            JobEvent(job_id=row.id, kind=kind, text=f"{verb} {tech_id}", actor=actor)
+        )
+        return await self._detail(row)
+
     async def transition(
         self, *, job_id: UUID, shop_id: str, body: TransitionRequest, actor: str | None
     ) -> JobDetail:

@@ -8,7 +8,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ClockScreen } from "./src/features/attendance/ClockScreen";
 import { AuthProvider, useAuth } from "./src/features/auth/AuthContext";
 import { LoginScreen } from "./src/features/auth/LoginScreen";
-import { MyJobsScreen } from "./src/features/jobs/MyJobsScreen";
+import { JobsStack } from "./src/features/jobs/JobsStack";
 import { MediaScreen } from "./src/features/media/MediaScreen";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
 
@@ -25,6 +25,7 @@ function Tabs() {
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
+        headerShown: route.name !== "My Jobs", // the Jobs stack draws its own headers
         tabBarActiveTintColor: "#0f172a",
         tabBarInactiveTintColor: "#94a3b8",
         tabBarIcon: ({ color, size }) => (
@@ -32,7 +33,7 @@ function Tabs() {
         ),
       })}
     >
-      <Tab.Screen name="My Jobs" component={MyJobsScreen} />
+      <Tab.Screen name="My Jobs" component={JobsStack} />
       <Tab.Screen name="Clock" component={ClockScreen} />
       <Tab.Screen name="Media" component={MediaScreen} />
       <Tab.Screen name="Profile" component={ProfileScreen} />

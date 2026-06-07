@@ -19,6 +19,7 @@ from app.features.identity.deps import CurrentPrincipal
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     DEFAULT_SHOP_ID,
+    AssignRequest,
     Job,
     JobCreate,
     JobDetail,
@@ -144,6 +145,50 @@ async def transition(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     await session.commit()
     return detail
+
+
+@router.post(
+    "/{job_id}/assign",
+    response_model=JobDetail,
+    summary="Assign a job to a specific technician (manager)",
+)
+async def assign(
+    job_id: UUID,
+    body: AssignRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    detail = await _assign(service, job_id, body.tech_id, principal.tech_id, claimed=False)
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/claim",
+    response_model=JobDetail,
+    summary="Claim a job from the work list (technician free-pick)",
+)
+async def claim(
+    job_id: UUID,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    detail = await _assign(service, job_id, principal.tech_id, principal.tech_id, claimed=True)
+    await session.commit()
+    return detail
+
+
+async def _assign(
+    service: JobService, job_id: UUID, tech_id: str, actor: str, *, claimed: bool
+) -> JobDetail:
+    try:
+        return await service.assign_job(
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, tech_id=tech_id, actor=actor, claimed=claimed
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
 
 
 async def _note(

@@ -133,3 +133,28 @@ async def test_transition_action_error_returns_400(
     fake_service.transition.side_effect = JobActionError("abandon requires a reason")
     resp = await client.post(f"/api/jobs/{uuid4()}/transition", json={"action": "abandon"})
     assert resp.status_code == 400
+
+
+async def test_assign_returns_200_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.assign_job.return_value = _detail(assigned_tech_id="t3")
+    resp = await client.post(f"/api/jobs/{uuid4()}/assign", json={"tech_id": "t3"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assigned_tech_id"] == "t3"
+    fake_session.commit.assert_awaited()
+
+
+async def test_assign_rejects_missing_tech(client: AsyncClient) -> None:
+    resp = await client.post(f"/api/jobs/{uuid4()}/assign", json={})
+    assert resp.status_code == 422
+
+
+async def test_claim_returns_200_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.assign_job.return_value = _detail(assigned_tech_id="t1")
+    resp = await client.post(f"/api/jobs/{uuid4()}/claim")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assigned_tech_id"] == "t1"
+    fake_session.commit.assert_awaited()
