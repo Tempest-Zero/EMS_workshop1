@@ -33,9 +33,12 @@ const LOCAL_ONLY_FIELDS = [
   "bill",
   "revenue",
   "completion",
+  "assignedTechId",
   "photos",
   "followUps",
 ];
+
+const techName = (id) => technicians.find((t) => t.id === id)?.name || id;
 
 const newId = () => Math.random().toString(36).slice(2, 10);
 
@@ -224,6 +227,31 @@ export function AppProvider({ children }) {
       }
     },
     [replaceFromDetail, addToast]
+  );
+
+  // ── Dual assignment (Module 2): manager assigns OR technician free-picks ──
+  const assignJob = useCallback(
+    (jobId, techId) => {
+      patchJob(
+        jobId,
+        (j) => ({ ...j, assignedTechId: techId }),
+        nowEntry(`Assigned to ${techName(techId)}`, "assign")
+      );
+      addToast(`Assigned to ${techName(techId)}`, "default");
+    },
+    [patchJob, addToast]
+  );
+
+  const claimJob = useCallback(
+    (jobId, techId) => {
+      patchJob(
+        jobId,
+        (j) => ({ ...j, assignedTechId: techId }),
+        nowEntry(`Claimed by ${techName(techId)} from the work list`, "assign")
+      );
+      addToast(`Claimed by ${techName(techId)}`, "ready");
+    },
+    [patchJob, addToast]
   );
 
   // ── Work completion (Module 3) → auto-generates the bill (Module 4) ──
@@ -444,6 +472,8 @@ export function AppProvider({ children }) {
     addEstimateLineItem,
     setEstimateStatus,
     markReady,
+    assignJob,
+    claimJob,
     submitCompletion,
     setNegotiatedBill,
     logPayment,

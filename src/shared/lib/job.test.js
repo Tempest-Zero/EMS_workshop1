@@ -15,6 +15,7 @@ import {
   completionLabor,
   completionTotal,
   hasCompletion,
+  isUnassigned,
 } from "@shared/lib/job";
 
 const job = {
@@ -131,5 +132,14 @@ describe("work completion → bill", () => {
     expect(hasCompletion({ completion })).toBe(true);
     expect(hasCompletion({ completion: null })).toBe(false);
     expect(hasCompletion({})).toBe(false);
+  });
+});
+
+describe("assignment", () => {
+  it("isUnassigned is true with no technician", () => {
+    expect(isUnassigned({ assignedTechId: null })).toBe(true);
+    expect(isUnassigned({ assignedTechId: "" })).toBe(true);
+    expect(isUnassigned({})).toBe(true);
+    expect(isUnassigned({ assignedTechId: "t3" })).toBe(false);
   });
 });

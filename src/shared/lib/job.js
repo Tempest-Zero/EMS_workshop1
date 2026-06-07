@@ -98,6 +98,11 @@ export function hasCompletion(job) {
   return Boolean(job.completion && job.completion.submittedAt);
 }
 
+// ── Assignment (Module 2 dual assignment) ──────────────────────────────────
+export function isUnassigned(job) {
+  return !job.assignedTechId;
+}
+
 export const ESTIMATE_LABEL = {
   none: "Not yet estimated",
   estimated: "Estimated — Awaiting Approval",
