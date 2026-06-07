@@ -17,9 +17,9 @@ import {
   Ban,
   Truck,
   CalendarClock,
-  Image as ImageLucide,
 } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
+import JobMediaGallery from "@features/media/components/JobMediaGallery";
 import { Card, Button, SectionHeader, EmptyState, Field, inputClass } from "@shared/ui/primitives";
 import StatusChip from "@shared/ui/StatusChip";
 import Avatar from "@shared/ui/Avatar";
@@ -208,25 +208,8 @@ export default function JobDetail({ tech = false }) {
           </ul>
         )}
 
-        {/* Photos */}
-        <div className="mt-4">
-          <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Photos</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {(job.photos || []).map((p, i) => (
-              <div
-                key={i}
-                className="flex h-20 w-20 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-slate-300 bg-slate-50 text-slate-400"
-              >
-                <ImageLucide className="h-5 w-5" />
-                <span className="text-[10px] font-semibold">{p.label}</span>
-              </div>
-            ))}
-            <button className="flex h-20 w-20 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-slate-300 bg-white text-slate-400 transition hover:border-slate-400 hover:text-slate-600">
-              <Plus className="h-5 w-5" />
-              <span className="text-[10px] font-semibold">Add</span>
-            </button>
-          </div>
-        </div>
+        {/* Before/After capture — live from the technician app */}
+        <JobMediaGallery jobKey={String(job.token)} />
       </Card>
 
       {/* Estimate */}
