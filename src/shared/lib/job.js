@@ -16,12 +16,52 @@ export function hasEstimate(job) {
   return job.estimate && job.estimate.status && job.estimate.status !== "none";
 }
 
-export function amountOwed(job) {
+// ── Bill: original (auto-generated) vs negotiated (agreed on-site) ──────────
+function estimateAmount(job) {
   return hasEstimate(job) ? estimateTotal(job.estimate) : 0;
 }
 
+// The auto-generated "original" bill. Falls back to the estimate total until a
+// work-completion form sets an explicit amount.
+export function billOriginal(job) {
+  return job.bill?.original != null ? job.bill.original : estimateAmount(job);
+}
+
+// The amount actually payable: the technician's negotiated figure if one was
+// logged, otherwise the original.
+export function billPayable(job) {
+  return job.bill?.negotiated != null ? job.bill.negotiated : billOriginal(job);
+}
+
+// Concession given during on-site negotiation (never negative).
+export function billDiscount(job) {
+  return Math.max(0, billOriginal(job) - billPayable(job));
+}
+
+export function isNegotiated(job) {
+  return job.bill?.negotiated != null;
+}
+
+export function hasBill(job) {
+  return billOriginal(job) > 0;
+}
+
+// ── Cash / revenue ledger ──────────────────────────────────────────────────
+export function revenueEntries(job) {
+  return Array.isArray(job.revenue) ? job.revenue : [];
+}
+
+export function amountOwed(job) {
+  return billPayable(job);
+}
+
 export function amountPaid(job) {
-  return job.payment?.paid || 0;
+  const entries = revenueEntries(job);
+  if (entries.length) {
+    // Append-only ledger: voided entries (corrections) don't count.
+    return entries.filter((e) => !e.voided).reduce((s, e) => s + Number(e.amount || 0), 0);
+  }
+  return job.payment?.paid || 0; // backward-compat with the older single-field shape
 }
 
 export function balance(job) {
