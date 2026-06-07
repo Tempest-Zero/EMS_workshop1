@@ -12,8 +12,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Phase = Literal["before", "after"]
-MediaType = Literal["video", "photo"]
+# before/after = repair evidence; remark = voice note (audio); closing = the
+# required closing video on job closure (Phase 3).
+Phase = Literal["before", "after", "remark", "closing"]
+MediaType = Literal["video", "photo", "audio"]
 MediaStatus = Literal["pending", "uploaded"]
 
 
