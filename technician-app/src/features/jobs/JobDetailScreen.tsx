@@ -1,15 +1,17 @@
 /**
  * Job Detail — customer, appliance, problem, the live timeline, and the SOP
  * actions a technician drives on-site:
- *   - add a note (Module 3 remarks)
- *   - mark the job Ready / Close it (status transitions)
- * Both call the live backend and re-render from the authoritative JobDetail the
- * endpoint returns (job + timeline), so the timeline reflects the action
- * immediately. Before/after capture bound to the job lands in M3b.
+ *   - add a note (Module 3 remarks) · mark Ready / Close (status)
+ *   - Complete Job → auto-bill (P2d)
+ *   - negotiate the bill, log cash, and correct (void) a payment (P2e, Module 4)
+ * Every action calls the live backend and re-renders from the authoritative
+ * JobDetail it returns. Cash carries a client_id so an offline retry never
+ * double-charges (the backend dedups on it).
  */
 
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import * as Crypto from "expo-crypto";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
@@ -23,12 +25,13 @@ import {
 
 import { JobMediaCapture } from "../media/JobMediaCapture";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
-import { formatPaisa } from "../../lib/money";
+import { formatPaisa, rupeesToPaisa } from "../../lib/money";
 import type { JobsStackParamList } from "./types";
 
 type Props = NativeStackScreenProps<JobsStackParamList, "JobDetail">;
 
-type Busy = "note" | "ready" | "close" | null;
+type Busy = "note" | "ready" | "close" | "negotiate" | "payment" | "void" | null;
+type PayMethod = "cash" | "card" | "online";
 
 const STATUS_COLOR: Record<string, string> = {
   open: "#2563eb",
@@ -43,6 +46,13 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
+
+  // P2e money inputs.
+  const [negotiate, setNegotiate] = useState("");
+  const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState<PayMethod>("cash");
+  const [voidingId, setVoidingId] = useState<string | null>(null);
+  const [voidReason, setVoidReason] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -90,6 +100,56 @@ export function JobDetailScreen({ route, navigation }: Props) {
     [id, busy],
   );
 
+  const negotiateBill = useCallback(async () => {
+    const paisa = rupeesToPaisa(negotiate);
+    if (paisa <= 0 || busy) return;
+    setBusy("negotiate");
+    setError(null);
+    try {
+      setJob(await jobsApi.negotiateBill(id, paisa));
+      setNegotiate("");
+    } catch {
+      setError("Couldn't save the negotiated amount — try again.");
+    } finally {
+      setBusy(null);
+    }
+  }, [id, negotiate, busy]);
+
+  const logPayment = useCallback(async () => {
+    const paisa = rupeesToPaisa(payAmount);
+    if (paisa <= 0 || busy) return;
+    setBusy("payment");
+    setError(null);
+    try {
+      // client_id → the backend dedups, so an offline retry never double-charges.
+      setJob(await jobsApi.logPayment(id, paisa, payMethod, Crypto.randomUUID()));
+      setPayAmount("");
+    } catch {
+      setError("Couldn't log the payment — try again.");
+    } finally {
+      setBusy(null);
+    }
+  }, [id, payAmount, payMethod, busy]);
+
+  const voidPayment = useCallback(
+    async (paymentId: string) => {
+      const reason = voidReason.trim();
+      if (!reason || busy) return;
+      setBusy("void");
+      setError(null);
+      try {
+        setJob(await jobsApi.voidPayment(id, paymentId, reason));
+        setVoidingId(null);
+        setVoidReason("");
+      } catch {
+        setError("Couldn't void the payment — try again.");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, voidReason, busy],
+  );
+
   if (error && !job) {
     return (
       <View style={styles.center}>
@@ -108,6 +168,10 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const statusColor = STATUS_COLOR[job.status] ?? "#64748b";
   const canReady = job.status !== "ready" && job.status !== "closed";
   const canClose = job.status !== "closed";
+  const open = job.status !== "closed";
+  const hasBill = job.bill_original_paisa != null;
+  const negotiatePaisa = rupeesToPaisa(negotiate);
+  const payPaisa = rupeesToPaisa(payAmount);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -183,7 +247,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
 
       <View style={styles.card}>
         <Text style={styles.label}>WORK &amp; BILL</Text>
-        {job.bill_original_paisa != null ? (
+        {hasBill ? (
           <>
             <View style={styles.billGrid}>
               <View style={styles.billBox}>
@@ -211,7 +275,33 @@ export function JobDetailScreen({ route, navigation }: Props) {
         ) : (
           <Text style={styles.sub}>Not completed yet — log materials, time and fuel.</Text>
         )}
-        {job.status !== "closed" ? (
+
+        {hasBill && open ? (
+          <View style={styles.inlineRow}>
+            <TextInput
+              style={[styles.input, styles.grow, styles.inlineInput]}
+              value={negotiate}
+              onChangeText={setNegotiate}
+              placeholder="Negotiated Rs"
+              keyboardType="number-pad"
+              editable={busy !== "negotiate"}
+            />
+            <Pressable
+              style={[
+                styles.btn,
+                styles.btnDark,
+                styles.inlineBtn,
+                (busy === "negotiate" || negotiatePaisa <= 0) && styles.btnBusy,
+              ]}
+              onPress={() => void negotiateBill()}
+              disabled={busy === "negotiate" || negotiatePaisa <= 0}
+            >
+              <Text style={styles.btnDarkText}>{busy === "negotiate" ? "…" : "Save"}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        {open ? (
           <Pressable
             style={styles.completeBtn}
             onPress={() => navigation.navigate("CompleteJob", { id, token })}
@@ -222,6 +312,116 @@ export function JobDetailScreen({ route, navigation }: Props) {
           </Pressable>
         ) : null}
       </View>
+
+      {hasBill || job.payments.length > 0 ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>CASH &amp; REVENUE</Text>
+
+          {job.payments.length === 0 ? (
+            <Text style={styles.sub}>No payments logged yet.</Text>
+          ) : (
+            job.payments.map((p) => (
+              <View key={p.id} style={styles.payRow}>
+                <View style={styles.grow}>
+                  <Text style={[styles.payAmt, p.voided && styles.voided]}>
+                    {formatPaisa(p.amount_paisa)} · {p.method}
+                  </Text>
+                  <Text style={styles.eventTime}>
+                    {p.recorded_at.slice(0, 10)}
+                    {p.voided ? ` · voided${p.void_reason ? ` (${p.void_reason})` : ""}` : ""}
+                  </Text>
+                </View>
+                {!p.voided && open ? (
+                  <Pressable
+                    onPress={() => {
+                      setVoidingId(p.id);
+                      setVoidReason("");
+                    }}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.correctText}>Correct</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ))
+          )}
+
+          {voidingId ? (
+            <View style={styles.voidBox}>
+              <TextInput
+                style={[styles.input, styles.inlineInput, { marginBottom: 8 }]}
+                value={voidReason}
+                onChangeText={setVoidReason}
+                placeholder="Reason for correction"
+                editable={busy !== "void"}
+              />
+              <View style={styles.statusRow}>
+                <Pressable
+                  style={[styles.btn, styles.btnOutline, styles.grow]}
+                  onPress={() => {
+                    setVoidingId(null);
+                    setVoidReason("");
+                  }}
+                >
+                  <Text style={styles.btnOutlineText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.btn,
+                    styles.btnDanger,
+                    styles.grow,
+                    (busy === "void" || !voidReason.trim()) && styles.btnBusy,
+                  ]}
+                  onPress={() => void voidPayment(voidingId)}
+                  disabled={busy === "void" || !voidReason.trim()}
+                >
+                  <Text style={styles.btnDarkText}>{busy === "void" ? "…" : "Void entry"}</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+
+          {open ? (
+            <>
+              <View style={styles.methodRow}>
+                {(["cash", "card", "online"] as const).map((m) => (
+                  <Pressable
+                    key={m}
+                    style={[styles.methodChip, payMethod === m && styles.methodChipActive]}
+                    onPress={() => setPayMethod(m)}
+                  >
+                    <Text style={[styles.methodText, payMethod === m && styles.methodTextActive]}>
+                      {m}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={styles.inlineRow}>
+                <TextInput
+                  style={[styles.input, styles.grow, styles.inlineInput]}
+                  value={payAmount}
+                  onChangeText={setPayAmount}
+                  placeholder="Amount Rs"
+                  keyboardType="number-pad"
+                  editable={busy !== "payment"}
+                />
+                <Pressable
+                  style={[
+                    styles.btn,
+                    styles.btnReady,
+                    styles.inlineBtn,
+                    (busy === "payment" || payPaisa <= 0) && styles.btnBusy,
+                  ]}
+                  onPress={() => void logPayment()}
+                  disabled={busy === "payment" || payPaisa <= 0}
+                >
+                  <Text style={styles.btnReadyText}>{busy === "payment" ? "…" : "Log payment"}</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : null}
+        </View>
+      ) : null}
 
       <Text style={styles.sectionHeader}>PHOTOS · BEFORE / AFTER</Text>
       <JobMediaCapture jobKey={String(job.token)} />
@@ -297,16 +497,44 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 8,
   },
+  inlineRow: { flexDirection: "row", gap: 8, marginTop: 10, alignItems: "center" },
+  inlineInput: { marginTop: 0, marginBottom: 0 },
+  inlineBtn: { justifyContent: "center", paddingHorizontal: 18 },
   btn: { borderRadius: 10, paddingVertical: 11, alignItems: "center" },
   btnBusy: { opacity: 0.5 },
   grow: { flex: 1 },
   btnDark: { backgroundColor: "#0f172a" },
   btnDarkText: { color: "white", fontWeight: "800", fontSize: 14 },
+  btnDanger: { backgroundColor: "#b91c1c" },
   statusRow: { flexDirection: "row", gap: 8, marginTop: 12 },
   btnReady: { backgroundColor: "#059669" },
   btnReadyText: { color: "white", fontWeight: "800", fontSize: 14 },
   btnOutline: { backgroundColor: "white", borderWidth: 1, borderColor: "#cbd5e1" },
   btnOutlineText: { color: "#475569", fontWeight: "800", fontSize: 14 },
+  payRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#f1f5f9",
+  },
+  payAmt: { fontSize: 14, fontWeight: "700", color: "#1e293b" },
+  voided: { textDecorationLine: "line-through", color: "#94a3b8" },
+  correctText: { color: "#b91c1c", fontWeight: "800", fontSize: 13 },
+  voidBox: { marginTop: 10, backgroundColor: "#fef2f2", borderRadius: 8, padding: 10 },
+  methodRow: { flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 2 },
+  methodChip: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    alignItems: "center",
+    backgroundColor: "white",
+  },
+  methodChipActive: { backgroundColor: "#0f172a", borderColor: "#0f172a" },
+  methodText: { fontSize: 13, fontWeight: "700", color: "#475569", textTransform: "capitalize" },
+  methodTextActive: { color: "white" },
   event: { paddingVertical: 6, borderTopWidth: 1, borderTopColor: "#f1f5f9" },
   eventText: { fontSize: 13, color: "#334155" },
   eventTime: { fontSize: 11, color: "#94a3b8", marginTop: 1 },
