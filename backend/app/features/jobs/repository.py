@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.jobs.models import Job
+from app.features.jobs.models import Job, JobEvent
 
 
 class JobRepository:
@@ -26,7 +26,7 @@ class JobRepository:
         current = result.scalar_one_or_none()
         return (current or 1051) + 1
 
-    async def list(
+    async def list_jobs(
         self,
         *,
         shop_id: str,
@@ -60,3 +60,15 @@ class JobRepository:
         await self._session.flush()
         await self._session.refresh(job)
         return job
+
+    # ── Timeline ─────────────────────────────────────────────────────────
+    async def list_events(self, job_id: UUID) -> list[JobEvent]:
+        stmt = select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.created_at.asc())
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
+    async def add_event(self, event: JobEvent) -> JobEvent:
+        self._session.add(event)
+        await self._session.flush()
+        await self._session.refresh(event)
+        return event

@@ -73,6 +73,55 @@ async def test_get_unknown_job_is_404(app_client: AsyncClient, auth_headers: Hea
     assert resp.status_code == 404, resp.text
 
 
+async def test_lifecycle_note_and_transition(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+
+    # Add a note → it lands on the timeline with the actor.
+    noted = await app_client.post(
+        f"/api/jobs/{job_id}/notes", json={"text": "gas low, capacitor weak"}, headers=auth_headers
+    )
+    assert noted.status_code == 201, noted.text
+    events = noted.json()["events"]
+    assert any(e["kind"] == "note" and "gas low" in e["text"] for e in events)
+    assert any(e["kind"] == "create" for e in events)  # seeded on create
+
+    # Mark ready → status + ready_since update, and a 'ready' event appends.
+    ready = await app_client.post(
+        f"/api/jobs/{job_id}/transition", json={"action": "ready"}, headers=auth_headers
+    )
+    assert ready.status_code == 200, ready.text
+    assert ready.json()["status"] == "ready"
+    assert ready.json()["ready_since"] is not None
+    assert any(e["kind"] == "ready" for e in ready.json()["events"])
+
+    # The detail endpoint now returns the full timeline.
+    detail = await app_client.get(f"/api/jobs/{job_id}", headers=auth_headers)
+    kinds = [e["kind"] for e in detail.json()["events"]]
+    assert {"create", "note", "ready"} <= set(kinds)
+    assert kinds[0] == "create"  # oldest first
+
+
+async def test_abandon_requires_reason(app_client: AsyncClient, auth_headers: Headers) -> None:
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+    bad = await app_client.post(
+        f"/api/jobs/{job_id}/transition", json={"action": "abandon"}, headers=auth_headers
+    )
+    assert bad.status_code == 400, bad.text
+
+    ok = await app_client.post(
+        f"/api/jobs/{job_id}/transition",
+        json={"action": "abandon", "reason": "irreparable"},
+        headers=auth_headers,
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["abandoned"] is True
+    assert ok.json()["status"] == "closed"
+
+
 async def test_jobs_require_auth(app_client: AsyncClient) -> None:
     assert (await app_client.get("/api/jobs")).status_code == 401
     assert (await app_client.post("/api/jobs", json=_INTAKE)).status_code == 401
