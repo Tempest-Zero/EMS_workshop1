@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.models import JobCompletion, JobEvent
+from app.features.jobs.models import JobCompletion, JobEvent, JobPayment
 from app.features.jobs.schemas import CompletionRequest, JobCreate, MaterialIn, TransitionRequest
 from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
 
@@ -50,6 +50,10 @@ def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo.add_completion = AsyncMock(side_effect=lambda c: c)
     repo.clear_materials = AsyncMock()
     repo.add_material = AsyncMock(side_effect=lambda m: m)
+    repo.list_payments = AsyncMock(return_value=[])
+    repo.get_payment = AsyncMock(return_value=None)
+    repo.get_payment_by_client = AsyncMock(return_value=None)
+    repo.add_payment = AsyncMock(side_effect=lambda p: p)
     yield JobService(repo), repo
 
 
@@ -307,3 +311,71 @@ async def test_negotiate_sets_amount_keeps_original(svc: tuple[JobService, Magic
     assert detail.bill_negotiated_paisa == 420000
     assert detail.bill_status == "negotiated"
     assert repo.add_event.await_args.args[0].kind == "bill"
+
+
+# ── cash / revenue ledger ────────────────────────────────────────────────────
+async def test_log_payment_is_idempotent_on_client_id(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    cid = uuid4()
+
+    repo.get_payment_by_client.return_value = None  # first time → record it
+    await service.log_payment(
+        job_id=job.id,
+        shop_id="default",
+        amount_paisa=200000,
+        method="cash",
+        client_id=cid,
+        actor="t1",
+    )
+    repo.add_payment.assert_awaited_once()
+
+    # Replay the same client_id (offline retry) → found → NOT charged again.
+    repo.get_payment_by_client.return_value = JobPayment(
+        job_id=job.id, client_id=cid, amount_paisa=200000, method="cash"
+    )
+    await service.log_payment(
+        job_id=job.id,
+        shop_id="default",
+        amount_paisa=200000,
+        method="cash",
+        client_id=cid,
+        actor="t1",
+    )
+    repo.add_payment.assert_awaited_once()  # still once
+
+
+async def test_void_payment_marks_voided(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    payment = JobPayment(job_id=job.id, client_id=uuid4(), amount_paisa=100000, method="cash")
+    payment.id = uuid4()
+    payment.voided = False
+    repo.get_payment.return_value = payment
+    await service.void_payment(
+        job_id=job.id, shop_id="default", payment_id=payment.id, reason="wrong amount", actor="t1"
+    )
+    assert payment.voided is True
+    assert payment.void_reason == "wrong amount"
+
+
+async def test_detail_received_excludes_voided(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.bill_original_paisa = 500000
+    repo.get.return_value = job
+
+    def _pay(amount: int, voided: bool) -> JobPayment:
+        p = JobPayment(job_id=job.id, client_id=uuid4(), amount_paisa=amount, method="cash")
+        p.id = uuid4()
+        p.voided = voided
+        p.void_reason = "x" if voided else None
+        p.recorded_at = datetime.now(UTC)
+        return p
+
+    repo.list_payments.return_value = [_pay(200000, False), _pay(100000, True)]
+    detail = await service.get_job(job_id=job.id, shop_id="default")
+    assert detail.received_paisa == 200000  # voided 100000 excluded
+    assert detail.balance_paisa == 300000  # 500000 - 200000

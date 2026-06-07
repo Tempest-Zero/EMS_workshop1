@@ -27,7 +27,9 @@ from app.features.jobs.schemas import (
     JobStatus,
     NegotiateRequest,
     NoteRequest,
+    PaymentRequest,
     TransitionRequest,
+    VoidRequest,
 )
 from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
 
@@ -228,6 +230,60 @@ async def negotiate_bill(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     except JobActionError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/payments",
+    response_model=JobDetail,
+    summary="Log a cash/revenue payment (idempotent on client_id)",
+)
+async def log_payment(
+    job_id: UUID,
+    body: PaymentRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    try:
+        detail = await service.log_payment(
+            job_id=job_id,
+            shop_id=DEFAULT_SHOP_ID,
+            amount_paisa=body.amount_paisa,
+            method=body.method,
+            client_id=body.client_id,
+            actor=principal.tech_id,
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/payments/{payment_id}/void",
+    response_model=JobDetail,
+    summary="Void (correct) a payment — append-only, kept for the audit trail",
+)
+async def void_payment(
+    job_id: UUID,
+    payment_id: UUID,
+    body: VoidRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    try:
+        detail = await service.void_payment(
+            job_id=job_id,
+            shop_id=DEFAULT_SHOP_ID,
+            payment_id=payment_id,
+            reason=body.reason,
+            actor=principal.tech_id,
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     await session.commit()
     return detail
 

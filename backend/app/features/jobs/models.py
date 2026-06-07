@@ -190,3 +190,32 @@ class JobMaterial(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
     unit_paisa: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa_text("0"))
+
+
+class JobPayment(Base):
+    """Append-only cash/revenue ledger (Module 4). A correction VOIDs a row
+    (with a reason) and re-logs — never edits or deletes. ``client_id`` makes a
+    logged payment idempotent so an offline retry never double-charges."""
+
+    __tablename__ = "job_payment"
+    __table_args__ = (
+        CheckConstraint("method IN ('cash', 'card', 'online')", name="job_payment_method_check"),
+        UniqueConstraint("client_id", name="uq_job_payment_client"),
+        Index("ix_job_payment_job", "job_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
+    )
+    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("job.id"), nullable=False)
+    client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    amount_paisa: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    method: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=sa_text("'cash'")
+    )
+    recorded_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+    voided: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
+    void_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)

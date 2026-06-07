@@ -77,6 +77,33 @@ class NegotiateRequest(BaseModel):
     note: str | None = Field(default=None, max_length=256)
 
 
+PaymentMethod = Literal["cash", "card", "online"]
+
+
+class PaymentRequest(BaseModel):
+    """Log a cash/revenue entry. ``client_id`` makes it idempotent (an offline
+    retry won't double-charge)."""
+
+    amount_paisa: int = Field(..., gt=0)
+    method: PaymentMethod = "cash"
+    client_id: UUID
+
+
+class VoidRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=256)
+
+
+class PaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    amount_paisa: int
+    method: str
+    voided: bool
+    void_reason: str | None = None
+    recorded_at: datetime
+
+
 class MaterialOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -144,8 +171,11 @@ class Job(BaseModel):
 
 
 class JobDetail(Job):
-    """A job plus its timeline + completion (returned by the detail / mutation
-    endpoints)."""
+    """A job plus its timeline, completion, and the cash/revenue ledger
+    (returned by the detail / mutation endpoints)."""
 
     events: list[JobEventOut] = []
     completion: CompletionOut | None = None
+    payments: list[PaymentOut] = []
+    received_paisa: int = 0
+    balance_paisa: int = 0
