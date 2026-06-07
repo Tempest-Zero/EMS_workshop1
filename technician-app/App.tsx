@@ -9,7 +9,6 @@ import { ClockScreen } from "./src/features/attendance/ClockScreen";
 import { AuthProvider, useAuth } from "./src/features/auth/AuthContext";
 import { LoginScreen } from "./src/features/auth/LoginScreen";
 import { JobsStack } from "./src/features/jobs/JobsStack";
-import { MediaScreen } from "./src/features/media/MediaScreen";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
 
 const Tab = createBottomTabNavigator();
@@ -17,7 +16,6 @@ const Tab = createBottomTabNavigator();
 const TAB_ICON: Record<string, keyof typeof Feather.glyphMap> = {
   "My Jobs": "clipboard",
   Clock: "clock",
-  Media: "camera",
   Profile: "user",
 };
 
@@ -35,7 +33,6 @@ function Tabs() {
     >
       <Tab.Screen name="My Jobs" component={JobsStack} />
       <Tab.Screen name="Clock" component={ClockScreen} />
-      <Tab.Screen name="Media" component={MediaScreen} />
       <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );
