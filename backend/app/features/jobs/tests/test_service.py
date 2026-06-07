@@ -217,3 +217,25 @@ async def test_transition_haul_converts_to_carry_in(svc: tuple[JobService, Magic
         job_id=job.id, shop_id="default", body=TransitionRequest(action="haul"), actor="t1"
     )
     assert detail.job_type == "carry-in"
+
+
+async def test_assign_sets_tech_and_logs_assign_event(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    detail = await service.assign_job(
+        job_id=job.id, shop_id="default", tech_id="t3", actor="t1", claimed=False
+    )
+    assert detail.assigned_tech_id == "t3"
+    assert repo.add_event.await_args.args[0].kind == "assign"
+
+
+async def test_claim_sets_tech_and_logs_claim_event(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    detail = await service.assign_job(
+        job_id=job.id, shop_id="default", tech_id="t2", actor="t2", claimed=True
+    )
+    assert detail.assigned_tech_id == "t2"
+    assert repo.add_event.await_args.args[0].kind == "claim"
