@@ -20,9 +20,13 @@ import {
   Receipt,
   RotateCcw,
   Handshake,
+  ClipboardList,
+  Clock,
+  Fuel,
 } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import JobMediaGallery from "@features/media/components/JobMediaGallery";
+import CompletionForm from "@features/jobs/components/CompletionForm";
 import { Card, Button, SectionHeader, EmptyState, Field, inputClass } from "@shared/ui/primitives";
 import StatusChip from "@shared/ui/StatusChip";
 import Avatar from "@shared/ui/Avatar";
@@ -42,6 +46,9 @@ import {
   isNegotiated,
   hasBill,
   revenueEntries,
+  hasCompletion,
+  materialsTotal,
+  completionLabor,
   ESTIMATE_LABEL,
 } from "@shared/lib/job";
 import { fmtDate, daysSince } from "@shared/lib/date";
@@ -100,6 +107,7 @@ export default function JobDetail({ tech = false }) {
   const discount = billDiscount(job);
   const negotiated = isNegotiated(job);
   const entries = revenueEntries(job);
+  const comp = job.completion;
   const closed = job.status === "closed";
   const back = tech ? "/tech/jobs" : "/jobs";
 
@@ -319,6 +327,96 @@ export default function JobDetail({ tech = false }) {
         )}
       </Card>
 
+      {/* Work Completion — materials / time / fuel / remarks (+ voice note) */}
+      <Card className="p-4 md:p-5">
+        <SectionHeader
+          title="Work Completion"
+          sub={hasCompletion(job) ? "Submitted" : "Post-job form"}
+          action={
+            !closed && (
+              <Button
+                size="sm"
+                variant={hasCompletion(job) ? "secondary" : "primary"}
+                onClick={() => setModal("completion")}
+              >
+                {hasCompletion(job) ? "Edit" : "Complete Job"}
+              </Button>
+            )
+          }
+        />
+        {hasCompletion(job) ? (
+          <div className="mt-3 space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                  <ClipboardList className="h-3.5 w-3.5" /> Materials
+                </div>
+                <div className="mt-1 text-sm font-extrabold text-slate-900">
+                  {formatPKR(materialsTotal(comp))}
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {comp.materials?.length || 0} item(s)
+                </div>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                  <Clock className="h-3.5 w-3.5" /> Time
+                </div>
+                <div className="mt-1 text-sm font-extrabold text-slate-900">
+                  {comp.timeSpentMins || 0} min
+                </div>
+                <div className="text-[11px] text-slate-400">{formatPKR(completionLabor(comp))}</div>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                  <Fuel className="h-3.5 w-3.5" /> Fuel
+                </div>
+                <div className="mt-1 text-sm font-extrabold text-slate-900">
+                  {formatPKR(comp.fuelAmount || 0)}
+                </div>
+              </div>
+            </div>
+
+            {comp.materials?.length > 0 && (
+              <ul className="space-y-1 text-sm">
+                {comp.materials.map((m, i) => (
+                  <li key={i} className="flex justify-between text-slate-600">
+                    <span>
+                      {m.name} <span className="text-slate-400">× {m.qty}</span>
+                    </span>
+                    <span className="font-semibold text-slate-700">
+                      {formatPKR(m.qty * m.unitPrice)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {comp.remarksText && (
+              <div className="rounded-lg border border-slate-100 px-3 py-2 text-sm text-slate-700">
+                {comp.remarksText}
+              </div>
+            )}
+            {comp.audio?.url && (
+              <div>
+                <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                  Voice note
+                </div>
+                <audio controls src={comp.audio.url} className="h-9 w-full" />
+              </div>
+            )}
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600">
+              <CheckCircle2 className="h-3.5 w-3.5" /> Completion submitted — bill generated below
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-slate-400">
+            Not completed yet. Log materials, time, fuel and remarks (text or voice) to generate the
+            bill.
+          </p>
+        )}
+      </Card>
+
       {/* Bill — original (auto) vs negotiated (agreed on-site) */}
       <Card className="p-4 md:p-5">
         <SectionHeader
@@ -522,6 +620,16 @@ export default function JobDetail({ tech = false }) {
         rate={app.RATE}
         onSave={(payload) => {
           app.setEstimate(job.id, payload);
+          setModal(null);
+        }}
+      />
+      <CompletionForm
+        open={modal === "completion"}
+        onClose={() => setModal(null)}
+        job={job}
+        rate={app.RATE}
+        onSave={(payload) => {
+          app.submitCompletion(job.id, payload);
           setModal(null);
         }}
       />
