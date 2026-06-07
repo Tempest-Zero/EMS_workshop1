@@ -6,16 +6,38 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+from app.core.config import settings
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.models import JobEvent
+from app.features.jobs.models import JobCompletion, JobEvent, JobMaterial
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
+    CompletionOut,
+    CompletionRequest,
     Job,
     JobCreate,
     JobDetail,
     JobEventOut,
+    MaterialIn,
+    MaterialOut,
     TransitionRequest,
 )
+
+
+def _materials_total_paisa(materials: list[MaterialIn]) -> int:
+    return sum(m.qty * m.unit_paisa for m in materials)
+
+
+def _labour_paisa(time_spent_mins: int, rate_paisa: int) -> int:
+    """Labour from time on-site, rounded to the nearest paisa — integer only."""
+    return (time_spent_mins * rate_paisa + 30) // 60
+
+
+def completion_total_paisa(body: CompletionRequest, rate_paisa: int) -> int:
+    return (
+        _materials_total_paisa(body.materials)
+        + _labour_paisa(body.time_spent_mins, rate_paisa)
+        + body.fuel_paisa
+    )
 
 
 class JobNotFoundError(LookupError):
@@ -135,6 +157,70 @@ class JobService:
         await self._repo.add_event(JobEvent(job_id=row.id, kind=kind, text=text, actor=actor))
         return await self._detail(row)
 
+    # ── Completion + bill (Module 3 post-job / Module 4) ─────────────────
+    async def submit_completion(
+        self, *, job_id: UUID, shop_id: str, body: CompletionRequest, actor: str | None
+    ) -> JobDetail:
+        """Upsert the completion form (one per job) and (re)generate the
+        original bill. Idempotent — safe to replay from the offline queue."""
+        row = await self._load(job_id, shop_id)
+
+        completion = await self._repo.get_completion(row.id)
+        if completion is None:
+            completion = await self._repo.add_completion(JobCompletion(job_id=row.id))
+        else:
+            await self._repo.clear_materials(completion.id)
+
+        completion.time_spent_mins = body.time_spent_mins
+        completion.fuel_paisa = body.fuel_paisa
+        completion.remarks_text = body.remarks_text
+        completion.remarks_audio_media_id = body.remarks_audio_media_id
+        completion.submitted_by = actor
+        completion.submitted_at = datetime.now(UTC)
+        for m in body.materials:
+            await self._repo.add_material(
+                JobMaterial(
+                    completion_id=completion.id,
+                    name=m.name.strip(),
+                    qty=m.qty,
+                    unit_paisa=m.unit_paisa,
+                )
+            )
+
+        original = completion_total_paisa(body, settings.labour_rate_paisa)
+        row.bill_original_paisa = original
+        row.bill_status = "negotiated" if row.bill_negotiated_paisa is not None else "generated"
+        row.updated_at = datetime.now(UTC)
+        await self._repo.add_event(
+            JobEvent(
+                job_id=row.id,
+                kind="complete",
+                text=f"Work completed — bill Rs {original // 100:,}",
+                actor=actor,
+            )
+        )
+        return await self._detail(row)
+
+    async def negotiate_bill(
+        self, *, job_id: UUID, shop_id: str, amount_paisa: int, note: str | None, actor: str | None
+    ) -> JobDetail:
+        row = await self._load(job_id, shop_id)
+        if row.bill_original_paisa is None:
+            raise JobActionError("no bill yet — submit the completion form first")
+        row.bill_negotiated_paisa = amount_paisa
+        row.bill_status = "negotiated"
+        row.updated_at = datetime.now(UTC)
+        suffix = f" ({note})" if note else ""
+        await self._repo.add_event(
+            JobEvent(
+                job_id=row.id,
+                kind="bill",
+                text=f"Bill negotiated → Rs {amount_paisa // 100:,}{suffix}",
+                actor=actor,
+            )
+        )
+        return await self._detail(row)
+
     # ── Internals ────────────────────────────────────────────────────────
     async def _load(self, job_id: UUID, shop_id: str) -> JobRow:
         row = await self._repo.get(job_id)
@@ -146,4 +232,15 @@ class JobService:
         events = await self._repo.list_events(row.id)
         detail = JobDetail.model_validate(row)
         detail.events = [JobEventOut.model_validate(e) for e in events]
+        completion = await self._repo.get_completion(row.id)
+        if completion is not None:
+            materials = await self._repo.list_materials(completion.id)
+            detail.completion = CompletionOut(
+                time_spent_mins=completion.time_spent_mins,
+                fuel_paisa=completion.fuel_paisa,
+                remarks_text=completion.remarks_text,
+                remarks_audio_media_id=completion.remarks_audio_media_id,
+                submitted_at=completion.submitted_at,
+                materials=[MaterialOut.model_validate(m) for m in materials],
+            )
         return detail

@@ -53,6 +53,49 @@ class AssignRequest(BaseModel):
     tech_id: str = Field(..., min_length=1, max_length=64)
 
 
+# ── Work completion + bill (Module 3 post-job / Module 4) ─────────────────────
+# Money is ALWAYS integer paisa, never floats.
+class MaterialIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    qty: int = Field(default=1, ge=1)
+    unit_paisa: int = Field(..., ge=0)
+
+
+class CompletionRequest(BaseModel):
+    """The technician's post-job completion form. Submitting it (re-)generates
+    the original bill. Idempotent: one completion per job (upsert)."""
+
+    materials: list[MaterialIn] = []
+    time_spent_mins: int = Field(default=0, ge=0)
+    fuel_paisa: int = Field(default=0, ge=0)
+    remarks_text: str | None = Field(default=None, max_length=2048)
+    remarks_audio_media_id: UUID | None = None
+
+
+class NegotiateRequest(BaseModel):
+    amount_paisa: int = Field(..., ge=0)
+    note: str | None = Field(default=None, max_length=256)
+
+
+class MaterialOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    qty: int
+    unit_paisa: int
+
+
+class CompletionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    time_spent_mins: int
+    fuel_paisa: int
+    remarks_text: str | None = None
+    remarks_audio_media_id: UUID | None = None
+    submitted_at: datetime
+    materials: list[MaterialOut] = []
+
+
 TransitionAction = Literal["ready", "close", "abandon", "reschedule", "haul"]
 
 
@@ -92,11 +135,17 @@ class Job(BaseModel):
     closed_at: date | None = None
     abandoned: bool
     abandon_reason: str | None = None
+    # Bill (integer paisa). Both amounts kept: auto original + on-site negotiated.
+    bill_original_paisa: int | None = None
+    bill_negotiated_paisa: int | None = None
+    bill_status: str = "none"
     created_at: datetime
     updated_at: datetime
 
 
 class JobDetail(Job):
-    """A job plus its timeline (returned by the detail / mutation endpoints)."""
+    """A job plus its timeline + completion (returned by the detail / mutation
+    endpoints)."""
 
     events: list[JobEventOut] = []
+    completion: CompletionOut | None = None

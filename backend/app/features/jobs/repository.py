@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.jobs.models import Job, JobEvent
+from app.features.jobs.models import Job, JobCompletion, JobEvent, JobMaterial
 
 
 class JobRepository:
@@ -72,3 +72,30 @@ class JobRepository:
         await self._session.flush()
         await self._session.refresh(event)
         return event
+
+    # ── Completion + materials ───────────────────────────────────────────
+    async def get_completion(self, job_id: UUID) -> JobCompletion | None:
+        stmt = select(JobCompletion).where(JobCompletion.job_id == job_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_materials(self, completion_id: UUID) -> list[JobMaterial]:
+        stmt = select(JobMaterial).where(JobMaterial.completion_id == completion_id)
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
+    async def add_completion(self, completion: JobCompletion) -> JobCompletion:
+        self._session.add(completion)
+        await self._session.flush()
+        await self._session.refresh(completion)
+        return completion
+
+    async def clear_materials(self, completion_id: UUID) -> None:
+        await self._session.execute(
+            delete(JobMaterial).where(JobMaterial.completion_id == completion_id)
+        )
+
+    async def add_material(self, material: JobMaterial) -> JobMaterial:
+        self._session.add(material)
+        await self._session.flush()
+        return material
