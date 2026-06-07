@@ -20,14 +20,22 @@ import { mapApiJob, toCreateBody } from "@features/jobs/data/mapJob";
 import { technicians } from "@features/technicians/data/technicians";
 import { todayRecord } from "@features/attendance/data/attendance";
 import { nowEntry, fmtTime } from "@shared/lib/date";
-import { estimateTotal, billOriginal } from "@shared/lib/job";
+import { estimateTotal, billOriginal, completionTotal } from "@shared/lib/job";
 
 const RATE = 1200;
 
 // Fields the API doesn't own yet (J4) — preserved across server refreshes so a
-// locally-set estimate/bill/revenue isn't wiped when a lifecycle action returns
-// the authoritative job.
-const LOCAL_ONLY_FIELDS = ["estimate", "payment", "bill", "revenue", "photos", "followUps"];
+// locally-set estimate/bill/revenue/completion isn't wiped when a lifecycle
+// action returns the authoritative job.
+const LOCAL_ONLY_FIELDS = [
+  "estimate",
+  "payment",
+  "bill",
+  "revenue",
+  "completion",
+  "photos",
+  "followUps",
+];
 
 const newId = () => Math.random().toString(36).slice(2, 10);
 
@@ -216,6 +224,27 @@ export function AppProvider({ children }) {
       }
     },
     [replaceFromDetail, addToast]
+  );
+
+  // ── Work completion (Module 3) → auto-generates the bill (Module 4) ──
+  const submitCompletion = useCallback(
+    (jobId, payload) => {
+      const original = completionTotal(payload, RATE);
+      patchJob(
+        jobId,
+        (j) => ({
+          ...j,
+          completion: { ...payload, submittedAt: new Date().toISOString() },
+          bill: { ...(j.bill || {}), original, status: "generated" },
+        }),
+        nowEntry(
+          `Work completed — bill generated Rs ${original.toLocaleString("en-PK")}`,
+          "estimate"
+        )
+      );
+      addToast("Completion submitted — bill generated", "ready");
+    },
+    [patchJob, addToast]
   );
 
   // ── Billing & revenue (Module 4) ─────────────────────────────────────
@@ -415,6 +444,7 @@ export function AppProvider({ children }) {
     addEstimateLineItem,
     setEstimateStatus,
     markReady,
+    submitCompletion,
     setNegotiatedBill,
     logPayment,
     voidRevenueEntry,

@@ -76,6 +76,7 @@ export function mapApiJob(api) {
     payment: { method: "pending", paid: 0 },
     bill: { original: null, negotiated: null, status: "none" },
     revenue: [],
+    completion: null,
     photos: [],
     followUps: [],
   };

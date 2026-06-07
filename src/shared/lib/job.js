@@ -68,6 +68,36 @@ export function balance(job) {
   return amountOwed(job) - amountPaid(job);
 }
 
+// ── Work completion → auto-generated bill ──────────────────────────────────
+const DEFAULT_RATE = 1200;
+
+export function materialsTotal(completion) {
+  if (!completion || !completion.materials) return 0;
+  return completion.materials.reduce(
+    (s, m) => s + (Number(m.qty) || 0) * (Number(m.unitPrice) || 0),
+    0
+  );
+}
+
+export function completionLabor(completion, rate = DEFAULT_RATE) {
+  if (!completion) return 0;
+  return Math.round(((Number(completion.timeSpentMins) || 0) / 60) * rate);
+}
+
+// The bill the completion form generates: materials + labour (from time) + fuel.
+export function completionTotal(completion, rate = DEFAULT_RATE) {
+  if (!completion) return 0;
+  return (
+    materialsTotal(completion) +
+    completionLabor(completion, rate) +
+    (Number(completion.fuelAmount) || 0)
+  );
+}
+
+export function hasCompletion(job) {
+  return Boolean(job.completion && job.completion.submittedAt);
+}
+
 export const ESTIMATE_LABEL = {
   none: "Not yet estimated",
   estimated: "Estimated — Awaiting Approval",

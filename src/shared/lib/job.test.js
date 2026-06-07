@@ -11,6 +11,10 @@ import {
   isNegotiated,
   hasBill,
   revenueEntries,
+  materialsTotal,
+  completionLabor,
+  completionTotal,
+  hasCompletion,
 } from "@shared/lib/job";
 
 const job = {
@@ -96,5 +100,36 @@ describe("revenue ledger", () => {
       revenue: [{ id: "a", amount: 4200, voided: false }],
     };
     expect(balance(j)).toBe(0);
+  });
+});
+
+describe("work completion → bill", () => {
+  const completion = {
+    materials: [
+      { name: "Relay", qty: 2, unitPrice: 600 }, // 1200
+      { name: "Gas top-up", qty: 1, unitPrice: 1500 }, // 1500
+    ],
+    timeSpentMins: 90, // 1.5h × 1200 = 1800 labour
+    fuelAmount: 500,
+    submittedAt: "2026-06-07T12:00:00Z",
+  };
+
+  it("materialsTotal sums qty × unitPrice", () => {
+    expect(materialsTotal(completion)).toBe(2700);
+  });
+
+  it("completionLabor converts minutes to labour at the rate", () => {
+    expect(completionLabor(completion, 1200)).toBe(1800);
+  });
+
+  it("completionTotal = materials + labour + fuel", () => {
+    // 2700 + 1800 + 500
+    expect(completionTotal(completion, 1200)).toBe(5000);
+  });
+
+  it("hasCompletion reflects a submitted form", () => {
+    expect(hasCompletion({ completion })).toBe(true);
+    expect(hasCompletion({ completion: null })).toBe(false);
+    expect(hasCompletion({})).toBe(false);
   });
 });
