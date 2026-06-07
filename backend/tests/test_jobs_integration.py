@@ -179,6 +179,49 @@ async def test_negotiate_without_completion_is_400(
     assert resp.status_code == 400, resp.text
 
 
+async def test_payment_ledger_dedup_and_void(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+    # Generate a Rs 5000 bill.
+    await app_client.post(
+        f"/api/jobs/{job_id}/completion",
+        json={"materials": [{"name": "Compressor", "qty": 1, "unit_paisa": 500000}]},
+        headers=auth_headers,
+    )
+
+    cid = "11111111-1111-1111-1111-111111111111"
+    p1 = await app_client.post(
+        f"/api/jobs/{job_id}/payments",
+        json={"amount_paisa": 200000, "method": "cash", "client_id": cid},
+        headers=auth_headers,
+    )
+    assert p1.status_code == 200, p1.text
+    assert p1.json()["received_paisa"] == 200000
+    assert p1.json()["balance_paisa"] == 300000  # 500000 − 200000
+
+    # Replay the same client_id (offline retry) → idempotent, no double-charge.
+    p2 = await app_client.post(
+        f"/api/jobs/{job_id}/payments",
+        json={"amount_paisa": 200000, "method": "cash", "client_id": cid},
+        headers=auth_headers,
+    )
+    assert p2.json()["received_paisa"] == 200000
+    assert len(p2.json()["payments"]) == 1
+
+    # Void it → received back to 0, but the row is kept (audit trail).
+    payment_id = p2.json()["payments"][0]["id"]
+    voided = await app_client.post(
+        f"/api/jobs/{job_id}/payments/{payment_id}/void",
+        json={"reason": "wrong amount"},
+        headers=auth_headers,
+    )
+    assert voided.status_code == 200, voided.text
+    assert voided.json()["received_paisa"] == 0
+    assert voided.json()["payments"][0]["voided"] is True
+
+
 async def test_jobs_require_auth(app_client: AsyncClient) -> None:
     assert (await app_client.get("/api/jobs")).status_code == 401
     assert (await app_client.post("/api/jobs", json=_INTAKE)).status_code == 401

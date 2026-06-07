@@ -8,7 +8,7 @@ from uuid import UUID
 
 from app.core.config import settings
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.models import JobCompletion, JobEvent, JobMaterial
+from app.features.jobs.models import JobCompletion, JobEvent, JobMaterial, JobPayment
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     CompletionOut,
@@ -19,6 +19,7 @@ from app.features.jobs.schemas import (
     JobEventOut,
     MaterialIn,
     MaterialOut,
+    PaymentOut,
     TransitionRequest,
 )
 
@@ -221,6 +222,63 @@ class JobService:
         )
         return await self._detail(row)
 
+    # ── Cash / revenue ledger (Module 4) ─────────────────────────────────
+    async def log_payment(
+        self,
+        *,
+        job_id: UUID,
+        shop_id: str,
+        amount_paisa: int,
+        method: str,
+        client_id: UUID,
+        actor: str | None,
+    ) -> JobDetail:
+        """Append a payment. Idempotent on ``client_id`` — replaying the same
+        queued action (offline retry) does NOT double-charge."""
+        row = await self._load(job_id, shop_id)
+        existing = await self._repo.get_payment_by_client(client_id)
+        if existing is None:
+            await self._repo.add_payment(
+                JobPayment(
+                    job_id=row.id,
+                    client_id=client_id,
+                    amount_paisa=amount_paisa,
+                    method=method,
+                    recorded_by=actor,
+                )
+            )
+            await self._repo.add_event(
+                JobEvent(
+                    job_id=row.id,
+                    kind="payment",
+                    text=f"Payment Rs {amount_paisa // 100:,} ({method})",
+                    actor=actor,
+                )
+            )
+            row.updated_at = datetime.now(UTC)
+        return await self._detail(row)
+
+    async def void_payment(
+        self, *, job_id: UUID, shop_id: str, payment_id: UUID, reason: str, actor: str | None
+    ) -> JobDetail:
+        """Correct a payment by voiding it (kept for the audit trail)."""
+        row = await self._load(job_id, shop_id)
+        payment = await self._repo.get_payment(payment_id)
+        if payment is None or payment.job_id != row.id:
+            raise JobNotFoundError(f"payment {payment_id} not found")
+        payment.voided = True
+        payment.void_reason = reason
+        await self._repo.add_event(
+            JobEvent(
+                job_id=row.id,
+                kind="payment",
+                text=f"Payment voided — {reason}",
+                actor=actor,
+            )
+        )
+        row.updated_at = datetime.now(UTC)
+        return await self._detail(row)
+
     # ── Internals ────────────────────────────────────────────────────────
     async def _load(self, job_id: UUID, shop_id: str) -> JobRow:
         row = await self._repo.get(job_id)
@@ -243,4 +301,15 @@ class JobService:
                 submitted_at=completion.submitted_at,
                 materials=[MaterialOut.model_validate(m) for m in materials],
             )
+
+        payments = await self._repo.list_payments(row.id)
+        detail.payments = [PaymentOut.model_validate(p) for p in payments]
+        received = sum(p.amount_paisa for p in payments if not p.voided)
+        payable = (
+            row.bill_negotiated_paisa
+            if row.bill_negotiated_paisa is not None
+            else (row.bill_original_paisa or 0)
+        )
+        detail.received_paisa = received
+        detail.balance_paisa = payable - received
         return detail

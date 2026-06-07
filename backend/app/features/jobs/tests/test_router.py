@@ -202,3 +202,32 @@ async def test_negotiate_without_bill_returns_400(
     fake_service.negotiate_bill.side_effect = JobActionError("no bill yet")
     resp = await client.post(f"/api/jobs/{uuid4()}/bill/negotiate", json={"amount_paisa": 1000})
     assert resp.status_code == 400
+
+
+async def test_log_payment_returns_200_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.log_payment.return_value = _detail(received_paisa=200000, balance_paisa=300000)
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/payments",
+        json={"amount_paisa": 200000, "method": "cash", "client_id": str(uuid4())},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["received_paisa"] == 200000
+    fake_session.commit.assert_awaited()
+
+
+async def test_payment_rejects_zero_amount(client: AsyncClient) -> None:
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/payments",
+        json={"amount_paisa": 0, "method": "cash", "client_id": str(uuid4())},
+    )
+    assert resp.status_code == 422  # amount_paisa must be > 0
+
+
+async def test_void_payment_returns_200(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.void_payment.return_value = _detail(received_paisa=0, balance_paisa=500000)
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/payments/{uuid4()}/void", json={"reason": "duplicate"}
+    )
+    assert resp.status_code == 200, resp.text

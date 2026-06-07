@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.jobs.models import Job, JobCompletion, JobEvent, JobMaterial
+from app.features.jobs.models import Job, JobCompletion, JobEvent, JobMaterial, JobPayment
 
 
 class JobRepository:
@@ -99,3 +99,27 @@ class JobRepository:
         self._session.add(material)
         await self._session.flush()
         return material
+
+    # ── Payments (cash/revenue ledger) ───────────────────────────────────
+    async def list_payments(self, job_id: UUID) -> list[JobPayment]:
+        stmt = (
+            select(JobPayment)
+            .where(JobPayment.job_id == job_id)
+            .order_by(JobPayment.recorded_at.asc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
+    async def get_payment(self, payment_id: UUID) -> JobPayment | None:
+        return await self._session.get(JobPayment, payment_id)
+
+    async def get_payment_by_client(self, client_id: UUID) -> JobPayment | None:
+        stmt = select(JobPayment).where(JobPayment.client_id == client_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def add_payment(self, payment: JobPayment) -> JobPayment:
+        self._session.add(payment)
+        await self._session.flush()
+        await self._session.refresh(payment)
+        return payment
