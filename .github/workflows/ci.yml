@@ -70,6 +70,12 @@ jobs:
       - name: Jest
         run: npm test -- --ci --passWithNoTests
 
+      # Catches Metro resolution errors that tsc/jest miss — e.g. a native dep
+      # (expo-font/expo-audio) missing from package.json would fail the EAS
+      # bundle step but pass type-check. Fail here instead of at build time.
+      - name: Bundle check (expo export)
+        run: npx expo export --platform android
+
   # ── Backend (FastAPI) ─────────────────────────────────────────────────────
   backend:
     name: Backend · Ruff · Mypy · Pytest
