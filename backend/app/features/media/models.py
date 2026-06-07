@@ -22,11 +22,14 @@ from app.core.db import Base
 class Phase(StrEnum):
     BEFORE = "before"
     AFTER = "after"
+    REMARK = "remark"  # voice note on the completion form
+    CLOSING = "closing"  # required closing video on closure (Phase 3)
 
 
 class MediaType(StrEnum):
     VIDEO = "video"
     PHOTO = "photo"
+    AUDIO = "audio"
 
 
 class MediaStatus(StrEnum):
@@ -37,8 +40,10 @@ class MediaStatus(StrEnum):
 class JobMedia(Base):
     __tablename__ = "job_media"
     __table_args__ = (
-        CheckConstraint("phase IN ('before', 'after')", name="job_media_phase_check"),
-        CheckConstraint("type IN ('video', 'photo')", name="job_media_type_check"),
+        CheckConstraint(
+            "phase IN ('before', 'after', 'remark', 'closing')", name="job_media_phase_check"
+        ),
+        CheckConstraint("type IN ('video', 'photo', 'audio')", name="job_media_type_check"),
         CheckConstraint("status IN ('pending', 'uploaded')", name="job_media_status_check"),
         # Declared here so it matches migration 0001 (otherwise `alembic check`
         # reports drift). `job_id` gets its index from `index=True` below.

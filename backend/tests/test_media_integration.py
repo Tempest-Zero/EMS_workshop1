@@ -46,6 +46,24 @@ async def test_media_lifecycle(app_client: AsyncClient, auth_headers: dict[str, 
     assert listed_after.json()["before"] == []
 
 
+async def test_media_accepts_audio_remark(
+    app_client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    # The completion voice note is a media row: type=audio, phase=remark.
+    # A 201 proves the DB CHECK constraints now allow them (migration 0009).
+    created = await app_client.post(
+        "/api/jobs/job-audio-1/media",
+        json={
+            "phase": "remark",
+            "type": "audio",
+            "filename": "note.m4a",
+            "content_type": "audio/m4a",
+        },
+        headers=auth_headers,
+    )
+    assert created.status_code == 201, created.text
+
+
 async def test_media_requires_auth(app_client: AsyncClient) -> None:
     # No bearer token → the guard rejects it.
     resp = await app_client.get("/api/jobs/job-int-1/media")
