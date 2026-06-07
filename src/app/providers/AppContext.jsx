@@ -20,14 +20,16 @@ import { mapApiJob, toCreateBody } from "@features/jobs/data/mapJob";
 import { technicians } from "@features/technicians/data/technicians";
 import { todayRecord } from "@features/attendance/data/attendance";
 import { nowEntry, fmtTime } from "@shared/lib/date";
-import { estimateTotal } from "@shared/lib/job";
+import { estimateTotal, billOriginal } from "@shared/lib/job";
 
 const RATE = 1200;
 
 // Fields the API doesn't own yet (J4) — preserved across server refreshes so a
-// locally-set estimate/payment isn't wiped when a lifecycle action returns the
-// authoritative job.
-const LOCAL_ONLY_FIELDS = ["estimate", "payment", "photos", "followUps"];
+// locally-set estimate/bill/revenue isn't wiped when a lifecycle action returns
+// the authoritative job.
+const LOCAL_ONLY_FIELDS = ["estimate", "payment", "bill", "revenue", "photos", "followUps"];
+
+const newId = () => Math.random().toString(36).slice(2, 10);
 
 const AppContext = createContext(null);
 
@@ -216,20 +218,70 @@ export function AppProvider({ children }) {
     [replaceFromDetail, addToast]
   );
 
-  const logPayment = useCallback(
-    (jobId, { amount, method }) => {
+  // ── Billing & revenue (Module 4) ─────────────────────────────────────
+  // Record the negotiated amount agreed on-site. Both the auto-generated
+  // original and the negotiated figure are kept (hard accounting requirement).
+  const setNegotiatedBill = useCallback(
+    (jobId, { amount, note }) => {
+      const value = Number(amount);
       patchJob(
         jobId,
         (j) => ({
           ...j,
-          payment: { method, paid: (j.payment?.paid || 0) + Number(amount) },
+          bill: {
+            ...(j.bill || {}),
+            original: billOriginal(j),
+            negotiated: value,
+            status: "negotiated",
+          },
         }),
         nowEntry(
-          `Payment logged: Rs ${Number(amount).toLocaleString("en-PK")} (${method})`,
+          `Bill negotiated → agreed Rs ${value.toLocaleString("en-PK")}${note ? ` (${note})` : ""}`,
           "payment"
         )
       );
+      addToast("Negotiated amount recorded", "ready");
+    },
+    [patchJob, addToast]
+  );
+
+  // Append a cash/revenue entry. The ledger is append-only — corrections void
+  // an entry rather than editing it (see voidRevenueEntry).
+  const logPayment = useCallback(
+    (jobId, { amount, method }) => {
+      const e = nowEntry(
+        `Payment logged: Rs ${Number(amount).toLocaleString("en-PK")} (${method})`,
+        "payment"
+      );
+      const entry = {
+        id: newId(),
+        amount: Number(amount),
+        method,
+        ts: e.ts,
+        label: e.label,
+        voided: false,
+      };
+      patchJob(jobId, (j) => ({ ...j, revenue: [...(j.revenue || []), entry] }), e);
       addToast("Payment recorded", "ready");
+    },
+    [patchJob, addToast]
+  );
+
+  // Correct a revenue entry: mark it voided (kept for the audit trail) with a
+  // reason. Re-logging the right amount is a normal logPayment afterward.
+  const voidRevenueEntry = useCallback(
+    (jobId, entryId, reason) => {
+      patchJob(
+        jobId,
+        (j) => ({
+          ...j,
+          revenue: (j.revenue || []).map((e) =>
+            e.id === entryId ? { ...e, voided: true, voidReason: reason } : e
+          ),
+        }),
+        nowEntry(`Revenue entry voided — ${reason}`, "payment")
+      );
+      addToast("Entry voided for correction", "default");
     },
     [patchJob, addToast]
   );
@@ -363,7 +415,9 @@ export function AppProvider({ children }) {
     addEstimateLineItem,
     setEstimateStatus,
     markReady,
+    setNegotiatedBill,
     logPayment,
+    voidRevenueEntry,
     closeJob,
     followUp,
     abandonJob,

@@ -74,6 +74,8 @@ export function mapApiJob(api) {
     // Not yet API-backed (J4) — empty so the existing detail view renders cleanly.
     estimate: { status: "none", laborHours: 0, laborRate: DEFAULT_LABOR_RATE, parts: [] },
     payment: { method: "pending", paid: 0 },
+    bill: { original: null, negotiated: null, status: "none" },
+    revenue: [],
     photos: [],
     followUps: [],
   };
