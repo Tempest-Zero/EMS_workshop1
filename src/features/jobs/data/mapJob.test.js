@@ -102,6 +102,57 @@ describe("mapApiJob", () => {
     });
   });
 
+  it("maps the GPS route (fuel paisa→rupees) and the punch pins (P3e)", () => {
+    const job = mapApiJob({
+      id: "u",
+      token: 1,
+      status: "ready",
+      job_type: "home-visit",
+      customer_name: "A",
+      appliance_type: "AC",
+      problem: "",
+      abandoned: false,
+      route: { distance_m: 2500, fuel_paisa: 5000 },
+      locations: [
+        {
+          id: "l1",
+          kind: "depart_workshop",
+          lat: 24.86,
+          lng: 67.0,
+          is_mock: false,
+          captured_at: "2026-06-08T09:00:00Z",
+        },
+        {
+          id: "l2",
+          kind: "arrive_customer",
+          lat: 24.87,
+          lng: 67.01,
+          is_mock: true,
+          captured_at: "2026-06-08T09:20:00Z",
+        },
+      ],
+    });
+
+    expect(job.route).toEqual({ distanceM: 2500, fuel: 50 }); // 5000 paisa → Rs 50
+    expect(job.locations).toHaveLength(2);
+    expect(job.locations[1]).toMatchObject({ kind: "arrive_customer", isMock: true });
+  });
+
+  it("defaults route to null and locations to [] when absent", () => {
+    const job = mapApiJob({
+      id: "u",
+      token: 1,
+      status: "open",
+      job_type: "carry-in",
+      customer_name: "A",
+      appliance_type: "AC",
+      problem: "",
+      abandoned: false,
+    });
+    expect(job.route).toBeNull();
+    expect(job.locations).toEqual([]);
+  });
+
   it("maps the events array to the timeline and surfaces note-kind events", () => {
     const job = mapApiJob({
       id: "u",

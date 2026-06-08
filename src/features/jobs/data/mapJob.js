@@ -68,6 +68,24 @@ function mapPayments(payments) {
   }));
 }
 
+/** The derived route (P3e): straight-line distance + fuel estimate (paisa→rupees). */
+function mapRoute(route) {
+  if (!route) return null;
+  return { distanceM: route.distance_m, fuel: paisaToRupees(route.fuel_paisa) };
+}
+
+/** The GPS punches that bound the route, shaped for the view. */
+function mapLocations(locations) {
+  return (locations || []).map((l) => ({
+    id: l.id,
+    kind: l.kind,
+    lat: l.lat,
+    lng: l.lng,
+    isMock: Boolean(l.is_mock),
+    capturedAt: l.captured_at,
+  }));
+}
+
 /** The work-completion form → the view's `completion` shape (or `null`). */
 function mapCompletion(c) {
   if (!c) return null;
@@ -121,6 +139,9 @@ export function mapApiJob(api) {
     bill: mapBill(api),
     revenue: mapPayments(api.payments),
     completion: mapCompletion(api.completion),
+    // P3e — GPS route + fuel estimate and the punch pins (oversight, read-only).
+    route: mapRoute(api.route),
+    locations: mapLocations(api.locations),
     // Still local-only mocks until their own slice — empty so the view renders.
     estimate: { status: "none", laborHours: 0, laborRate: DEFAULT_LABOR_RATE, parts: [] },
     payment: { method: "pending", paid: 0 },

@@ -451,6 +451,66 @@ export default function JobDetail({ tech = false }) {
         )}
       </Card>
 
+      {/* Route & Fuel — derived from the technician's GPS punches (read-only) */}
+      {isVisit && (
+        <Card className="p-4 md:p-5">
+          <SectionHeader
+            title="Route & Fuel"
+            sub={job.route ? "From the technician's GPS punches" : "Awaiting GPS punches"}
+          />
+          {job.route ? (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
+                  <MapPin className="h-3.5 w-3.5" /> Distance
+                </div>
+                <div className="mt-1 text-xl font-extrabold text-slate-900">
+                  {(job.route.distanceM / 1000).toFixed(1)} km
+                </div>
+                <div className="text-[11px] text-slate-400">Straight-line, workshop → customer</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
+                  <Fuel className="h-3.5 w-3.5" /> Fuel Estimate
+                </div>
+                <div className="mt-1 text-xl font-extrabold text-slate-900">
+                  {formatPKR(job.route.fuel)}
+                </div>
+                <div className="text-[11px] text-slate-400">Distance × the per-km rate</div>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-slate-400">
+              No route yet — the technician punches GPS on leaving the workshop and arriving at the
+              customer.
+            </p>
+          )}
+
+          {job.locations?.length > 0 && (
+            <ul className="mt-3 space-y-2">
+              {job.locations.map((loc) => (
+                <li
+                  key={loc.id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-sm"
+                >
+                  <span className="font-semibold text-slate-700">
+                    {loc.kind === "depart_workshop" ? "Left workshop" : "Arrived at customer"}
+                    {loc.isMock && (
+                      <span className="ml-2 rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-bold text-red-600">
+                        MOCK
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-xs text-slate-400">
+                    {loc.capturedAt ? loc.capturedAt.slice(0, 16).replace("T", " ") : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+
       {/* Bill — original (auto) vs negotiated (agreed on-site) */}
       <Card className="p-4 md:p-5">
         <SectionHeader

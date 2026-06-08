@@ -108,6 +108,7 @@ export default function JobMediaGallery({ jobKey }) {
         <div className="mt-3 space-y-3">
           <Group title="Before" items={data.before} />
           <Group title="After" items={data.after} />
+          {data.closing?.length > 0 ? <Group title="Closing" items={data.closing} /> : null}
         </div>
       ) : busy ? (
         <div className="mt-2 text-sm text-slate-400">Loading…</div>
