@@ -38,3 +38,43 @@ export function addJobFollowup(id, text) {
 export function transitionJob(id, body) {
   return apiSend(`/api/jobs/${encodeURIComponent(id)}/transition`, "POST", body);
 }
+
+// ── Work completion + bill + cash ledger (Modules 3/4) ───────────────────────
+// Money is integer paisa over the wire. Each returns the full job detail.
+
+/**
+ * Submit the work-completion form → (re)generates the original bill. `body` is
+ * `{ materials: [{name, qty, unit_paisa}], time_spent_mins, fuel_paisa, remarks_text? }`.
+ */
+export function submitCompletion(id, body) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/completion`, "POST", body);
+}
+
+/** Record the negotiated bill amount (the auto original is kept alongside it). */
+export function negotiateBill(id, amountPaisa, note) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/bill/negotiate`, "POST", {
+    amount_paisa: amountPaisa,
+    note: note || null,
+  });
+}
+
+/**
+ * Log a cash/revenue payment. `clientId` (a UUID) makes it idempotent so a retry
+ * never double-charges.
+ */
+export function logPayment(id, amountPaisa, method, clientId) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/payments`, "POST", {
+    amount_paisa: amountPaisa,
+    method,
+    client_id: clientId,
+  });
+}
+
+/** Void (correct) a payment — append-only, kept struck-through for the audit trail. */
+export function voidPayment(id, paymentId, reason) {
+  return apiSend(
+    `/api/jobs/${encodeURIComponent(id)}/payments/${encodeURIComponent(paymentId)}/void`,
+    "POST",
+    { reason }
+  );
+}

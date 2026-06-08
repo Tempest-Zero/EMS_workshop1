@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fetchJobs, createJob, addJobNote, addJobFollowup, transitionJob } from "./jobsApi";
+import {
+  fetchJobs,
+  createJob,
+  addJobNote,
+  addJobFollowup,
+  transitionJob,
+  submitCompletion,
+  negotiateBill,
+  logPayment,
+  voidPayment,
+} from "./jobsApi";
 
 beforeEach(() => {
   globalThis.fetch = vi.fn(() =>
@@ -53,5 +63,52 @@ describe("jobsApi", () => {
     expect(url).toContain("/api/jobs/job-1/transition");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ action: "abandon", reason: "irreparable" });
+  });
+
+  it("submitCompletion posts the paisa body to the completion endpoint", async () => {
+    const body = {
+      materials: [{ name: "Relay", qty: 2, unit_paisa: 60000 }],
+      time_spent_mins: 90,
+      fuel_paisa: 50000,
+      remarks_text: "replaced relay",
+    };
+    await submitCompletion("job-1", body);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/completion");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual(body);
+  });
+
+  it("negotiateBill posts amount_paisa + note", async () => {
+    await negotiateBill("job-1", 420000, "waived call-out");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/bill/negotiate");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ amount_paisa: 420000, note: "waived call-out" });
+  });
+
+  it("negotiateBill sends null note when omitted", async () => {
+    await negotiateBill("job-1", 420000);
+    expect(JSON.parse(globalThis.fetch.mock.calls[0][1].body).note).toBeNull();
+  });
+
+  it("logPayment posts amount_paisa, method and client_id", async () => {
+    await logPayment("job-1", 100000, "cash", "client-uuid-1");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/payments");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({
+      amount_paisa: 100000,
+      method: "cash",
+      client_id: "client-uuid-1",
+    });
+  });
+
+  it("voidPayment posts the reason to the nested void endpoint", async () => {
+    await voidPayment("job-1", "pay-9", "duplicate entry");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/payments/pay-9/void");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ reason: "duplicate entry" });
   });
 });
