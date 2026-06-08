@@ -22,7 +22,7 @@ export default function App() {
   if (!isAuthenticated) return <Login />;
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
         {/* Manager (desktop) */}
         <Route element={<ManagerLayout />}>
