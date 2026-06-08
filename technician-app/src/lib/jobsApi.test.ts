@@ -63,4 +63,10 @@ describe("jobsApi", () => {
     expect(body.is_mock).toBe(false);
     expect(body.client_id).toBe("cid-1");
   });
+
+  it("surfaces a timeout error when the request aborts", async () => {
+    mockFetch.mockReset();
+    mockFetch.mockRejectedValue(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+    await expect(jobsApi.list()).rejects.toThrow(/timed out/);
+  });
 });

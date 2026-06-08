@@ -6,7 +6,7 @@
  */
 
 import NetInfo from "@react-native-community/netinfo";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 
 import { loadQueue, type QueuedPunch } from "./queue";
@@ -14,6 +14,12 @@ import { punch } from "./punch";
 import { syncNow } from "./sync";
 
 const DEFAULT_TECH = "t1";
+
+// Retry-while-pending backoff: start at 3s, double up to 60s. The effect re-runs
+// (resetting to base) whenever pendingCount changes — i.e. on progress or a new
+// punch — so a permanently-failing item backs off instead of hammering at 3s.
+const SYNC_BASE_MS = 3_000;
+const SYNC_MAX_MS = 60_000;
 
 export function useAttendance() {
   const [techId, setTechId] = useState(DEFAULT_TECH);
@@ -50,11 +56,31 @@ export function useAttendance() {
   const pendingCount = useMemo(() => all.filter((p) => !p.done).length, [all]);
   const clockedIn = punches[0]?.kind === "clock_in";
 
-  // Keep retrying + refreshing while anything is unsynced (self-clears at 0).
+  // Keep retrying while anything is unsynced, with exponential backoff so a
+  // stuck punch doesn't poll the network every 3s forever. Re-running on a
+  // pendingCount change (progress / new punch) resets the delay to base.
+  const delayRef = useRef(SYNC_BASE_MS);
   useEffect(() => {
-    if (pendingCount === 0) return undefined;
-    const id = setInterval(() => void syncNow().then(refresh), 3000);
-    return () => clearInterval(id);
+    if (pendingCount === 0) {
+      delayRef.current = SYNC_BASE_MS;
+      return undefined;
+    }
+    delayRef.current = SYNC_BASE_MS;
+    let cancelled = false;
+    let handle: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      handle = setTimeout(() => {
+        if (cancelled) return;
+        void syncNow().then(refresh);
+        delayRef.current = Math.min(delayRef.current * 2, SYNC_MAX_MS);
+        tick();
+      }, delayRef.current);
+    };
+    tick();
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
   }, [pendingCount, refresh]);
 
   const doPunch = useCallback(
