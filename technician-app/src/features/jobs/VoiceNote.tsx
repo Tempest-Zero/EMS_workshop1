@@ -1,53 +1,21 @@
 /**
- * Voice-note recorder for the completion form (Module 3 "remarks: text OR
- * audio"). Records via expo-audio (SDK 52) and hands the local file uri up;
- * CompleteJobScreen uploads it as a media row (type=audio) and links its id.
+ * Voice-note recorder for the completion form (Module 3 "remarks: text OR audio").
  *
- * Records **AAC in an .m4a / MPEG-4 container** on purpose: the manager web plays
- * the clip back in a desktop browser <audio> element, and the platform defaults
- * (Android 3GP/AMR, iOS CAF/PCM) don't play in browsers.
+ * Uses **expo-av**, not expo-audio: expo-audio 0.3.5's recorder throws
+ * `IllegalStateException` on `stop()` across this device regardless of config
+ * (audio focus, explicit options, mono — all tried). expo-av is deprecated in
+ * SDK 52 but is the mature, reliable recorder; migrate to a fixed expo-audio at
+ * SDK 53.
  *
- * Reliability notes for expo-audio 0.3.x on Android:
- *  - `setAudioModeAsync({ allowsRecording: true })` is called BEFORE recording to
- *    acquire Android audio focus. Without it the native recorder never leaves the
- *    "initial" state and `stop()` throws — the "couldn't stop recording" bug.
- *  - The elapsed-time counter is a plain JS interval (a `useRef`), not
- *    `useAudioRecorderState`, whose 2 Hz native polling can race with `stop()`.
- *  - A mounted sentinel + cleanup release the mic / audio focus and clear timers
- *    on unmount or app-background, so the OS mic never stays locked.
+ * Records **AAC in an .m4a / MPEG-4 container** (HIGH_QUALITY preset) so the
+ * manager web can play it back in a browser <audio> element. The clip uri is
+ * handed up; CompleteJobScreen uploads it as a media row (type=audio, audio/mp4).
  */
 
-import {
-  AudioQuality,
-  IOSOutputFormat,
-  requestRecordingPermissionsAsync,
-  setAudioModeAsync,
-  useAudioPlayer,
-  useAudioPlayerStatus,
-  useAudioRecorder,
-  type RecordingOptions,
-} from "expo-audio";
+import { Audio, type AVPlaybackStatus } from "expo-av";
 import * as FileSystem from "expo-file-system";
 import { useEffect, useRef, useState } from "react";
 import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
-
-// AAC-LC in an MPEG-4 (.m4a) container — universally decodable by Chromium,
-// WebKit and Firefox, so the manager-web <audio> player can play it.
-const M4A_OPTIONS: RecordingOptions = {
-  extension: ".m4a",
-  sampleRate: 44100,
-  numberOfChannels: 2,
-  bitRate: 128000,
-  android: { outputFormat: "mpeg4", audioEncoder: "aac" },
-  ios: {
-    outputFormat: IOSOutputFormat.MPEG4AAC,
-    audioQuality: AudioQuality.MAX,
-    linearPCMBitDepth: 16,
-    linearPCMIsBigEndian: false,
-    linearPCMIsFloat: false,
-  },
-  web: { mimeType: "audio/mp4", bitsPerSecond: 128000 },
-};
 
 const MAX_MS = 120_000; // safety cap — auto-stop a runaway recording at 2 minutes
 const TICK_MS = 200;
@@ -64,18 +32,18 @@ export function VoiceNote({
   uri: string | null;
   onChange: (uri: string | null) => void;
 }) {
-  const recorder = useAudioRecorder(M4A_OPTIONS);
-  const player = useAudioPlayer(uri ?? undefined);
-  const status = useAudioPlayerStatus(player);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mounted = useRef(true);
 
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [posMs, setPosMs] = useState(0);
+  const [durMs, setDurMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
-
-  const mounted = useRef(true);
-  const recordingRef = useRef(false);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearTimer = () => {
     if (timer.current) {
@@ -84,18 +52,28 @@ export function VoiceNote({
     }
   };
 
+  const onStatus = (s: AVPlaybackStatus) => {
+    if (!s.isLoaded || !mounted.current) return;
+    setPlaying(s.isPlaying);
+    setPosMs(s.positionMillis);
+    setDurMs(s.durationMillis ?? 0);
+    if (s.didJustFinish) setPlaying(false);
+  };
+
   const stop = async () => {
-    if (!recordingRef.current) return;
-    recordingRef.current = false;
+    const rec = recordingRef.current;
+    if (!rec) return;
+    recordingRef.current = null;
     clearTimer();
     setBusy(true);
     try {
-      await recorder.stop();
-      const out = recorder.uri;
+      await rec.stopAndUnloadAsync();
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      const out = rec.getURI();
       if (!out) {
         if (mounted.current) setError("Recording failed — please try again.");
       } else {
-        // Android can leave a 0-byte cache file under memory pressure — verify it.
+        // Guard against a 0-byte cache anomaly before we hand the clip up.
         const info = await FileSystem.getInfoAsync(out, { size: true });
         const ok = info.exists && (!("size" in info) || info.size > 0);
         if (mounted.current) {
@@ -103,11 +81,11 @@ export function VoiceNote({
           else setError("Recording was empty — please try again.");
         }
       }
-    } catch {
-      if (mounted.current) setError("Couldn't stop recording — try again.");
+    } catch (e) {
+      if (mounted.current) {
+        setError(`Couldn't stop recording: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
-      // Release audio focus so background audio resumes and the mic isn't held.
-      await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
       if (mounted.current) {
         setRecording(false);
         setBusy(false);
@@ -118,16 +96,16 @@ export function VoiceNote({
   const start = async () => {
     setError(null);
     try {
-      const perm = await requestRecordingPermissionsAsync();
+      const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) {
         setError("Microphone permission needed — enable it in Settings.");
         return;
       }
-      // Acquire audio focus BEFORE preparing — the fix for stop() throwing.
-      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      recordingRef.current = true;
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await rec.startAsync();
+      recordingRef.current = rec;
       setRecording(true);
       setElapsedMs(0);
       clearTimer();
@@ -139,70 +117,97 @@ export function VoiceNote({
           return next;
         });
       }, TICK_MS);
-    } catch {
-      recordingRef.current = false;
+    } catch (e) {
+      recordingRef.current = null;
       clearTimer();
-      await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
       if (mounted.current) {
         setRecording(false);
-        setError("Couldn't start recording — try again.");
+        setError(`Couldn't start recording: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   };
 
-  const togglePlay = () => {
-    if (status.playing) {
-      player.pause();
-    } else {
-      if (status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration)) {
-        void player.seekTo(0);
+  const togglePlay = async () => {
+    const sound = soundRef.current;
+    if (!sound) return;
+    try {
+      if (playing) {
+        await sound.pauseAsync();
+      } else {
+        if (durMs > 0 && posMs >= durMs) await sound.setPositionAsync(0);
+        await sound.playAsync();
       }
-      player.play();
+    } catch {
+      if (mounted.current) setError("Couldn't play the recording.");
     }
   };
 
-  // Release the mic + clear timers on unmount; auto-stop if the app backgrounds.
+  // Preload the recorded clip so its duration shows and play/pause is instant;
+  // unload when the clip changes or is deleted.
+  useEffect(() => {
+    if (!uri) return undefined;
+    let active = true;
+    let local: Audio.Sound | null = null;
+    void (async () => {
+      try {
+        const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: false }, onStatus);
+        if (!active) {
+          await sound.unloadAsync().catch(() => {});
+          return;
+        }
+        local = sound;
+        soundRef.current = sound;
+      } catch {
+        /* leave the player unavailable; recording still works */
+      }
+    })();
+    return () => {
+      active = false;
+      void local?.unloadAsync().catch(() => {});
+      soundRef.current = null;
+      setPlaying(false);
+      setPosMs(0);
+      setDurMs(0);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uri]);
+
+  // Cleanup on unmount; auto-stop a recording if the app leaves the foreground.
   useEffect(() => {
     mounted.current = true;
     const sub = AppState.addEventListener("change", (next) => {
-      if (next !== "active" && recordingRef.current) {
-        recordingRef.current = false;
-        clearTimer();
-        recorder.stop().catch(() => {});
-        void setAudioModeAsync({ allowsRecording: false }).catch(() => {});
-        if (mounted.current) {
-          setRecording(false);
-          setBusy(false);
-        }
-      }
+      if (next !== "active" && recordingRef.current) void stop();
     });
     return () => {
       mounted.current = false;
       clearTimer();
       sub.remove();
-      if (recordingRef.current) recorder.stop().catch(() => {});
-      void setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      void recordingRef.current?.stopAndUnloadAsync().catch(() => {});
+      void soundRef.current?.unloadAsync().catch(() => {});
+      void Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
     };
-  }, [recorder]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <View style={styles.box}>
       {error ? <Text style={styles.err}>{error}</Text> : null}
       {uri ? (
         <View style={styles.row}>
-          <Pressable style={styles.play} onPress={togglePlay}>
-            <Text style={styles.playText}>{status.playing ? "❚❚ Pause" : "▶ Play"}</Text>
+          <Pressable style={styles.play} onPress={() => void togglePlay()}>
+            <Text style={styles.playText}>{playing ? "❚❚ Pause" : "▶ Play"}</Text>
           </Pressable>
           <View style={styles.grow}>
             <Text style={styles.ok}>Voice note recorded</Text>
             <Text style={styles.dur}>
-              {fmt(status.currentTime * 1000)} / {fmt(status.duration * 1000)}
+              {fmt(posMs)} / {fmt(durMs)}
             </Text>
           </View>
           <Pressable
             style={styles.ghost}
             onPress={() => {
-              if (status.playing) player.pause();
+              void soundRef.current?.pauseAsync().catch(() => {});
               onChange(null);
             }}
           >
@@ -211,9 +216,7 @@ export function VoiceNote({
         </View>
       ) : recording ? (
         <Pressable style={styles.stop} onPress={() => void stop()} disabled={busy}>
-          <Text style={styles.stopText}>
-            {busy ? "Saving…" : `■ Stop · ${fmt(elapsedMs)}`}
-          </Text>
+          <Text style={styles.stopText}>{busy ? "Saving…" : `■ Stop · ${fmt(elapsedMs)}`}</Text>
         </Pressable>
       ) : (
         <Pressable style={styles.rec} onPress={() => void start()}>
@@ -242,12 +245,7 @@ const styles = StyleSheet.create({
   recText: { color: "#b91c1c", fontWeight: "800", fontSize: 14 },
   stop: { backgroundColor: "#b91c1c", borderRadius: 8, paddingVertical: 10, alignItems: "center" },
   stopText: { color: "white", fontWeight: "800", fontSize: 14, fontVariant: ["tabular-nums"] },
-  play: {
-    backgroundColor: "#0f172a",
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
+  play: { backgroundColor: "#0f172a", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
   playText: { color: "white", fontWeight: "800", fontSize: 13 },
   ghost: {
     borderWidth: 1,
