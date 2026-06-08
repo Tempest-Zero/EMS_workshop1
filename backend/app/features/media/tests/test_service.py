@@ -185,12 +185,15 @@ async def test_list_for_job_groups_by_phase(
         _media(phase="before"),
         _media(phase="after"),
         _media(phase="before"),
+        _media(phase="closing", type="video"),
+        _media(phase="remark", type="audio"),  # not gallery media → excluded
     ]
 
     out = await svc.list_for_job(job_id="job-1")
 
     assert len(out.before) == 2
     assert len(out.after) == 1
+    assert len(out.closing) == 1
 
 
 async def test_list_for_job_does_not_mint_playback_for_pending(

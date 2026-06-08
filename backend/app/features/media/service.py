@@ -131,10 +131,13 @@ class MediaService:
         rows = await self._repo.list_for_job(job_id)
         before: list[MediaItem] = []
         after: list[MediaItem] = []
+        closing: list[MediaItem] = []
+        buckets = {"before": before, "after": after, "closing": closing}
         for m in rows:
-            item = self._to_item(m)
-            (before if m.phase == "before" else after).append(item)
-        return MediaList(before=before, after=after)
+            bucket = buckets.get(m.phase)
+            if bucket is not None:  # remark audio isn't gallery media → skip
+                bucket.append(self._to_item(m))
+        return MediaList(before=before, after=after, closing=closing)
 
     # ── Internals ───────────────────────────────────────────────────────
     async def _load(self, job_id: str, media_id: UUID) -> JobMedia:

@@ -90,7 +90,7 @@ async def test_list_returns_grouped(client: AsyncClient, fake_service: AsyncMock
     fake_service.list_for_job.return_value = MediaList(before=[], after=[])
     response = await client.get("/api/jobs/job-1/media")
     assert response.status_code == 200
-    assert response.json() == {"before": [], "after": []}
+    assert response.json() == {"before": [], "after": [], "closing": []}
 
 
 async def test_delete_returns_204(

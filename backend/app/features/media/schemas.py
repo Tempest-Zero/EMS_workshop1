@@ -64,7 +64,10 @@ class MediaItem(BaseModel):
 
 
 class MediaList(BaseModel):
-    """Grouped media response for `GET /api/jobs/{job_id}/media`."""
+    """Grouped media response for `GET /api/jobs/{job_id}/media`. ``closing`` is
+    the closure video (Phase 3); ``remark`` audio is intentionally not surfaced
+    here (it's played from the completion form, not the evidence gallery)."""
 
     before: list[MediaItem]
     after: list[MediaItem]
+    closing: list[MediaItem] = []
