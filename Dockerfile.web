@@ -1,0 +1,37 @@
+# Manager web (Vite SPA) — its own Railway service, separate from the backend.
+# Multi-stage: build the static bundle with Node, then serve it with a tiny
+# static server on $PORT. The SPA talks to the backend over HTTP via the
+# VITE_API_URL baked in at build time (CORS is configured on the backend).
+#
+# Why a separate Dockerfile (not the backend one): the web is an isolated
+# service. The backend's Dockerfile + deploy stay completely untouched.
+
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM node:20-alpine AS build
+WORKDIR /app
+
+# Install deps first so the layer caches when only source changes.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# App source (.dockerignore keeps node_modules / dist / backend out of context).
+COPY . .
+
+# Vite inlines env at build time. Railway passes the service variable of the
+# same name into this ARG during the image build.
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build
+
+# ── Serve stage ──────────────────────────────────────────────────────────────
+FROM node:20-alpine AS serve
+WORKDIR /app
+RUN npm install -g serve@14
+
+COPY --from=build /app/dist ./dist
+
+# Railway injects $PORT. `serve -s` returns index.html for unknown paths so
+# client-side routes (e.g. /jobs/5) deep-link correctly.
+ENV PORT=8080
+EXPOSE 8080
+CMD ["sh", "-c", "serve -s dist -l ${PORT:-8080}"]
