@@ -13,6 +13,7 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
+import * as ImagePicker from "expo-image-picker";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
@@ -26,6 +27,7 @@ import {
 
 import { getLocation } from "../attendance/location";
 import { JobMediaCapture } from "../media/JobMediaCapture";
+import { uploadMedia } from "../media/uploadMedia";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
 import type { JobsStackParamList } from "./types";
@@ -95,21 +97,55 @@ export function JobDetailScreen({ route, navigation }: Props) {
     }
   }, [id, note, busy]);
 
-  const transition = useCallback(
-    async (action: "ready" | "close") => {
-      if (busy) return;
-      setBusy(action);
-      setError(null);
-      try {
-        setJob(await jobsApi.transition(id, action));
-      } catch {
-        setError(`Couldn't ${action === "ready" ? "mark ready" : "close the job"} — try again.`);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [id, busy],
-  );
+  const markReady = useCallback(async () => {
+    if (busy) return;
+    setBusy("ready");
+    setError(null);
+    try {
+      setJob(await jobsApi.transition(id, "ready"));
+    } catch {
+      setError("Couldn't mark ready — try again.");
+    } finally {
+      setBusy(null);
+    }
+  }, [id, busy]);
+
+  // Closing a job requires a closing video (P3c gate). Record it first, upload it
+  // (phase=closing, keyed on the token), then transition to close. Capturing the
+  // clip reserves a media row, so even a slow upload satisfies the gate.
+  const closeWithVideo = useCallback(async () => {
+    if (busy) return;
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      setError("Camera permission is needed to record the closing video.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      quality: 0.85,
+      videoMaxDuration: 60,
+    });
+    if (result.canceled || result.assets.length === 0) return; // aborted → don't close
+    const asset = result.assets[0];
+    if (!asset) return;
+    setBusy("close");
+    setError(null);
+    try {
+      await uploadMedia({
+        jobId: String(token),
+        phase: "closing",
+        type: "video",
+        uri: asset.uri,
+        filename: asset.fileName ?? `closing-${Date.now()}.mp4`,
+        contentType: asset.mimeType ?? "video/mp4",
+      });
+      setJob(await jobsApi.transition(id, "close"));
+    } catch {
+      setError("Couldn't close — the closing video didn't upload. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  }, [id, token, busy]);
 
   const negotiateBill = useCallback(async () => {
     const paisa = rupeesToPaisa(negotiate);
@@ -268,7 +304,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
           {canReady ? (
             <Pressable
               style={[styles.btn, styles.btnReady, busy === "ready" && styles.btnBusy, styles.grow]}
-              onPress={() => void transition("ready")}
+              onPress={() => void markReady()}
               disabled={!!busy}
             >
               <Text style={styles.btnReadyText}>{busy === "ready" ? "…" : "Mark Ready"}</Text>
@@ -282,10 +318,12 @@ export function JobDetailScreen({ route, navigation }: Props) {
                 busy === "close" && styles.btnBusy,
                 styles.grow,
               ]}
-              onPress={() => void transition("close")}
+              onPress={() => void closeWithVideo()}
               disabled={!!busy}
             >
-              <Text style={styles.btnOutlineText}>{busy === "close" ? "…" : "Close job"}</Text>
+              <Text style={styles.btnOutlineText}>
+                {busy === "close" ? "…" : "Close + video"}
+              </Text>
             </Pressable>
           ) : null}
         </View>
