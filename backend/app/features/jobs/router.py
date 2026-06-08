@@ -14,7 +14,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_session
+from app.core.storage import StorageClient, get_storage
 from app.features.identity.deps import CurrentPrincipal
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
@@ -33,17 +35,27 @@ from app.features.jobs.schemas import (
     VoidRequest,
 )
 from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
+from app.features.media.repository import MediaRepository
+from app.features.media.service import MediaService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+StorageDep = Annotated[StorageClient, Depends(get_storage)]
 
 
 def get_service(session: SessionDep) -> JobService:
     return JobService(JobRepository(session))
 
 
+# The close-gate (P3c) needs to check for a `closing` media row, so it reaches the
+# media slice through its public service (not its table). Scoped to transition.
+def get_media_service(session: SessionDep, storage: StorageDep) -> MediaService:
+    return MediaService(MediaRepository(session), storage, settings.r2_max_upload_bytes)
+
+
 ServiceDep = Annotated[JobService, Depends(get_service)]
+MediaServiceDep = Annotated[MediaService, Depends(get_media_service)]
 
 ShopId = Annotated[str, Query(max_length=64)]
 
@@ -137,12 +149,17 @@ async def transition(
     job_id: UUID,
     body: TransitionRequest,
     service: ServiceDep,
+    media: MediaServiceDep,
     session: SessionDep,
     principal: CurrentPrincipal,
 ) -> JobDetail:
     try:
         detail = await service.transition(
-            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id
+            job_id=job_id,
+            shop_id=DEFAULT_SHOP_ID,
+            body=body,
+            actor=principal.tech_id,
+            media=media,
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e

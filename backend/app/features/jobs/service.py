@@ -32,6 +32,7 @@ from app.features.jobs.schemas import (
     RouteOut,
     TransitionRequest,
 )
+from app.features.media.service import MediaService
 
 
 def _materials_total_paisa(materials: list[MaterialIn]) -> int:
@@ -159,7 +160,13 @@ class JobService:
         return await self._detail(row)
 
     async def transition(
-        self, *, job_id: UUID, shop_id: str, body: TransitionRequest, actor: str | None
+        self,
+        *,
+        job_id: UUID,
+        shop_id: str,
+        body: TransitionRequest,
+        actor: str | None,
+        media: MediaService | None = None,
     ) -> JobDetail:
         row = await self._load(job_id, shop_id)
         today = datetime.now(UTC).date()
@@ -169,6 +176,14 @@ class JobService:
             row.ready_since = today
             kind, text = "ready", "Marked Ready"
         elif body.action == "close":
+            # Closing-video gate (Phase 3): a job can't be closed without at least
+            # one `closing` media row. Offline-tolerant — a pending (not-yet-
+            # uploaded) row counts, so a tech who captured the clip offline can
+            # still close. Media is keyed on the job's token (string).
+            if media is not None:
+                closing = await media.count_phase(job_id=str(row.token), phase="closing")
+                if closing == 0:
+                    raise JobActionError("a closing video is required to close")
             row.status = "closed"
             row.closed_at = today
             kind, text = "status", "Job closed"
