@@ -75,8 +75,10 @@ export function CompleteJobScreen({ route, navigation }: Props) {
             phase: "remark",
             type: "audio",
             uri: audioUri,
+            // .m4a / AAC served as audio/mp4 — the MIME desktop browsers accept on
+            // <audio> (audio/x-m4a is rejected by Safari). Matches VoiceNote's encoder.
             filename: "remark.m4a",
-            contentType: "audio/m4a",
+            contentType: "audio/mp4",
           });
           audioId = m.id;
         } catch {
