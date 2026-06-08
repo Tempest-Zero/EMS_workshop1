@@ -64,12 +64,42 @@ export interface Payment {
   recorded_at: string;
 }
 
+export type LocationKind = "depart_workshop" | "arrive_customer";
+
+export interface JobLocation {
+  id: string;
+  kind: string;
+  lat: number;
+  lng: number;
+  accuracy_m: number | null;
+  is_mock: boolean;
+  captured_at: string;
+  device_time: string | null;
+}
+
+export interface Route {
+  distance_m: number;
+  fuel_paisa: number;
+}
+
+export interface LocationInput {
+  kind: LocationKind;
+  lat: number;
+  lng: number;
+  accuracy_m?: number | null;
+  is_mock: boolean;
+  device_time?: string | null;
+  client_id: string;
+}
+
 export interface JobDetail extends Job {
   events: JobEvent[];
   completion: Completion | null;
   payments: Payment[];
   received_paisa: number;
   balance_paisa: number;
+  locations: JobLocation[];
+  route: Route | null;
 }
 
 export type TransitionAction = "ready" | "close" | "abandon" | "reschedule" | "haul";
@@ -141,4 +171,13 @@ export const jobsApi = {
       `/api/jobs/${encodeURIComponent(id)}/payments/${encodeURIComponent(paymentId)}/void`,
       { method: "POST", body: JSON.stringify({ reason }) },
     ),
+
+  // ── GPS route (Phase 3) ──────────────────────────────────────────────
+  // Record a punch (depart workshop / arrive customer). client_id makes it
+  // idempotent — replaying a queued punch never double-records.
+  recordLocation: (id: string, body: LocationInput) =>
+    request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}/locations`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

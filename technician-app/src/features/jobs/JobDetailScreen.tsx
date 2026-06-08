@@ -4,9 +4,10 @@
  *   - add a note (Module 3 remarks) · mark Ready / Close (status)
  *   - Complete Job → auto-bill (P2d)
  *   - negotiate the bill, log cash, and correct (void) a payment (P2e, Module 4)
+ *   - GPS punches for the home-visit route → distance + fuel estimate (P3b)
  * Every action calls the live backend and re-renders from the authoritative
- * JobDetail it returns. Cash carries a client_id so an offline retry never
- * double-charges (the backend dedups on it).
+ * JobDetail it returns. Cash + punches carry a client_id so an offline retry
+ * never double-records (the backend dedups on it).
  */
 
 import { useFocusEffect } from "@react-navigation/native";
@@ -23,6 +24,7 @@ import {
   View,
 } from "react-native";
 
+import { getLocation } from "../attendance/location";
 import { JobMediaCapture } from "../media/JobMediaCapture";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
@@ -30,7 +32,16 @@ import type { JobsStackParamList } from "./types";
 
 type Props = NativeStackScreenProps<JobsStackParamList, "JobDetail">;
 
-type Busy = "note" | "ready" | "close" | "negotiate" | "payment" | "void" | null;
+type Busy =
+  | "note"
+  | "ready"
+  | "close"
+  | "negotiate"
+  | "payment"
+  | "void"
+  | "depart"
+  | "arrive"
+  | null;
 type PayMethod = "cash" | "card" | "online";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -150,6 +161,38 @@ export function JobDetailScreen({ route, navigation }: Props) {
     [id, voidReason, busy],
   );
 
+  const recordPunch = useCallback(
+    async (kind: "depart_workshop" | "arrive_customer") => {
+      if (busy) return;
+      setBusy(kind === "depart_workshop" ? "depart" : "arrive");
+      setError(null);
+      try {
+        const loc = await getLocation();
+        if (loc.lat == null || loc.lng == null) {
+          setError("Couldn't get your location — enable GPS/location and try again.");
+          return;
+        }
+        // client_id → the backend dedups, so an offline retry never double-records.
+        setJob(
+          await jobsApi.recordLocation(id, {
+            kind,
+            lat: loc.lat,
+            lng: loc.lng,
+            accuracy_m: loc.accuracy_m,
+            is_mock: loc.is_mock_location,
+            device_time: new Date().toISOString(),
+            client_id: Crypto.randomUUID(),
+          }),
+        );
+      } catch {
+        setError("Couldn't record the location — try again.");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, busy],
+  );
+
   if (error && !job) {
     return (
       <View style={styles.center}>
@@ -172,6 +215,9 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const hasBill = job.bill_original_paisa != null;
   const negotiatePaisa = rupeesToPaisa(negotiate);
   const payPaisa = rupeesToPaisa(payAmount);
+  const isVisit = job.job_type === "home-visit";
+  const hasDepart = job.locations.some((l) => l.kind === "depart_workshop");
+  const hasArrive = job.locations.some((l) => l.kind === "arrive_customer");
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -244,6 +290,77 @@ export function JobDetailScreen({ route, navigation }: Props) {
           ) : null}
         </View>
       </View>
+
+      {isVisit ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>ROUTE &amp; FUEL</Text>
+          {job.route ? (
+            <View style={styles.billGrid}>
+              <View style={styles.billBox}>
+                <Text style={styles.billBoxLabel}>Distance</Text>
+                <Text style={styles.billBoxValue}>
+                  {(job.route.distance_m / 1000).toFixed(1)} km
+                </Text>
+              </View>
+              <View style={styles.billBox}>
+                <Text style={styles.billBoxLabel}>Fuel est.</Text>
+                <Text style={styles.billBoxValue}>{formatPaisa(job.route.fuel_paisa)}</Text>
+              </View>
+            </View>
+          ) : (
+            <Text style={styles.sub}>Punch both ends to estimate route distance and fuel.</Text>
+          )}
+
+          {job.locations.length > 0 ? (
+            <View style={styles.pinList}>
+              {job.locations.map((loc) => (
+                <View key={loc.id} style={styles.event}>
+                  <Text style={styles.eventText}>
+                    {loc.kind === "depart_workshop" ? "Left workshop" : "Arrived at customer"}
+                    {loc.is_mock ? " · ⚠ mock location" : ""}
+                  </Text>
+                  <Text style={styles.eventTime}>
+                    {loc.captured_at.slice(0, 16).replace("T", " ")}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          {open ? (
+            <View style={styles.statusRow}>
+              <Pressable
+                style={[
+                  styles.btn,
+                  styles.btnOutline,
+                  styles.grow,
+                  busy === "depart" && styles.btnBusy,
+                ]}
+                onPress={() => void recordPunch("depart_workshop")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnOutlineText}>
+                  {busy === "depart" ? "…" : hasDepart ? "✓ Leaving" : "Leaving workshop"}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.btn,
+                  styles.btnOutline,
+                  styles.grow,
+                  busy === "arrive" && styles.btnBusy,
+                ]}
+                onPress={() => void recordPunch("arrive_customer")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnOutlineText}>
+                  {busy === "arrive" ? "…" : hasArrive ? "✓ Arrived" : "Arrived at customer"}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.label}>WORK &amp; BILL</Text>
@@ -535,6 +652,7 @@ const styles = StyleSheet.create({
   methodChipActive: { backgroundColor: "#0f172a", borderColor: "#0f172a" },
   methodText: { fontSize: 13, fontWeight: "700", color: "#475569", textTransform: "capitalize" },
   methodTextActive: { color: "white" },
+  pinList: { marginTop: 8 },
   event: { paddingVertical: 6, borderTopWidth: 1, borderTopColor: "#f1f5f9" },
   eventText: { fontSize: 13, color: "#334155" },
   eventTime: { fontSize: 11, color: "#94a3b8", marginTop: 1 },

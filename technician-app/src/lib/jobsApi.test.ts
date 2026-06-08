@@ -44,4 +44,23 @@ describe("jobsApi", () => {
     expect(url).toContain("/api/jobs/job-1/assign");
     expect(JSON.parse(init?.body as string).tech_id).toBe("t3");
   });
+
+  it("recordLocation POSTs a GPS punch with its client_id", async () => {
+    await jobsApi.recordLocation("job-1", {
+      kind: "depart_workshop",
+      lat: 24.8607,
+      lng: 67.0011,
+      accuracy_m: 12,
+      is_mock: false,
+      client_id: "cid-1",
+    });
+    const [url, init] = firstCall();
+    expect(url).toContain("/api/jobs/job-1/locations");
+    expect(init?.method).toBe("POST");
+    const body = JSON.parse(init?.body as string);
+    expect(body.kind).toBe("depart_workshop");
+    expect(body.lat).toBe(24.8607);
+    expect(body.is_mock).toBe(false);
+    expect(body.client_id).toBe("cid-1");
+  });
 });
