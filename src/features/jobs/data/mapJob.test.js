@@ -35,10 +35,71 @@ describe("mapApiJob", () => {
     expect(job.appliance.type).toBe("Refrigerator");
     expect(job.createdAt).toBe("2026-05-22"); // date-only
     expect(job.waitingReason).toBe("Awaiting customer approval");
-    // Not-yet-API-backed sections come back empty so the UI renders.
+    // Still-local sections come back empty so the UI renders.
     expect(job.estimate.status).toBe("none");
     expect(job.notes).toEqual([]);
     expect(job.timeline).toEqual([]);
+    // No bill/completion/ledger on the wire → empty (null amounts, not Rs 0).
+    expect(job.bill).toEqual({ original: null, negotiated: null, status: "none" });
+    expect(job.completion).toBeNull();
+    expect(job.revenue).toEqual([]);
+  });
+
+  it("maps the bill, completion and ledger from paisa to rupees (P2f)", () => {
+    const job = mapApiJob({
+      id: "u",
+      token: 1,
+      status: "ready",
+      job_type: "carry-in",
+      customer_name: "A",
+      appliance_type: "AC",
+      problem: "",
+      abandoned: false,
+      bill_original_paisa: 500000,
+      bill_negotiated_paisa: 420000,
+      bill_status: "negotiated",
+      completion: {
+        time_spent_mins: 90,
+        fuel_paisa: 50000,
+        remarks_text: "regassed",
+        submitted_at: "2026-06-07T12:00:00Z",
+        materials: [{ name: "Relay", qty: 2, unit_paisa: 60000 }],
+      },
+      payments: [
+        {
+          id: "p1",
+          amount_paisa: 420000,
+          method: "cash",
+          voided: false,
+          void_reason: null,
+          recorded_at: "2026-06-07T12:05:00Z",
+        },
+        {
+          id: "p2",
+          amount_paisa: 100000,
+          method: "card",
+          voided: true,
+          void_reason: "duplicate",
+          recorded_at: "2026-06-07T12:06:00Z",
+        },
+      ],
+      received_paisa: 420000,
+      balance_paisa: 0,
+    });
+
+    expect(job.bill).toEqual({ original: 5000, negotiated: 4200, status: "negotiated" });
+    expect(job.completion.timeSpentMins).toBe(90);
+    expect(job.completion.fuelAmount).toBe(500);
+    expect(job.completion.remarksText).toBe("regassed");
+    expect(job.completion.materials).toEqual([{ name: "Relay", qty: 2, unitPrice: 600 }]);
+    expect(job.revenue).toHaveLength(2);
+    expect(job.revenue[0]).toMatchObject({ id: "p1", amount: 4200, method: "cash", voided: false });
+    expect(job.revenue[1]).toMatchObject({
+      id: "p2",
+      amount: 1000,
+      voided: true,
+      voidReason: "duplicate",
+    });
   });
 
   it("maps the events array to the timeline and surfaces note-kind events", () => {

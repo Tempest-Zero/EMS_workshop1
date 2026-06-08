@@ -15,32 +15,27 @@ import {
   addJobNote,
   addJobFollowup,
   transitionJob,
+  submitCompletion as submitCompletionApi,
+  negotiateBill as negotiateBillApi,
+  logPayment as logPaymentApi,
+  voidPayment as voidPaymentApi,
 } from "@features/jobs/data/jobsApi";
 import { mapApiJob, toCreateBody } from "@features/jobs/data/mapJob";
 import { technicians } from "@features/technicians/data/technicians";
 import { todayRecord } from "@features/attendance/data/attendance";
 import { nowEntry, fmtTime } from "@shared/lib/date";
-import { estimateTotal, billOriginal, completionTotal } from "@shared/lib/job";
+import { estimateTotal } from "@shared/lib/job";
+import { rupeesToPaisa } from "@shared/lib/currency";
 
 const RATE = 1200;
 
-// Fields the API doesn't own yet (J4) — preserved across server refreshes so a
-// locally-set estimate/bill/revenue/completion isn't wiped when a lifecycle
-// action returns the authoritative job.
-const LOCAL_ONLY_FIELDS = [
-  "estimate",
-  "payment",
-  "bill",
-  "revenue",
-  "completion",
-  "assignedTechId",
-  "photos",
-  "followUps",
-];
+// Fields the API doesn't own yet — preserved across server refreshes so a
+// locally-set estimate/assignment isn't wiped when a lifecycle action returns
+// the authoritative job. Bill / revenue / completion are now API-backed (P2f),
+// so they're intentionally NOT here — the server is the single source of truth.
+const LOCAL_ONLY_FIELDS = ["estimate", "payment", "assignedTechId", "photos", "followUps"];
 
 const techName = (id) => technicians.find((t) => t.id === id)?.name || id;
-
-const newId = () => Math.random().toString(36).slice(2, 10);
 
 const AppContext = createContext(null);
 
@@ -255,92 +250,82 @@ export function AppProvider({ children }) {
   );
 
   // ── Work completion (Module 3) → auto-generates the bill (Module 4) ──
+  // Rupees from the form → integer paisa at the API boundary. The server returns
+  // the authoritative job (with the regenerated bill + timeline), merged in via
+  // replaceFromDetail — no local bill math.
   const submitCompletion = useCallback(
-    (jobId, payload) => {
-      const original = completionTotal(payload, RATE);
-      patchJob(
-        jobId,
-        (j) => ({
-          ...j,
-          completion: { ...payload, submittedAt: new Date().toISOString() },
-          bill: { ...(j.bill || {}), original, status: "generated" },
-        }),
-        nowEntry(
-          `Work completed — bill generated Rs ${original.toLocaleString("en-PK")}`,
-          "estimate"
-        )
-      );
-      addToast("Completion submitted — bill generated", "ready");
+    async (jobId, payload) => {
+      try {
+        const detail = await submitCompletionApi(jobId, {
+          materials: (payload.materials || []).map((m) => ({
+            name: m.name,
+            qty: Number(m.qty) || 1,
+            unit_paisa: rupeesToPaisa(m.unitPrice),
+          })),
+          time_spent_mins: Number(payload.timeSpentMins) || 0,
+          fuel_paisa: rupeesToPaisa(payload.fuelAmount),
+          remarks_text: payload.remarksText?.trim() || null,
+        });
+        replaceFromDetail(detail);
+        addToast("Completion submitted — bill generated", "ready");
+      } catch {
+        addToast("Couldn't submit completion — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   // ── Billing & revenue (Module 4) ─────────────────────────────────────
-  // Record the negotiated amount agreed on-site. Both the auto-generated
-  // original and the negotiated figure are kept (hard accounting requirement).
+  // Record the negotiated amount agreed on-site (rupees → paisa). The backend
+  // keeps both the auto original and the negotiated figure.
   const setNegotiatedBill = useCallback(
-    (jobId, { amount, note }) => {
-      const value = Number(amount);
-      patchJob(
-        jobId,
-        (j) => ({
-          ...j,
-          bill: {
-            ...(j.bill || {}),
-            original: billOriginal(j),
-            negotiated: value,
-            status: "negotiated",
-          },
-        }),
-        nowEntry(
-          `Bill negotiated → agreed Rs ${value.toLocaleString("en-PK")}${note ? ` (${note})` : ""}`,
-          "payment"
-        )
-      );
-      addToast("Negotiated amount recorded", "ready");
+    async (jobId, { amount, note }) => {
+      try {
+        const detail = await negotiateBillApi(jobId, rupeesToPaisa(amount), note);
+        replaceFromDetail(detail);
+        addToast("Negotiated amount recorded", "ready");
+      } catch {
+        addToast("Couldn't record negotiation — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
-  // Append a cash/revenue entry. The ledger is append-only — corrections void
-  // an entry rather than editing it (see voidRevenueEntry).
+  // Append a cash/revenue entry. A fresh `client_id` (UUID) makes it idempotent
+  // so a retry never double-charges. The ledger is append-only — corrections
+  // void an entry rather than editing it (see voidRevenueEntry).
   const logPayment = useCallback(
-    (jobId, { amount, method }) => {
-      const e = nowEntry(
-        `Payment logged: Rs ${Number(amount).toLocaleString("en-PK")} (${method})`,
-        "payment"
-      );
-      const entry = {
-        id: newId(),
-        amount: Number(amount),
-        method,
-        ts: e.ts,
-        label: e.label,
-        voided: false,
-      };
-      patchJob(jobId, (j) => ({ ...j, revenue: [...(j.revenue || []), entry] }), e);
-      addToast("Payment recorded", "ready");
+    async (jobId, { amount, method }) => {
+      try {
+        const detail = await logPaymentApi(
+          jobId,
+          rupeesToPaisa(amount),
+          method,
+          crypto.randomUUID()
+        );
+        replaceFromDetail(detail);
+        addToast("Payment recorded", "ready");
+      } catch {
+        addToast("Couldn't record payment — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
-  // Correct a revenue entry: mark it voided (kept for the audit trail) with a
-  // reason. Re-logging the right amount is a normal logPayment afterward.
+  // Correct a revenue entry: the server voids it (kept struck-through for the
+  // audit trail) with a reason. Re-logging the right amount is a normal
+  // logPayment afterward.
   const voidRevenueEntry = useCallback(
-    (jobId, entryId, reason) => {
-      patchJob(
-        jobId,
-        (j) => ({
-          ...j,
-          revenue: (j.revenue || []).map((e) =>
-            e.id === entryId ? { ...e, voided: true, voidReason: reason } : e
-          ),
-        }),
-        nowEntry(`Revenue entry voided — ${reason}`, "payment")
-      );
-      addToast("Entry voided for correction", "default");
+    async (jobId, entryId, reason) => {
+      try {
+        const detail = await voidPaymentApi(jobId, entryId, reason);
+        replaceFromDetail(detail);
+        addToast("Entry voided for correction", "default");
+      } catch {
+        addToast("Couldn't void entry — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const closeJob = useCallback(

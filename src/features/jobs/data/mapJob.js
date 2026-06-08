@@ -3,12 +3,16 @@
  * components expect (customer/appliance objects, etc.).
  *
  * The job's append-only `events` timeline (J2) is mapped to the view's
- * `timeline` and the `note`-kind events are surfaced in `notes`. The
- * estimate / payment / photos fields aren't backed by the API yet (J4), so they
- * stay empty — the UI renders, and persisting them is a later slice.
+ * `timeline` and the `note`-kind events are surfaced in `notes`.
+ *
+ * Bill, work-completion, and the cash/revenue ledger are now API-backed (P2f):
+ * the manager sees exactly what the technician submitted from the phone. Money
+ * arrives as integer paisa and is converted to rupees here (the display unit);
+ * the still-local estimate/photos remain mocks until their own slice.
  */
 
 import { fmtDateTime } from "@shared/lib/date";
+import { paisaToRupees } from "@shared/lib/currency";
 
 const DEFAULT_LABOR_RATE = 1200;
 
@@ -38,6 +42,48 @@ function notesFromTimeline(timeline) {
   return timeline
     .filter((e) => e.kind === "note")
     .map((e) => ({ text: e.text.replace(/^Note:\s*/, ""), by: e.by, label: e.label }));
+}
+
+/** The bill (auto original + on-site negotiated), paisa → rupees. `null` amounts
+ * stay null so the helpers can distinguish "no bill yet" from "Rs 0". */
+function mapBill(api) {
+  return {
+    original: paisaToRupees(api.bill_original_paisa),
+    negotiated: paisaToRupees(api.bill_negotiated_paisa),
+    status: api.bill_status || "none",
+  };
+}
+
+/** The cash/revenue ledger entries → the view's `revenue` shape. Voided entries
+ * are kept (struck-through in the UI) for the append-only audit trail. */
+function mapPayments(payments) {
+  return (payments || []).map((p) => ({
+    id: p.id,
+    amount: paisaToRupees(p.amount_paisa),
+    method: p.method,
+    voided: Boolean(p.voided),
+    voidReason: p.void_reason || undefined,
+    ts: p.recorded_at,
+    label: p.recorded_at ? fmtDateTime(new Date(p.recorded_at)) : "",
+  }));
+}
+
+/** The work-completion form → the view's `completion` shape (or `null`). */
+function mapCompletion(c) {
+  if (!c) return null;
+  return {
+    materials: (c.materials || []).map((m) => ({
+      name: m.name,
+      qty: m.qty,
+      unitPrice: paisaToRupees(m.unit_paisa),
+    })),
+    timeSpentMins: c.time_spent_mins ?? 0,
+    fuelAmount: paisaToRupees(c.fuel_paisa) ?? 0,
+    remarksText: c.remarks_text || "",
+    // The voice note lives in the media slice (keyed on token); the manager plays
+    // it from the gallery. The completion only carries its media id, not a URL.
+    submittedAt: c.submitted_at,
+  };
 }
 
 export function mapApiJob(api) {
@@ -71,12 +117,13 @@ export function mapApiJob(api) {
     // J2 — the append-only timeline + notes come from the API's `events`.
     notes: notesFromTimeline(timeline),
     timeline,
-    // Not yet API-backed (J4) — empty so the existing detail view renders cleanly.
+    // P2f — bill, completion and the cash ledger are now API-backed (paisa→rupees).
+    bill: mapBill(api),
+    revenue: mapPayments(api.payments),
+    completion: mapCompletion(api.completion),
+    // Still local-only mocks until their own slice — empty so the view renders.
     estimate: { status: "none", laborHours: 0, laborRate: DEFAULT_LABOR_RATE, parts: [] },
     payment: { method: "pending", paid: 0 },
-    bill: { original: null, negotiated: null, status: "none" },
-    revenue: [],
-    completion: null,
     photos: [],
     followUps: [],
   };
