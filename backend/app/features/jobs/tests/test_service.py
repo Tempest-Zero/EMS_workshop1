@@ -243,6 +243,40 @@ async def test_transition_haul_converts_to_carry_in(svc: tuple[JobService, Magic
     assert detail.job_type == "carry-in"
 
 
+async def test_close_requires_a_closing_video(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    media = AsyncMock()
+    media.count_phase = AsyncMock(return_value=0)  # no closing clip
+    with pytest.raises(JobActionError):
+        await service.transition(
+            job_id=job.id,
+            shop_id="default",
+            body=TransitionRequest(action="close"),
+            actor="t1",
+            media=media,
+        )
+    media.count_phase.assert_awaited_once_with(job_id=str(job.token), phase="closing")
+
+
+async def test_close_succeeds_with_a_closing_video(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    media = AsyncMock()
+    media.count_phase = AsyncMock(return_value=1)  # a pending closing row counts
+    detail = await service.transition(
+        job_id=job.id,
+        shop_id="default",
+        body=TransitionRequest(action="close"),
+        actor="t1",
+        media=media,
+    )
+    assert detail.status == "closed"
+    assert job.closed_at is not None
+
+
 async def test_assign_sets_tech_and_logs_assign_event(svc: tuple[JobService, MagicMock]) -> None:
     service, repo = svc
     job = _open_job()

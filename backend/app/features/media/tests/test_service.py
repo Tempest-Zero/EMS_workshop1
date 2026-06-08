@@ -45,6 +45,7 @@ def service() -> Iterator[tuple[MediaService, MagicMock, MagicMock]]:
     repo.list_for_job = AsyncMock()
     repo.mark_uploaded = AsyncMock()
     repo.delete = AsyncMock()
+    repo.count_phase = AsyncMock(return_value=0)
 
     storage = MagicMock()
     storage.mint_upload_url = MagicMock(
@@ -60,6 +61,15 @@ def service() -> Iterator[tuple[MediaService, MagicMock, MagicMock]]:
     storage.delete = MagicMock()
 
     yield MediaService(repo, storage), repo, storage
+
+
+async def test_count_phase_delegates_to_repo(
+    service: tuple[MediaService, MagicMock, MagicMock],
+) -> None:
+    svc, repo, _ = service
+    repo.count_phase.return_value = 2
+    assert await svc.count_phase(job_id="1052", phase="closing") == 2
+    repo.count_phase.assert_awaited_once_with("1052", "closing")
 
 
 async def test_request_upload_creates_row_and_mints_url(

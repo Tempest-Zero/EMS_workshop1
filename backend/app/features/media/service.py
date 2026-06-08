@@ -136,6 +136,12 @@ class MediaService:
             (before if m.phase == "before" else after).append(item)
         return MediaList(before=before, after=after)
 
+    async def count_phase(self, *, job_id: str, phase: str) -> int:
+        """How many media rows a job has for a phase. The public surface other
+        slices use (e.g. the jobs close-gate checks for a ``closing`` clip).
+        Counts pending rows too, so the gate is offline-tolerant."""
+        return await self._repo.count_phase(job_id, phase)
+
     # ── Internals ───────────────────────────────────────────────────────
     async def _load(self, job_id: str, media_id: UUID) -> JobMedia:
         media = await self._repo.get(media_id)

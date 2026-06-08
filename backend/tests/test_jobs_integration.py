@@ -278,6 +278,36 @@ async def test_gps_route_and_fuel_estimate(app_client: AsyncClient, auth_headers
     assert len(replay.json()["locations"]) == 2
 
 
+async def test_close_requires_a_closing_video(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job = created.json()
+    job_id = job["id"]
+    token = str(job["token"])
+
+    # No closing clip yet → close is blocked (Phase 3 gate).
+    blocked = await app_client.post(
+        f"/api/jobs/{job_id}/transition", json={"action": "close"}, headers=auth_headers
+    )
+    assert blocked.status_code == 400, blocked.text
+
+    # Reserve a closing media row (pending — not yet uploaded). Media is keyed on token.
+    media = await app_client.post(
+        f"/api/jobs/{token}/media",
+        json={"phase": "closing", "type": "video", "filename": "closing.mp4"},
+        headers=auth_headers,
+    )
+    assert media.status_code == 201, media.text
+
+    # A pending closing row satisfies the gate (offline-tolerant).
+    ok = await app_client.post(
+        f"/api/jobs/{job_id}/transition", json={"action": "close"}, headers=auth_headers
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == "closed"
+
+
 async def test_jobs_require_auth(app_client: AsyncClient) -> None:
     assert (await app_client.get("/api/jobs")).status_code == 401
     assert (await app_client.post("/api/jobs", json=_INTAKE)).status_code == 401

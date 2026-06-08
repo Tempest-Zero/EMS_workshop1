@@ -16,9 +16,10 @@ from httpx import ASGITransport, AsyncClient
 from app.core.db import get_session
 from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
-from app.features.jobs.router import get_service
+from app.features.jobs.router import get_media_service, get_service
 from app.features.jobs.schemas import Job, JobDetail
 from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
+from app.features.media.service import MediaService
 from app.main import app
 
 _FAKE_PRINCIPAL = Principal(tech_id="t1", role="manager", name="Test Manager")
@@ -53,9 +54,17 @@ def fake_session() -> AsyncMock:
     return session
 
 
+@pytest.fixture
+def fake_media() -> AsyncMock:
+    return AsyncMock(spec=MediaService)
+
+
 @pytest_asyncio.fixture
-async def client(fake_service: AsyncMock, fake_session: AsyncMock) -> AsyncIterator[AsyncClient]:
+async def client(
+    fake_service: AsyncMock, fake_session: AsyncMock, fake_media: AsyncMock
+) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[get_service] = lambda: cast(JobService, fake_service)
+    app.dependency_overrides[get_media_service] = lambda: cast(MediaService, fake_media)
     app.dependency_overrides[get_session] = lambda: fake_session
     app.dependency_overrides[get_current_principal] = lambda: _FAKE_PRINCIPAL
     transport = ASGITransport(app=app)
@@ -132,6 +141,15 @@ async def test_transition_action_error_returns_400(
 ) -> None:
     fake_service.transition.side_effect = JobActionError("abandon requires a reason")
     resp = await client.post(f"/api/jobs/{uuid4()}/transition", json={"action": "abandon"})
+    assert resp.status_code == 400
+
+
+async def test_close_without_closing_video_returns_400(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    # The service enforces the closing-video gate; the router maps it to a 400.
+    fake_service.transition.side_effect = JobActionError("a closing video is required to close")
+    resp = await client.post(f"/api/jobs/{uuid4()}/transition", json={"action": "close"})
     assert resp.status_code == 400
 
 

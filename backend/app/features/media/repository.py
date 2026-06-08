@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.media.models import JobMedia, MediaStatus
@@ -45,6 +45,17 @@ class MediaRepository:
         stmt = select(JobMedia).where(JobMedia.job_id == job_id).order_by(JobMedia.created_at.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars())
+
+    async def count_phase(self, job_id: str, phase: str) -> int:
+        """How many media rows a job has for a phase, regardless of upload status
+        (a *pending* row counts — the closing-video gate is offline-tolerant)."""
+        stmt = (
+            select(func.count())
+            .select_from(JobMedia)
+            .where(JobMedia.job_id == job_id, JobMedia.phase == phase)
+        )
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
 
     async def mark_uploaded(
         self,
