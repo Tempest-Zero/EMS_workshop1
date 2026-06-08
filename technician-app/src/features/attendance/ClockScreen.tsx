@@ -2,19 +2,12 @@
  * The technician clock-in/out screen. One big button, the current status, a
  * "pending sync" indicator, the recent punches with their evidence flags, and a
  * read-out of the currently-detected WiFi (so a manager can read the workshop
- * BSSID off the phone during setup). Tech ID is a text input — no auth yet.
+ * BSSID off the phone during setup). The technician identity is the signed-in
+ * user — punches are attributed to whoever logged in.
  */
 
 import { useEffect, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { useAttendance } from "./useAttendance";
 import { getWifi, type WifiReading } from "./wifi";
@@ -43,15 +36,8 @@ export function ClockScreen() {
       <Text style={styles.h2}>Clock in / out</Text>
 
       <View style={styles.field}>
-        <Text style={styles.label}>Technician ID</Text>
-        <TextInput
-          style={styles.input}
-          value={att.techId}
-          onChangeText={att.setTechId}
-          autoCapitalize="none"
-          autoCorrect={false}
-          placeholder="t1"
-        />
+        <Text style={styles.label}>Signed in as</Text>
+        <Text style={styles.identity}>{att.technicianName || att.techId || "—"}</Text>
       </View>
 
       {att.error ? (
@@ -99,17 +85,17 @@ export function ClockScreen() {
         <Text style={styles.empty}>No punches yet</Text>
       ) : (
         att.punches.map((p) => (
-          <View key={p.client_id} style={styles.row}>
+          <View key={p.key} style={styles.row}>
             <View>
               <Text style={styles.rowKind}>
                 {p.kind === "clock_in" ? "Clock In" : "Clock Out"}
               </Text>
-              <Text style={styles.rowTime}>{fmtTime(p.created_at)}</Text>
+              <Text style={styles.rowTime}>{fmtTime(p.at)}</Text>
             </View>
             <View style={styles.badges}>
-              {p.is_mock_location ? <Badge text="MOCK" tone="danger" /> : null}
-              {p.wifi_bssid ? <Badge text="WiFi" tone="ok" /> : null}
-              <Badge text={p.done ? "Synced" : "Pending"} tone={p.done ? "ok" : "warn"} />
+              {p.isMock ? <Badge text="MOCK" tone="danger" /> : null}
+              {p.hasWifi ? <Badge text="WiFi" tone="ok" /> : null}
+              <Badge text={p.synced ? "Synced" : "Pending"} tone={p.synced ? "ok" : "warn"} />
             </View>
           </View>
         ))
@@ -136,14 +122,16 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     marginBottom: 4,
   },
-  input: {
+  identity: {
     backgroundColor: "white",
-    borderColor: "#cbd5e1",
+    borderColor: "#e2e8f0",
     borderWidth: 1,
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     fontSize: 16,
+    fontWeight: "700",
+    color: "#0f172a",
   },
   errorBox: {
     marginTop: 12,
