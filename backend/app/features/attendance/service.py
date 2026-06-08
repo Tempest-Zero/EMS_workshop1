@@ -40,6 +40,8 @@ from app.features.attendance.schemas import (
     Grid,
     GridCell,
     GridRow,
+    PayrollDay,
+    PayrollExport,
     PunchItem,
     PunchRequest,
     PunchResponse,
@@ -358,6 +360,39 @@ class AttendanceService:
                 )
             )
         return TechDays(tech_id=tech_id, from_date=from_date, to_date=to_date, days=days)
+
+    async def payroll(
+        self,
+        *,
+        shop_id: str,
+        from_date: date,
+        to_date: date,
+        tech_ids: list[str] | None = None,
+    ) -> PayrollExport:
+        """Flat per-tech, per-day attendance over a range — the basis for the
+        weekly payroll/ERP export. Reuses the same rollup as the board/grid."""
+        tz, shifts = await self._tz_and_shifts(shop_id)
+        today = datetime.now(UTC).astimezone(tz).date()
+        if to_date > today:  # never roll past today (classify_day would mislabel)
+            to_date = today
+        bucket, roster = await self._window(shop_id, from_date, to_date, tz, tech_ids, set(shifts))
+        rows: list[PayrollDay] = []
+        for tech_id in roster:
+            shift = _shift_for(tech_id, shifts)
+            for d in _date_range(from_date, to_date):
+                events = bucket.get(tech_id, {}).get(d, [])
+                roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
+                rows.append(
+                    PayrollDay(
+                        tech_id=tech_id,
+                        date=d,
+                        status=roll.status,  # type: ignore[arg-type]
+                        first_in=roll.first_in,
+                        last_out=roll.last_out,
+                        worked_minutes=roll.worked_minutes,
+                    )
+                )
+        return PayrollExport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)
 
     # ── Config: shift / geofence ─────────────────────────────────────────
     async def get_shift(self, *, shop_id: str, tech_id: str) -> Shift:

@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Clock, MapPinOff, ShieldAlert, Wifi } from "lucide-react";
+import { Clock, Download, MapPinOff, ShieldAlert, Wifi } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
-import { Card, EmptyState, SectionHeader } from "@shared/ui/primitives";
+import { fetchPayroll } from "@features/attendance/data/attendanceApi";
+import { Button, Card, EmptyState, SectionHeader } from "@shared/ui/primitives";
 import Avatar from "@shared/ui/Avatar";
 import { PresenceBadge } from "@shared/ui/StatusChip";
 import { parseISO } from "@shared/lib/date";
@@ -57,6 +58,40 @@ export default function Attendance() {
     [technicians]
   );
 
+  const [exporting, setExporting] = useState(false);
+  // Pull the weekly attendance from the API and download it as a payroll CSV.
+  // (The "every Sunday" automation is the same export on a Railway cron.)
+  const downloadPayroll = async () => {
+    setExporting(true);
+    try {
+      const data = await fetchPayroll(techIds);
+      const t = (iso) =>
+        iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      const hrs = (m) => (m == null ? "" : (m / 60).toFixed(1));
+      const header = ["Technician", "Tech ID", "Date", "Status", "Clock In", "Clock Out", "Hours"];
+      const body = (data.rows || []).map((r) => [
+        techById[r.tech_id]?.name ?? r.tech_id,
+        r.tech_id,
+        r.date,
+        r.status,
+        t(r.first_in),
+        t(r.last_out),
+        hrs(r.worked_minutes),
+      ]);
+      const csv = [header, ...body]
+        .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+        .join("\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `payroll-${data.from_date}_to_${data.to_date}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (error) {
     return (
       <Card className="p-5">
@@ -75,7 +110,19 @@ export default function Attendance() {
         <SectionHeader
           title="Today"
           sub={loading && !board ? "Loading…" : `${board?.rows?.length ?? 0} technicians`}
-          action={<LiveBadge />}
+          action={
+            <div className="flex items-center gap-2">
+              <LiveBadge />
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void downloadPayroll()}
+                disabled={exporting}
+              >
+                <Download className="h-4 w-4" /> {exporting ? "Exporting…" : "Payroll CSV"}
+              </Button>
+            </div>
+          }
         />
         <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[560px] text-sm">

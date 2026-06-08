@@ -31,6 +31,16 @@ export function fetchTechDays(techId, start, end) {
   return apiGet(`/api/attendance/techs/${encodeURIComponent(techId)}/days?${params.toString()}`);
 }
 
+/** Weekly attendance export for payroll/ERP. Omitting dates defaults to the
+ * last 7 days on the server. Returns `{ shop_id, from_date, to_date, rows[] }`. */
+export function fetchPayroll(techIds, start, end) {
+  const params = new URLSearchParams({ shop_id: SHOP_ID });
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  const ids = techIdsQuery(techIds);
+  return apiGet(`/api/attendance/payroll?${params.toString()}${ids ? `&${ids}` : ""}`);
+}
+
 export function fetchAdjustments(techId) {
   const params = new URLSearchParams({ shop_id: SHOP_ID, tech_id: techId });
   return apiGet(`/api/attendance/adjustments?${params.toString()}`);
