@@ -15,6 +15,7 @@ import {
   addJobNote,
   addJobFollowup,
   transitionJob,
+  assignJob as assignJobApi,
   submitCompletion as submitCompletionApi,
   negotiateBill as negotiateBillApi,
   logPayment as logPaymentApi,
@@ -33,7 +34,7 @@ const RATE = 1200;
 // locally-set estimate/assignment isn't wiped when a lifecycle action returns
 // the authoritative job. Bill / revenue / completion are now API-backed (P2f),
 // so they're intentionally NOT here — the server is the single source of truth.
-const LOCAL_ONLY_FIELDS = ["estimate", "payment", "assignedTechId", "photos", "followUps"];
+const LOCAL_ONLY_FIELDS = ["estimate", "payment", "photos", "followUps"];
 
 const techName = (id) => technicians.find((t) => t.id === id)?.name || id;
 
@@ -225,28 +226,32 @@ export function AppProvider({ children }) {
   );
 
   // ── Dual assignment (Module 2): manager assigns OR technician free-picks ──
+  // Both call the real /assign endpoint and merge the authoritative job back, so
+  // the assignment persists server-side (and the mobile app sees it).
   const assignJob = useCallback(
-    (jobId, techId) => {
-      patchJob(
-        jobId,
-        (j) => ({ ...j, assignedTechId: techId }),
-        nowEntry(`Assigned to ${techName(techId)}`, "assign")
-      );
-      addToast(`Assigned to ${techName(techId)}`, "default");
+    async (jobId, techId) => {
+      try {
+        const detail = await assignJobApi(jobId, techId);
+        replaceFromDetail(detail);
+        addToast(`Assigned to ${techName(techId)}`, "default");
+      } catch {
+        addToast("Couldn't assign — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   const claimJob = useCallback(
-    (jobId, techId) => {
-      patchJob(
-        jobId,
-        (j) => ({ ...j, assignedTechId: techId }),
-        nowEntry(`Claimed by ${techName(techId)} from the work list`, "assign")
-      );
-      addToast(`Claimed by ${techName(techId)}`, "ready");
+    async (jobId, techId) => {
+      try {
+        const detail = await assignJobApi(jobId, techId);
+        replaceFromDetail(detail);
+        addToast(`Claimed by ${techName(techId)}`, "ready");
+      } catch {
+        addToast("Couldn't claim — please retry", "danger");
+      }
     },
-    [patchJob, addToast]
+    [replaceFromDetail, addToast]
   );
 
   // ── Work completion (Module 3) → auto-generates the bill (Module 4) ──
