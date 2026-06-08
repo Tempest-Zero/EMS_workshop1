@@ -8,6 +8,7 @@ boundary.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Annotated
 from uuid import UUID
 
@@ -37,6 +38,8 @@ from app.features.jobs.schemas import (
 from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
 from app.features.media.repository import MediaRepository
 from app.features.media.service import MediaService
+from app.features.notifications.repository import NotificationRepository
+from app.features.notifications.service import NotificationService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -54,8 +57,14 @@ def get_media_service(session: SessionDep, storage: StorageDep) -> MediaService:
     return MediaService(MediaRepository(session), storage, settings.r2_max_upload_bytes)
 
 
+# Manager-assign pushes a notification to the assigned tech (Module 2).
+def get_notification_service(session: SessionDep) -> NotificationService:
+    return NotificationService(NotificationRepository(session))
+
+
 ServiceDep = Annotated[JobService, Depends(get_service)]
 MediaServiceDep = Annotated[MediaService, Depends(get_media_service)]
+NotificationServiceDep = Annotated[NotificationService, Depends(get_notification_service)]
 
 ShopId = Annotated[str, Query(max_length=64)]
 
@@ -180,9 +189,13 @@ async def assign(
     service: ServiceDep,
     session: SessionDep,
     principal: CurrentPrincipal,
+    notifications: NotificationServiceDep,
 ) -> JobDetail:
     detail = await _assign(service, job_id, body.tech_id, principal.tech_id, claimed=False)
     await session.commit()
+    # Best-effort push to the assigned tech — never let it break the assignment.
+    with contextlib.suppress(Exception):
+        await notifications.notify_assignment(tech_id=body.tech_id, job_token=detail.token)
     return detail
 
 

@@ -11,6 +11,7 @@ import { LoginScreen } from "./src/features/auth/LoginScreen";
 import { JobsStack } from "./src/features/jobs/JobsStack";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
 import { useOutboxSync } from "./src/lib/useOutboxSync";
+import { usePushRegistration } from "./src/lib/usePushRegistration";
 
 const Tab = createBottomTabNavigator();
 
@@ -38,6 +39,7 @@ function Tabs() {
   // Mounted once for the whole authenticated app so the outbox keeps draining
   // even after the tech leaves the screen that queued a write.
   const pending = useOutboxSync();
+  usePushRegistration();
   return (
     <View style={styles.flex}>
       {pending > 0 ? <OfflineBanner count={pending} /> : null}
