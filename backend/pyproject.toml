@@ -18,7 +18,7 @@ dependencies = [
   "boto3>=1.35,<2.0",
   # JWT issue/verify for Name + PIN → token auth (HS256). PIN hashing uses the
   # stdlib (hashlib.pbkdf2_hmac), so no password-hashing dependency is needed.
-  "pyjwt>=2.9,<3.0",
+  "pyjwt[crypto]>=2.9,<3.0",
   # IANA timezone DB — Windows has no system tzdb, so ship it for ZoneInfo
   # (attendance converts the authoritative UTC server_time to shop-local).
   "tzdata>=2024.1",
