@@ -51,16 +51,35 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
   onUnauthorized = fn;
 }
 
+// JSON API calls are bounded so a hung request on flaky workshop wifi can't pin
+// the UI in a loading state forever. (Media/selfie BYTE uploads go through
+// FileSystem.uploadAsync, not this path, so big uploads aren't affected.)
+const REQUEST_TIMEOUT_MS = 15_000;
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
-  const response = await fetch(`${config.apiUrl}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init?.headers,
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${config.apiUrl}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...init?.headers,
+      },
+    });
+  } catch (e) {
+    const method = init?.method ?? "GET";
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new Error(`${method} ${path} timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (response.status === 401) {
     await setToken(null);
     onUnauthorized?.();
