@@ -170,3 +170,12 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
     body = r.json()
     assert body["inside_geofence"] is False
     assert body["wifi_match"] is True
+
+
+async def test_payroll_export_returns_rows(app_client: AsyncClient, auth_headers: Headers) -> None:
+    resp = await app_client.get("/api/attendance/payroll", headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert {"shop_id", "from_date", "to_date", "rows"} <= set(body.keys())
+    if body["rows"]:
+        assert {"tech_id", "date", "status"} <= set(body["rows"][0].keys())

@@ -13,7 +13,7 @@ can only punch as themselves, while a manager may record on anyone's behalf
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
 
@@ -33,6 +33,7 @@ from app.features.attendance.schemas import (
     Geofence,
     GeofenceUpdate,
     Grid,
+    PayrollExport,
     PunchItem,
     PunchRequest,
     PunchResponse,
@@ -182,6 +183,25 @@ async def tech_days(
     shop_id: ShopId = DEFAULT_SHOP_ID,
 ) -> TechDays:
     return await service.tech_days(tech_id=tech_id, shop_id=shop_id, from_date=start, to_date=end)
+
+
+@router.get(
+    "/payroll",
+    response_model=PayrollExport,
+    summary="Weekly attendance export for payroll / ERP (defaults to the last 7 days)",
+)
+async def payroll(
+    service: ServiceDep,
+    start: Annotated[date | None, Query()] = None,
+    end: Annotated[date | None, Query()] = None,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+    tech_ids: TechIds = None,
+) -> PayrollExport:
+    end_date = end or datetime.now(UTC).date()
+    start_date = start or (end_date - timedelta(days=6))
+    return await service.payroll(
+        shop_id=shop_id, from_date=start_date, to_date=end_date, tech_ids=tech_ids
+    )
 
 
 # ── Manager: audited adjustment ──────────────────────────────────────────────

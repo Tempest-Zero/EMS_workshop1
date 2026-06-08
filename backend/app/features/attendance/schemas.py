@@ -165,6 +165,25 @@ class TechDays(BaseModel):
     days: list[TechDay]
 
 
+# ── Payroll export (ERP / Sunday cycle) ───────────────────────────────────────
+class PayrollDay(BaseModel):
+    """One tech's attendance for one day, flattened for a payroll/ERP export."""
+
+    tech_id: str
+    date: date
+    status: DayStatus
+    first_in: datetime | None = None
+    last_out: datetime | None = None
+    worked_minutes: int | None = None
+
+
+class PayrollExport(BaseModel):
+    shop_id: str
+    from_date: date
+    to_date: date
+    rows: list[PayrollDay]
+
+
 # ── Manager: config (shift / geofence) ───────────────────────────────────────
 class Shift(BaseModel):
     model_config = ConfigDict(from_attributes=True)

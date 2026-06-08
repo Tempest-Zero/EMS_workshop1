@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.db import get_session
 from app.features.attendance.router import get_service
-from app.features.attendance.schemas import Board, PunchResponse
+from app.features.attendance.schemas import Board, PayrollDay, PayrollExport, PunchResponse
 from app.features.attendance.service import (
     AttendanceNotFoundError,
     AttendanceService,
@@ -158,6 +158,22 @@ async def test_get_board_returns_200(client: AsyncClient, fake_service: AsyncMoc
     resp = await client.get("/api/attendance/board?shop_id=default")
     assert resp.status_code == 200
     assert resp.json() == {"shop_id": "default", "date": "2026-06-03", "rows": []}
+
+
+async def test_payroll_returns_200(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.payroll.return_value = PayrollExport(
+        shop_id="default",
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 7),
+        rows=[
+            PayrollDay(tech_id="t1", date=date(2026, 6, 1), status="present", worked_minutes=480)
+        ],
+    )
+    resp = await client.get("/api/attendance/payroll")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rows"][0]["tech_id"] == "t1"
+    assert body["rows"][0]["worked_minutes"] == 480
 
 
 async def test_manager_endpoint_requires_auth(client: AsyncClient) -> None:
