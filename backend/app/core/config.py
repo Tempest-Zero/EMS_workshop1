@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Labour rate used to auto-generate the bill from time on-site. Integer
     # paisa (Rs 1200/hour). Money is ALWAYS integer paisa, never floats.
     labour_rate_paisa: int = 1200 * 100
+    # Fuel/running cost per km for the GPS route estimate (Phase 3). Integer
+    # paisa per kilometre (Rs 20/km) — applied to the straight-line distance
+    # between the depart-workshop and arrive-customer pins.
+    fuel_rate_paisa_per_km: int = 20 * 100
 
     # ── Auth (Name + PIN → JWT) ──────────────────────────────────────────
     # HS256 signing secret. The default is for local dev only — production

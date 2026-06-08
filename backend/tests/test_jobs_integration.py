@@ -222,6 +222,62 @@ async def test_payment_ledger_dedup_and_void(
     assert voided.json()["payments"][0]["voided"] is True
 
 
+async def test_gps_route_and_fuel_estimate(app_client: AsyncClient, auth_headers: Headers) -> None:
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+
+    # First pin → punch recorded, but no route yet (needs both ends).
+    depart = await app_client.post(
+        f"/api/jobs/{job_id}/locations",
+        json={
+            "kind": "depart_workshop",
+            "lat": 24.8607,
+            "lng": 67.0011,
+            "is_mock": False,
+            "client_id": "22222222-2222-2222-2222-222222222222",
+        },
+        headers=auth_headers,
+    )
+    assert depart.status_code == 200, depart.text
+    assert depart.json()["route"] is None
+    assert len(depart.json()["locations"]) == 1
+
+    # Second pin → route distance + fuel estimate appear; both punches log a gps event.
+    arrive = await app_client.post(
+        f"/api/jobs/{job_id}/locations",
+        json={
+            "kind": "arrive_customer",
+            "lat": 24.8615,
+            "lng": 67.0099,
+            "is_mock": True,
+            "client_id": "33333333-3333-3333-3333-333333333333",
+        },
+        headers=auth_headers,
+    )
+    assert arrive.status_code == 200, arrive.text
+    body = arrive.json()
+    assert body["route"] is not None
+    assert body["route"]["distance_m"] > 0
+    assert body["route"]["fuel_paisa"] > 0
+    assert len(body["locations"]) == 2
+    assert sum(1 for e in body["events"] if e["kind"] == "gps") == 2
+    # The mock-location flag round-trips for manager review.
+    assert any(loc["is_mock"] for loc in body["locations"])
+
+    # Replay the depart client_id (offline retry) → idempotent, still two pins.
+    replay = await app_client.post(
+        f"/api/jobs/{job_id}/locations",
+        json={
+            "kind": "depart_workshop",
+            "lat": 24.8607,
+            "lng": 67.0011,
+            "client_id": "22222222-2222-2222-2222-222222222222",
+        },
+        headers=auth_headers,
+    )
+    assert len(replay.json()["locations"]) == 2
+
+
 async def test_jobs_require_auth(app_client: AsyncClient) -> None:
     assert (await app_client.get("/api/jobs")).status_code == 401
     assert (await app_client.post("/api/jobs", json=_INTAKE)).status_code == 401

@@ -25,6 +25,7 @@ from app.features.jobs.schemas import (
     JobCreate,
     JobDetail,
     JobStatus,
+    LocationRequest,
     NegotiateRequest,
     NoteRequest,
     PaymentRequest,
@@ -281,6 +282,28 @@ async def void_payment(
             payment_id=payment_id,
             reason=body.reason,
             actor=principal.tech_id,
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    await session.commit()
+    return detail
+
+
+@router.post(
+    "/{job_id}/locations",
+    response_model=JobDetail,
+    summary="Record a GPS punch (depart workshop / arrive customer) — idempotent",
+)
+async def record_location(
+    job_id: UUID,
+    body: LocationRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    try:
+        detail = await service.record_location(
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e

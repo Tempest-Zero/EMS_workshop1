@@ -123,6 +123,45 @@ class CompletionOut(BaseModel):
     materials: list[MaterialOut] = []
 
 
+# ── GPS route (Phase 3) ───────────────────────────────────────────────────────
+LocationKind = Literal["depart_workshop", "arrive_customer"]
+
+
+class LocationRequest(BaseModel):
+    """A GPS punch. ``client_id`` makes it idempotent (an offline retry won't
+    double-record); ``is_mock`` carries the device's mock-location flag."""
+
+    kind: LocationKind
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0)
+    is_mock: bool = False
+    device_time: datetime | None = None
+    client_id: UUID
+
+
+class LocationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    kind: str
+    lat: float
+    lng: float
+    accuracy_m: float | None = None
+    is_mock: bool
+    captured_at: datetime
+    device_time: datetime | None = None
+
+
+class RouteOut(BaseModel):
+    """The derived route between the two pins — present only once both exist.
+    ``distance_m`` is the straight-line (haversine) distance; ``fuel_paisa`` is
+    the estimated running cost (integer paisa, never floats)."""
+
+    distance_m: float
+    fuel_paisa: int
+
+
 TransitionAction = Literal["ready", "close", "abandon", "reschedule", "haul"]
 
 
@@ -179,3 +218,5 @@ class JobDetail(Job):
     payments: list[PaymentOut] = []
     received_paisa: int = 0
     balance_paisa: int = 0
+    locations: list[LocationOut] = []
+    route: RouteOut | None = None
