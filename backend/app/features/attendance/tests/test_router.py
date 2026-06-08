@@ -85,6 +85,43 @@ async def test_post_punch_rejects_invalid_kind(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
 
+async def test_tech_cannot_punch_as_another_tech(client: AsyncClient) -> None:
+    # A non-manager principal punching with a different tech_id → 403.
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    resp = await client.post(
+        "/api/attendance/punches",
+        json={"client_id": str(uuid4()), "tech_id": "t9", "kind": "clock_in"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_tech_can_punch_as_self(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    cid = uuid4()
+    fake_service.record_punch.return_value = PunchResponse(
+        event_id=uuid4(),
+        client_id=cid,
+        server_time=datetime(2026, 6, 3, 4, 0, tzinfo=UTC),
+        inside_geofence=None,
+        distance_m=None,
+        is_mock_location=False,
+        drift_seconds=None,
+        drift_flagged=False,
+    )
+    resp = await client.post(
+        "/api/attendance/punches",
+        json={"client_id": str(cid), "tech_id": "t5", "kind": "clock_in"},
+    )
+    assert resp.status_code == 201
+    fake_session.commit.assert_awaited()
+
+
 async def test_complete_selfie_unknown_returns_404(
     client: AsyncClient, fake_service: AsyncMock
 ) -> None:

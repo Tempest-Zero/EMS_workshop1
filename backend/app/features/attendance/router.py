@@ -5,9 +5,10 @@ Thin by design: wire deps, call the service, translate domain errors to HTTP,
 and commit the session at the request boundary (mirrors the media slice).
 
 Every endpoint requires a logged-in caller (router-level dependency; flat
-permissions — any valid token). Callers still pass ``tech_id`` / ``shop_id``
-explicitly and the service enforces ownership; deriving identity straight from
-the JWT is a later hardening.
+permissions — any valid token). Callers pass ``tech_id`` / ``shop_id``
+explicitly. Recording a punch is identity-checked against the JWT: a technician
+can only punch as themselves, while a manager may record on anyone's behalf
+(a kiosk / correction). The read + manager endpoints still take ``tech_id``.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ from app.features.attendance.service import (
     AttendanceService,
     SelfieTooLargeError,
 )
-from app.features.identity.deps import get_current_principal
+from app.features.identity.deps import CurrentPrincipal, get_current_principal
 
 router = APIRouter(
     prefix="/attendance",
@@ -81,8 +82,15 @@ TechIds = Annotated[list[str] | None, Query()]
     summary="Record a clock-in/out punch (idempotent on client_id)",
 )
 async def record_punch(
-    body: PunchRequest, service: ServiceDep, session: SessionDep
+    body: PunchRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
 ) -> PunchResponse:
+    # A technician can only punch as themselves; a manager may record for any
+    # tech. Stops a logged-in tech from clocking in/out as someone else.
+    if principal.role != "manager" and body.tech_id != principal.tech_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "you can only record your own punches")
     response = await service.record_punch(body)
     await session.commit()
     return response
