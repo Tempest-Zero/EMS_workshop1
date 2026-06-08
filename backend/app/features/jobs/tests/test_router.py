@@ -231,3 +231,37 @@ async def test_void_payment_returns_200(client: AsyncClient, fake_service: Async
         f"/api/jobs/{uuid4()}/payments/{uuid4()}/void", json={"reason": "duplicate"}
     )
     assert resp.status_code == 200, resp.text
+
+
+async def test_record_location_returns_200_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.record_location.return_value = _detail()
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/locations",
+        json={
+            "kind": "depart_workshop",
+            "lat": 24.8607,
+            "lng": 67.0011,
+            "is_mock": False,
+            "client_id": str(uuid4()),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    fake_session.commit.assert_awaited()
+
+
+async def test_record_location_rejects_bad_lat(client: AsyncClient) -> None:
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/locations",
+        json={"kind": "depart_workshop", "lat": 999, "lng": 0, "client_id": str(uuid4())},
+    )
+    assert resp.status_code == 422  # lat out of [-90, 90]
+
+
+async def test_record_location_rejects_bad_kind(client: AsyncClient) -> None:
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/locations",
+        json={"kind": "teleport", "lat": 24.0, "lng": 67.0, "client_id": str(uuid4())},
+    )
+    assert resp.status_code == 422

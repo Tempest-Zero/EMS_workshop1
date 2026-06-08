@@ -7,8 +7,15 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.core.config import settings
+from app.features.attendance.derive import haversine_m
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.models import JobCompletion, JobEvent, JobMaterial, JobPayment
+from app.features.jobs.models import (
+    JobCompletion,
+    JobEvent,
+    JobLocation,
+    JobMaterial,
+    JobPayment,
+)
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     CompletionOut,
@@ -17,9 +24,12 @@ from app.features.jobs.schemas import (
     JobCreate,
     JobDetail,
     JobEventOut,
+    LocationOut,
+    LocationRequest,
     MaterialIn,
     MaterialOut,
     PaymentOut,
+    RouteOut,
     TransitionRequest,
 )
 
@@ -38,6 +48,30 @@ def completion_total_paisa(body: CompletionRequest, rate_paisa: int) -> int:
         _materials_total_paisa(body.materials)
         + _labour_paisa(body.time_spent_mins, rate_paisa)
         + body.fuel_paisa
+    )
+
+
+def route_fuel_paisa(distance_m: float, rate_paisa_per_km: int) -> int:
+    """Fuel/running-cost estimate from a route distance. Integer paisa only."""
+    return round(distance_m / 1000 * rate_paisa_per_km)
+
+
+def _latest_location(locations: list[JobLocation], kind: str) -> JobLocation | None:
+    matching = [loc for loc in locations if loc.kind == kind]
+    return max(matching, key=lambda loc: loc.captured_at) if matching else None
+
+
+def derive_route(locations: list[JobLocation], rate_paisa_per_km: int) -> RouteOut | None:
+    """The straight-line route between the latest depart + arrive pins, with a
+    fuel estimate. ``None`` until both pins exist."""
+    depart = _latest_location(locations, "depart_workshop")
+    arrive = _latest_location(locations, "arrive_customer")
+    if depart is None or arrive is None:
+        return None
+    distance_m = haversine_m(depart.lat, depart.lng, arrive.lat, arrive.lng)
+    return RouteOut(
+        distance_m=distance_m,
+        fuel_paisa=route_fuel_paisa(distance_m, rate_paisa_per_km),
     )
 
 
@@ -279,6 +313,36 @@ class JobService:
         row.updated_at = datetime.now(UTC)
         return await self._detail(row)
 
+    # ── GPS route (Phase 3) ──────────────────────────────────────────────
+    async def record_location(
+        self, *, job_id: UUID, shop_id: str, body: LocationRequest, actor: str | None
+    ) -> JobDetail:
+        """Record a GPS punch. Idempotent on ``client_id`` — replaying a queued
+        punch (offline retry) does NOT duplicate it. Once both pins exist the
+        detail carries the derived route distance + fuel estimate."""
+        row = await self._load(job_id, shop_id)
+        existing = await self._repo.get_location_by_client(body.client_id)
+        if existing is None:
+            await self._repo.add_location(
+                JobLocation(
+                    job_id=row.id,
+                    client_id=body.client_id,
+                    kind=body.kind,
+                    lat=body.lat,
+                    lng=body.lng,
+                    accuracy_m=body.accuracy_m,
+                    is_mock=body.is_mock,
+                    device_time=body.device_time,
+                )
+            )
+            label = "left workshop" if body.kind == "depart_workshop" else "arrived at customer"
+            mock = " (mock location)" if body.is_mock else ""
+            await self._repo.add_event(
+                JobEvent(job_id=row.id, kind="gps", text=f"GPS — {label}{mock}", actor=actor)
+            )
+            row.updated_at = datetime.now(UTC)
+        return await self._detail(row)
+
     # ── Internals ────────────────────────────────────────────────────────
     async def _load(self, job_id: UUID, shop_id: str) -> JobRow:
         row = await self._repo.get(job_id)
@@ -312,4 +376,8 @@ class JobService:
         )
         detail.received_paisa = received
         detail.balance_paisa = payable - received
+
+        locations = await self._repo.list_locations(row.id)
+        detail.locations = [LocationOut.model_validate(loc) for loc in locations]
+        detail.route = derive_route(locations, settings.fuel_rate_paisa_per_km)
         return detail

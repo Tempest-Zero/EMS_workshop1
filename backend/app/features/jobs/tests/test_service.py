@@ -10,9 +10,20 @@ from uuid import uuid4
 import pytest
 
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.models import JobCompletion, JobEvent, JobPayment
-from app.features.jobs.schemas import CompletionRequest, JobCreate, MaterialIn, TransitionRequest
-from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
+from app.features.jobs.models import JobCompletion, JobEvent, JobLocation, JobPayment
+from app.features.jobs.schemas import (
+    CompletionRequest,
+    JobCreate,
+    LocationRequest,
+    MaterialIn,
+    TransitionRequest,
+)
+from app.features.jobs.service import (
+    JobActionError,
+    JobNotFoundError,
+    JobService,
+    route_fuel_paisa,
+)
 
 
 def _event(kind: str, text: str = "x") -> JobEvent:
@@ -54,6 +65,9 @@ def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo.get_payment = AsyncMock(return_value=None)
     repo.get_payment_by_client = AsyncMock(return_value=None)
     repo.add_payment = AsyncMock(side_effect=lambda p: p)
+    repo.list_locations = AsyncMock(return_value=[])
+    repo.get_location_by_client = AsyncMock(return_value=None)
+    repo.add_location = AsyncMock(side_effect=lambda loc: loc)
     yield JobService(repo), repo
 
 
@@ -379,3 +393,99 @@ async def test_detail_received_excludes_voided(svc: tuple[JobService, MagicMock]
     detail = await service.get_job(job_id=job.id, shop_id="default")
     assert detail.received_paisa == 200000  # voided 100000 excluded
     assert detail.balance_paisa == 300000  # 500000 - 200000
+
+
+# ── GPS route (Phase 3) ──────────────────────────────────────────────────────
+def _loc(kind: str, lat: float, lng: float, *, is_mock: bool = False) -> JobLocation:
+    loc = JobLocation(
+        job_id=uuid4(), client_id=uuid4(), kind=kind, lat=lat, lng=lng, is_mock=is_mock
+    )
+    loc.id = uuid4()
+    loc.accuracy_m = None
+    loc.captured_at = datetime.now(UTC)
+    loc.device_time = None
+    return loc
+
+
+def test_route_fuel_paisa_is_integer_paisa() -> None:
+    # 2 km at Rs 20/km = Rs 40 = 4000 paisa; rounds to the nearest paisa.
+    assert route_fuel_paisa(2000, 2000) == 4000
+    assert route_fuel_paisa(1500, 2000) == 3000
+
+
+async def test_record_location_adds_punch_and_gps_event(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    await service.record_location(
+        job_id=job.id,
+        shop_id="default",
+        body=LocationRequest(kind="depart_workshop", lat=24.86, lng=67.0, client_id=uuid4()),
+        actor="t1",
+    )
+    repo.add_location.assert_awaited_once()
+    assert repo.add_event.await_args.args[0].kind == "gps"
+
+
+async def test_record_location_is_idempotent_on_client_id(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    cid = uuid4()
+    body = LocationRequest(kind="depart_workshop", lat=24.86, lng=67.0, client_id=cid)
+
+    repo.get_location_by_client.return_value = None
+    await service.record_location(job_id=job.id, shop_id="default", body=body, actor="t1")
+    repo.add_location.assert_awaited_once()
+
+    # Replay the same client_id (offline retry) → found → not re-recorded.
+    repo.get_location_by_client.return_value = _loc("depart_workshop", 24.86, 67.0)
+    await service.record_location(job_id=job.id, shop_id="default", body=body, actor="t1")
+    repo.add_location.assert_awaited_once()  # still once
+
+
+async def test_record_location_stores_mock_flag(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    await service.record_location(
+        job_id=job.id,
+        shop_id="default",
+        body=LocationRequest(
+            kind="arrive_customer", lat=24.87, lng=67.01, is_mock=True, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    assert repo.add_location.await_args.args[0].is_mock is True
+    assert "mock" in repo.add_event.await_args.args[0].text
+
+
+async def test_detail_derives_route_once_both_pins_exist(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_locations.return_value = [
+        _loc("depart_workshop", 24.8607, 67.0011),
+        _loc("arrive_customer", 24.8615, 67.0099),
+    ]
+    detail = await service.get_job(job_id=job.id, shop_id="default")
+    assert detail.route is not None
+    assert detail.route.distance_m > 0
+    assert detail.route.fuel_paisa > 0
+    assert len(detail.locations) == 2
+
+
+async def test_detail_route_none_with_one_pin(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_locations.return_value = [_loc("depart_workshop", 24.86, 67.0)]
+    detail = await service.get_job(job_id=job.id, shop_id="default")
+    assert detail.route is None
+    assert len(detail.locations) == 1

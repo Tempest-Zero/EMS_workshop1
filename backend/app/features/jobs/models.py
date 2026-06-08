@@ -20,6 +20,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -50,6 +51,7 @@ class JobEventKind(StrEnum):
     PAYMENT = "payment"
     COMPLETE = "complete"
     BILL = "bill"
+    GPS = "gps"
 
 
 class JobStatus(StrEnum):
@@ -190,6 +192,44 @@ class JobMaterial(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
     unit_paisa: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa_text("0"))
+
+
+class JobLocationKind(StrEnum):
+    """The two GPS punches that bound a home-visit route (Phase 3)."""
+
+    DEPART_WORKSHOP = "depart_workshop"
+    ARRIVE_CUSTOMER = "arrive_customer"
+
+
+class JobLocation(Base):
+    """A GPS punch on a job's route (Phase 3): leaving the workshop and arriving
+    at the customer. ``client_id`` makes a punch idempotent so an offline retry
+    never double-records; ``is_mock`` flags a spoofed fix for manager review.
+    The straight-line route distance + fuel estimate are derived (not stored)."""
+
+    __tablename__ = "job_location"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('depart_workshop', 'arrive_customer')", name="job_location_kind_check"
+        ),
+        UniqueConstraint("client_id", name="uq_job_location_client"),
+        Index("ix_job_location_job", "job_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
+    )
+    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("job.id"), nullable=False)
+    client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_mock: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+    device_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class JobPayment(Base):

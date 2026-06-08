@@ -9,7 +9,14 @@ from uuid import UUID
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.jobs.models import Job, JobCompletion, JobEvent, JobMaterial, JobPayment
+from app.features.jobs.models import (
+    Job,
+    JobCompletion,
+    JobEvent,
+    JobLocation,
+    JobMaterial,
+    JobPayment,
+)
 
 
 class JobRepository:
@@ -123,3 +130,24 @@ class JobRepository:
         await self._session.flush()
         await self._session.refresh(payment)
         return payment
+
+    # ── Locations (GPS route) ─────────────────────────────────────────────
+    async def list_locations(self, job_id: UUID) -> list[JobLocation]:
+        stmt = (
+            select(JobLocation)
+            .where(JobLocation.job_id == job_id)
+            .order_by(JobLocation.captured_at.asc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
+    async def get_location_by_client(self, client_id: UUID) -> JobLocation | None:
+        stmt = select(JobLocation).where(JobLocation.client_id == client_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def add_location(self, location: JobLocation) -> JobLocation:
+        self._session.add(location)
+        await self._session.flush()
+        await self._session.refresh(location)
+        return location
