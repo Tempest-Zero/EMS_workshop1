@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   fetchJobs,
   createJob,
+  assignJob,
   addJobNote,
   addJobFollowup,
   transitionJob,
@@ -39,6 +40,14 @@ describe("jobsApi", () => {
     expect(url).toContain("/api/jobs");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body).customer_name).toBe("A");
+  });
+
+  it("assignJob posts the tech_id to the assign endpoint", async () => {
+    await assignJob("job-1", "t3");
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/jobs/job-1/assign");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ tech_id: "t3" });
   });
 
   it("addJobNote posts the text to the notes endpoint", async () => {

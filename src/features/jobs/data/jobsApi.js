@@ -20,6 +20,15 @@ export function createJob(body) {
   return apiSend("/api/jobs", "POST", body);
 }
 
+/**
+ * Assign a job to a technician (manager action). The backend's `/claim` is
+ * tech-self-pick (attributes to the caller), so the manager web always uses
+ * `/assign` with the target tech. Returns the full job detail.
+ */
+export function assignJob(id, techId) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/assign`, "POST", { tech_id: techId });
+}
+
 /** Append a note to a job. Returns the full job detail (with the fresh timeline). */
 export function addJobNote(id, text) {
   return apiSend(`/api/jobs/${encodeURIComponent(id)}/notes`, "POST", { text });
