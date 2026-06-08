@@ -14,7 +14,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
 import * as ImagePicker from "expo-image-picker";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -30,7 +30,11 @@ import { JobMediaCapture } from "../media/JobMediaCapture";
 import { uploadMedia } from "../media/uploadMedia";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
+import { onOutboxChange } from "../../lib/outbox";
+import { sendOrQueue } from "../../lib/outboxSync";
 import type { JobsStackParamList } from "./types";
+
+const OFFLINE_MSG = "Saved offline — will sync when reconnected.";
 
 type Props = NativeStackScreenProps<JobsStackParamList, "JobDetail">;
 
@@ -57,6 +61,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const { id, token } = route.params;
   const [job, setJob] = useState<JobDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
 
@@ -81,6 +86,10 @@ export function JobDetailScreen({ route, navigation }: Props) {
       void load();
     }, [load]),
   );
+
+  // When the outbox drains (a queued write synced), reload so the authoritative
+  // bill / cash / route appears in place of the optimistic "saved offline" note.
+  useEffect(() => onOutboxChange(() => void load()), [load]);
 
   const submitNote = useCallback(async () => {
     const text = note.trim();
@@ -152,8 +161,21 @@ export function JobDetailScreen({ route, navigation }: Props) {
     if (paisa <= 0 || busy) return;
     setBusy("negotiate");
     setError(null);
+    setInfo(null);
     try {
-      setJob(await jobsApi.negotiateBill(id, paisa));
+      const detail = await sendOrQueue(
+        {
+          id: `negotiate:${id}`,
+          kind: "negotiate",
+          jobId: id,
+          payload: { amountPaisa: paisa },
+          createdAt: new Date().toISOString(),
+          attempts: 0,
+        },
+        () => jobsApi.negotiateBill(id, paisa),
+      );
+      if (detail) setJob(detail);
+      else setInfo(OFFLINE_MSG);
       setNegotiate("");
     } catch {
       setError("Couldn't save the negotiated amount — try again.");
@@ -167,9 +189,23 @@ export function JobDetailScreen({ route, navigation }: Props) {
     if (paisa <= 0 || busy) return;
     setBusy("payment");
     setError(null);
+    setInfo(null);
     try {
-      // client_id → the backend dedups, so an offline retry never double-charges.
-      setJob(await jobsApi.logPayment(id, paisa, payMethod, Crypto.randomUUID()));
+      // client_id → the backend dedups, so a queued/retried payment never doubles.
+      const clientId = Crypto.randomUUID();
+      const detail = await sendOrQueue(
+        {
+          id: clientId,
+          kind: "payment",
+          jobId: id,
+          payload: { amountPaisa: paisa, method: payMethod, clientId },
+          createdAt: new Date().toISOString(),
+          attempts: 0,
+        },
+        () => jobsApi.logPayment(id, paisa, payMethod, clientId),
+      );
+      if (detail) setJob(detail);
+      else setInfo(OFFLINE_MSG);
       setPayAmount("");
     } catch {
       setError("Couldn't log the payment — try again.");
@@ -184,8 +220,21 @@ export function JobDetailScreen({ route, navigation }: Props) {
       if (!reason || busy) return;
       setBusy("void");
       setError(null);
+      setInfo(null);
       try {
-        setJob(await jobsApi.voidPayment(id, paymentId, reason));
+        const detail = await sendOrQueue(
+          {
+            id: `void:${paymentId}`,
+            kind: "void",
+            jobId: id,
+            payload: { paymentId, reason },
+            createdAt: new Date().toISOString(),
+            attempts: 0,
+          },
+          () => jobsApi.voidPayment(id, paymentId, reason),
+        );
+        if (detail) setJob(detail);
+        else setInfo(OFFLINE_MSG);
         setVoidingId(null);
         setVoidReason("");
       } catch {
@@ -202,24 +251,36 @@ export function JobDetailScreen({ route, navigation }: Props) {
       if (busy) return;
       setBusy(kind === "depart_workshop" ? "depart" : "arrive");
       setError(null);
+      setInfo(null);
       try {
         const loc = await getLocation();
         if (loc.lat == null || loc.lng == null) {
           setError("Couldn't get your location — enable GPS/location and try again.");
           return;
         }
-        // client_id → the backend dedups, so an offline retry never double-records.
-        setJob(
-          await jobsApi.recordLocation(id, {
-            kind,
-            lat: loc.lat,
-            lng: loc.lng,
-            accuracy_m: loc.accuracy_m,
-            is_mock: loc.is_mock_location,
-            device_time: new Date().toISOString(),
-            client_id: Crypto.randomUUID(),
-          }),
+        // client_id → the backend dedups, so a queued/retried punch never doubles.
+        const body = {
+          kind,
+          lat: loc.lat,
+          lng: loc.lng,
+          accuracy_m: loc.accuracy_m,
+          is_mock: loc.is_mock_location,
+          device_time: new Date().toISOString(),
+          client_id: Crypto.randomUUID(),
+        };
+        const detail = await sendOrQueue(
+          {
+            id: `location:${kind}:${id}`,
+            kind: "location",
+            jobId: id,
+            payload: { body },
+            createdAt: new Date().toISOString(),
+            attempts: 0,
+          },
+          () => jobsApi.recordLocation(id, body),
         );
+        if (detail) setJob(detail);
+        else setInfo(OFFLINE_MSG);
       } catch {
         setError("Couldn't record the location — try again.");
       } finally {
@@ -299,6 +360,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
         </Pressable>
 
         {error ? <Text style={styles.inlineError}>{error}</Text> : null}
+        {info ? <Text style={styles.inlineInfo}>{info}</Text> : null}
 
         <View style={styles.statusRow}>
           {canReady ? (
@@ -604,6 +666,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#f8fafc" },
   error: { color: "#b91c1c", fontSize: 14, fontWeight: "600" },
   inlineError: { color: "#b91c1c", fontSize: 13, fontWeight: "600", marginTop: 8 },
+  inlineInfo: { color: "#b45309", fontSize: 13, fontWeight: "600", marginTop: 8 },
   headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   token: { fontSize: 24, fontWeight: "800", color: "#0f172a" },
   chip: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 },
