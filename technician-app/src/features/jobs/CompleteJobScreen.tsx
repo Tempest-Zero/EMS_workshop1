@@ -9,6 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +20,7 @@ import {
 
 import { jobsApi, type Material } from "../../lib/jobsApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
+import { sendOrQueue } from "../../lib/outboxSync";
 import { uploadMedia } from "../media/uploadMedia";
 import { VoiceNote } from "./VoiceNote";
 import type { JobsStackParamList } from "./types";
@@ -86,13 +88,29 @@ export function CompleteJobScreen({ route, navigation }: Props) {
           // re-attached later. (Offline-friendly.)
         }
       }
-      await jobsApi.submitCompletion(id, {
+      const body = {
         materials: cleanMaterials,
         time_spent_mins: timeSpentMins,
         fuel_paisa: fuelPaisa,
         remarks_text: remarks.trim() || undefined,
         remarks_audio_media_id: audioId,
-      });
+      };
+      // Offline-capable: online submits now, offline queues (idempotent upsert)
+      // and syncs on reconnect — the "form submission must work offline" rule.
+      const detail = await sendOrQueue(
+        {
+          id: `completion:${id}`,
+          kind: "completion",
+          jobId: id,
+          payload: { body },
+          createdAt: new Date().toISOString(),
+          attempts: 0,
+        },
+        () => jobsApi.submitCompletion(id, body),
+      );
+      if (!detail) {
+        Alert.alert("Saved offline", "The completion will submit when you reconnect.");
+      }
       navigation.goBack();
     } catch {
       setError("Couldn't submit — check your connection and try again.");
