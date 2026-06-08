@@ -11,9 +11,6 @@ import { Platform } from "react-native";
 
 import { registerDevice } from "./devicesApi";
 
-// From app.json → extra.eas.projectId. Required for getExpoPushTokenAsync.
-const EAS_PROJECT_ID = "eb1d2f9f-2427-4aaf-934b-0e996b290692";
-
 // Show a banner even when the app is foregrounded.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -34,8 +31,10 @@ export async function registerForPush(): Promise<void> {
     let granted = (await Notifications.getPermissionsAsync()).granted;
     if (!granted) granted = (await Notifications.requestPermissionsAsync()).granted;
     if (!granted) return;
-    const token = (await Notifications.getExpoPushTokenAsync({ projectId: EAS_PROJECT_ID })).data;
-    await registerDevice(token);
+    // The native FCM registration token — the backend sends to it via FCM HTTP v1
+    // directly (no Expo relay), so no EAS push credential is needed.
+    const { data } = await Notifications.getDevicePushTokenAsync();
+    await registerDevice(String(data));
   } catch {
     // best-effort — push is non-critical
   }

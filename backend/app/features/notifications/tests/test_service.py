@@ -1,4 +1,4 @@
-"""Unit tests for NotificationService — repo + httpx mocked, no DB / network."""
+"""Unit tests for NotificationService — repo + token-mint + httpx mocked."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.features.notifications.service import NotificationService
+
+_SA = {"client_email": "svc@x.iam", "project_id": "fixflow-app-5d0a8", "token_uri": "https://t"}
 
 
 @pytest.fixture
@@ -20,10 +22,8 @@ def svc() -> Iterator[tuple[NotificationService, MagicMock]]:
 
 async def test_register_delegates_to_repo(svc: tuple[NotificationService, MagicMock]) -> None:
     service, repo = svc
-    await service.register(tech_id="t1", token="ExponentPushToken[abc]", platform="android")
-    repo.upsert_token.assert_awaited_once_with(
-        tech_id="t1", token="ExponentPushToken[abc]", platform="android"
-    )
+    await service.register(tech_id="t1", token="fcm-abc", platform="android")
+    repo.upsert_token.assert_awaited_once_with(tech_id="t1", token="fcm-abc", platform="android")
 
 
 async def test_notify_with_no_tokens_is_a_noop(svc: tuple[NotificationService, MagicMock]) -> None:
@@ -33,31 +33,52 @@ async def test_notify_with_no_tokens_is_a_noop(svc: tuple[NotificationService, M
     repo.list_tokens.assert_awaited_once_with("t1")
 
 
-async def test_notify_posts_only_expo_tokens(svc: tuple[NotificationService, MagicMock]) -> None:
+async def test_notify_skips_when_fcm_not_configured(
+    svc: tuple[NotificationService, MagicMock],
+) -> None:
     service, repo = svc
-    repo.list_tokens.return_value = ["ExponentPushToken[abc]", "not-an-expo-token"]
+    repo.list_tokens.return_value = ["fcm-abc"]
+    with patch("app.features.notifications.service._service_account", return_value=None):
+        with patch("app.features.notifications.service.httpx.AsyncClient") as client:
+            await service.notify_assignment(tech_id="t1", job_token=1052)
+            client.assert_not_called()
+
+
+async def test_notify_sends_one_fcm_message_per_token(
+    svc: tuple[NotificationService, MagicMock],
+) -> None:
+    service, repo = svc
+    repo.list_tokens.return_value = ["fcm-abc", "fcm-def"]
     post = AsyncMock()
     client = MagicMock()
     client.__aenter__ = AsyncMock(return_value=MagicMock(post=post))
     client.__aexit__ = AsyncMock(return_value=False)
-    with patch("app.features.notifications.service.httpx.AsyncClient", return_value=client):
+    with (
+        patch("app.features.notifications.service._service_account", return_value=_SA),
+        patch(
+            "app.features.notifications.service._access_token", new=AsyncMock(return_value="tok")
+        ),
+        patch("app.features.notifications.service.httpx.AsyncClient", return_value=client),
+    ):
         await service.notify_assignment(tech_id="t1", job_token=1052)
-    post.assert_awaited_once()
-    assert post.await_args is not None
-    sent = post.await_args.kwargs["json"]
-    assert len(sent) == 1  # the garbage token is filtered out
-    assert sent[0]["to"] == "ExponentPushToken[abc]"
-    assert "1052" in sent[0]["body"]
+    assert post.await_count == 2
+    url, kwargs = post.await_args_list[0].args, post.await_args_list[0].kwargs
+    assert "fixflow-app-5d0a8/messages:send" in url[0]
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert kwargs["json"]["message"]["data"]["job_token"] == "1052"
 
 
 async def test_notify_swallows_transport_errors(
     svc: tuple[NotificationService, MagicMock],
 ) -> None:
     service, repo = svc
-    repo.list_tokens.return_value = ["ExponentPushToken[abc]"]
-    with patch(
-        "app.features.notifications.service.httpx.AsyncClient",
-        side_effect=RuntimeError("network down"),
+    repo.list_tokens.return_value = ["fcm-abc"]
+    with (
+        patch("app.features.notifications.service._service_account", return_value=_SA),
+        patch(
+            "app.features.notifications.service._access_token",
+            new=AsyncMock(side_effect=RuntimeError("token mint failed")),
+        ),
     ):
-        # Best-effort: a transport failure must not propagate.
+        # Best-effort: a failure mid-send must not propagate.
         await service.notify_assignment(tech_id="t1", job_token=1052)

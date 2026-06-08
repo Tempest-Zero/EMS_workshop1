@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # between the depart-workshop and arrive-customer pins.
     fuel_rate_paisa_per_km: int = 20 * 100
 
+    # ── Push (Firebase Cloud Messaging, HTTP v1) ─────────────────────────
+    # The FCM service-account JSON, base64-encoded (set in Railway). The backend
+    # mints an OAuth token from it and sends "job assigned" pushes directly to
+    # FCM — no Expo relay, so nothing needs uploading to EAS. Empty = push off.
+    fcm_service_account_b64: str = ""
+
     # ── Auth (Name + PIN → JWT) ──────────────────────────────────────────
     # HS256 signing secret. The default is for local dev only — production
     # MUST override it via FIXFLOW_JWT_SECRET (a long random string).
