@@ -15,9 +15,9 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 | **EAS builds (APKs)** | https://expo.dev/accounts/instant_fidelity/projects/fixflow-technician/builds |
 | **Latest APK — v10 (audio fix only)** | https://expo.dev/artifacts/eas/aMFYezDKCsc2fsCPT88tPZ.apk |
 | **APK — v12 (full demo build: audio + outbox + push)** | https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk |
-| **Manager web (public)** | https://tempest-zero.github.io/EMS_workshop1/ — live **after** PR #46 merges + Pages enabled once (Settings → Pages → Source: GitHub Actions). Points at the prod Railway backend. |
+| **Manager web (public, LIVE)** | **https://web-production-fd7de.up.railway.app/** — own Railway service (`web`), points at the prod backend. Demo login: PIN `1234`. |
 | **Manager web (local)** | `npm run dev` (Vite, http://localhost:5173); `.env.local` sets `VITE_API_URL` to prod. |
-| Railway project | `efficient-tenderness` (service `efficient-tenderness`, env `production`) |
+| Railway project | `efficient-tenderness` (env `production`) — **two services**: `efficient-tenderness` (backend/FastAPI) + `web` (Vite SPA, Dockerfile.web). |
 | EAS project | `@instant_fidelity/fixflow-technician` (projectId `eb1d2f9f-2427-4aaf-934b-0e996b290692`) |
 | Firebase (FCM) project | `fixflow-app-5d0a8` (Android app `com.fixflow.technician`) |
 
@@ -45,9 +45,10 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 **Cut by owner (out of scope):** WhatsApp intake/bill delivery, barcode check-in, face recognition.
 
 **Pending (operational, not build):**
-- Merge **PR #45** (FCM-direct push) — code already deployed to prod; this just syncs `main`.
-- Merge **PR #46** (web → GitHub Pages), then enable Pages once (Settings → Pages → Source: GitHub Actions). Site goes live at https://tempest-zero.github.io/EMS_workshop1/.
+- ✅ **PR #45** (FCM-direct push) — merged. ✅ **PR #46** (Pages) — merged, then **superseded** (we host on Railway, not Pages).
+- Merge **PR #47** (web → Railway service) — removes the dead Pages workflow; the web is already **live** at https://web-production-fd7de.up.railway.app/ (deploy was done out-of-band, this PR just lands the Dockerfile.web/.dockerignore + cleanup). **Do NOT enable GitHub Pages** — we abandoned that path.
 - **v12 APK** ready: https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk — install for the full on-device demo (audio + outbox + push).
+- **Web hosting note:** Railway `web` service builds `Dockerfile.web` (`RAILWAY_DOCKERFILE_PATH`) with build var `VITE_API_URL`=backend URL. Backend `FIXFLOW_CORS_ORIGINS` was extended to allow the web origin (JSON array; localhost dev origins kept). To redeploy the web after code changes: `railway up -s web` from repo root.
 - **ERP upload final hop:** payroll **export** is built; the actual push into the client's ERP is a pluggable step pending their system/format. "Every Sunday" automation = same export on a Railway cron (not yet wired; export is on-demand today).
 
 ---
