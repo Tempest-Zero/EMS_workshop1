@@ -13,10 +13,16 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
 
   // The web is the manager console — technicians sign in on the mobile app.
-  // Show only manager accounts in the picker.
+  // Show only manager accounts in the picker, and pre-select the first one so a
+  // single-manager shop only has to type the PIN (otherwise the Log in button
+  // stays disabled until the lone account is clicked, which reads as a bug).
   useEffect(() => {
     fetchTechnicians()
-      .then((rows) => setTechs(rows.filter((t) => t.role === "manager")))
+      .then((rows) => {
+        const managers = rows.filter((t) => t.role === "manager");
+        setTechs(managers);
+        if (managers.length) setTechId((cur) => cur || managers[0].id);
+      })
       .catch(() => setError("Couldn't reach the server. Please try again."));
   }, []);
 
@@ -63,7 +69,9 @@ export default function Login() {
                   <Avatar name={t.name} color={t.avatar} size="sm" />
                   <div className="leading-tight">
                     <div className="text-sm font-bold text-slate-800">{t.name}</div>
-                    <div className="text-[11px] text-slate-400">{t.specialty}</div>
+                    {/* This picker only lists managers, so show the role — not the
+                        trade specialty, which reads as "this isn't the manager". */}
+                    <div className="text-[11px] text-slate-400">Manager</div>
                   </div>
                 </button>
               ))}
