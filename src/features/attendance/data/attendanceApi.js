@@ -49,3 +49,36 @@ export function fetchAdjustments(techId) {
 export function createAdjustment(body) {
   return apiSend("/api/attendance/adjustments", "POST", { shop_id: SHOP_ID, ...body });
 }
+
+// ── Manager config: geofence + shifts (the PUT-backed admin surface) ─────────
+// Both endpoints require a manager role on the backend; the web is a
+// manager-only console, so the logged-in user already qualifies.
+
+/** The shop geofence punches are checked against. Returns `null` if unset. */
+export function fetchGeofence() {
+  return apiGet(`/api/attendance/geofences?shop_id=${encodeURIComponent(SHOP_ID)}`);
+}
+
+/** Create/update the shop geofence. `body` is
+ * `{ name, center_lat, center_lng, radius_m, is_active, wifi_bssids? }`. */
+export function saveGeofence(body) {
+  return apiSend(`/api/attendance/geofences?shop_id=${encodeURIComponent(SHOP_ID)}`, "PUT", body);
+}
+
+/** A technician's shift. The backend returns a sensible default when unset, so
+ * this always resolves to an editable shift. */
+export function fetchShift(techId) {
+  return apiGet(
+    `/api/attendance/shifts/${encodeURIComponent(techId)}?shop_id=${encodeURIComponent(SHOP_ID)}`
+  );
+}
+
+/** Create/update a technician's shift. `body` is
+ * `{ start_local, end_local, working_days, grace_minutes, timezone }`. */
+export function saveShift(techId, body) {
+  return apiSend(
+    `/api/attendance/shifts/${encodeURIComponent(techId)}?shop_id=${encodeURIComponent(SHOP_ID)}`,
+    "PUT",
+    body
+  );
+}

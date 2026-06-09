@@ -1,6 +1,8 @@
 import { Bell, CreditCard, Users2, Link2, ShieldCheck } from "lucide-react";
 import { Card, SectionHeader, Field, inputClass, Button } from "@shared/ui/primitives";
 import { WORKSHOP } from "@shared/config/constants";
+import GeofenceCard from "@features/settings/components/GeofenceCard";
+import ShiftsCard from "@features/settings/components/ShiftsCard";
 
 const INTEGRATIONS = [
   {
@@ -52,6 +54,10 @@ export default function Settings() {
           <Button variant="primary">Save Changes</Button>
         </div>
       </Card>
+
+      {/* Attendance config — live, manager-only (backed by the real API) */}
+      <GeofenceCard />
+      <ShiftsCard />
 
       {/* Integrations */}
       <Card className="p-5">
