@@ -21,7 +21,7 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 | EAS project | `@instant_fidelity/fixflow-technician` (projectId `eb1d2f9f-2427-4aaf-934b-0e996b290692`) |
 | Firebase (FCM) project | `fixflow-app-5d0a8` (Android app `com.fixflow.technician`) |
 
-**Demo login:** **Web** (manager console) → sign in as **Imran Ahmed** (the only manager), **PIN `1234`**. **Mobile app** (technicians) → pick a tech (Bilal/Asif/Kashif/Tariq), **PIN `1234`**. Manager-only API endpoints (payroll, attendance board/grid, corrections) now reject technician tokens with 403.
+**Demo login:** **Web** (manager console) → sign in as **Person A** (`m1`, the dedicated manager; auto-selected), **PIN `1234`**. **Mobile app** (technicians) → pick a tech (Imran/Bilal/Asif/Kashif/Tariq), **PIN `1234`**. (Imran was previously the manager; he's now a plain technician — the manager is a generic Person A. See migration 0012.) Manager-only API endpoints (payroll, attendance board/grid, corrections) reject technician tokens with 403.
 
 ---
 
@@ -69,7 +69,7 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 - **Push = FCM HTTP v1 direct from backend** (NOT Expo relay): service account stored as Railway secret `FIXFLOW_FCM_SERVICE_ACCOUNT_B64` (base64 JSON); backend mints an OAuth token (PyJWT RS256) and POSTs to FCM v1. App registers the **native FCM device token** (`getDevicePushTokenAsync`). Best-effort; off if the secret is absent.
 - **Geofence = flag-only** (never blocks); owner's decision.
 - **Audio = expo-av** (`Audio.Recording`, HIGH_QUALITY → AAC/.m4a, browser-playable), NOT expo-audio (0.3.5 throws `IllegalStateException` on `stop()` — see lessons). expo-av is deprecated in SDK 52 (works fine; migrate to fixed expo-audio at SDK 53). `expo-doctor` excludes `expo-av` in `package.json`.
-- **Migrations:** sequential Alembic 0001→0011. Latest: 0010 `job_location` (GPS), 0011 `device_token` (push). Both applied in prod (`alembic_version=0011`). Railway **auto-runs `alembic upgrade head` on deploy**.
+- **Migrations:** sequential Alembic 0001→0012. Recent: 0010 `job_location` (GPS), 0011 `device_token` (push), 0012 dedicated manager account (seed Person A `m1`, demote `t1` to tech). All applied in prod (`alembic_version=0012`). Railway **auto-runs `alembic upgrade head` on deploy**.
 
 ---
 
