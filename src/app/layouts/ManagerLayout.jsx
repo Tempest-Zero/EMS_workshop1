@@ -15,7 +15,6 @@ import {
 import { WORKSHOP } from "@shared/config/constants";
 import { fmtDate, fmtDow } from "@shared/lib/date";
 import { TODAY } from "@shared/config/constants";
-import RoleSwitcher from "@app/components/RoleSwitcher";
 import LogoutButton from "@app/components/LogoutButton";
 
 const NAV = [
@@ -88,8 +87,7 @@ export default function ManagerLayout() {
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-slate-200 bg-white md:flex">
         <Brand />
         <NavItems />
-        <div className="mt-auto flex items-center justify-between px-4 py-4">
-          <RoleSwitcher />
+        <div className="mt-auto px-4 py-4">
           <LogoutButton compact />
         </div>
       </aside>
@@ -111,7 +109,7 @@ export default function ManagerLayout() {
             </div>
             <NavItems onNavigate={() => setDrawer(false)} />
             <div className="mt-auto px-4 py-4">
-              <RoleSwitcher />
+              <LogoutButton compact />
             </div>
           </div>
         </div>
@@ -133,9 +131,6 @@ export default function ManagerLayout() {
           <div className="ml-auto flex items-center gap-3">
             <div className="hidden items-center rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 sm:flex">
               {fmtDow(TODAY)}, {fmtDate(TODAY, true)}
-            </div>
-            <div className="md:hidden">
-              <RoleSwitcher compact />
             </div>
           </div>
         </header>

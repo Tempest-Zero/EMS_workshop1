@@ -12,10 +12,12 @@ export default function Login() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  // The web is the manager console — technicians sign in on the mobile app.
+  // Show only manager accounts in the picker.
   useEffect(() => {
     fetchTechnicians()
-      .then(setTechs)
-      .catch(() => setError("Couldn't load the team. Is the server reachable?"));
+      .then((rows) => setTechs(rows.filter((t) => t.role === "manager")))
+      .catch(() => setError("Couldn't reach the server. Please try again."));
   }, []);
 
   const submit = (e) => {
@@ -44,7 +46,7 @@ export default function Login() {
         <form onSubmit={submit} className="space-y-4">
           <div>
             <div className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
-              Who are you?
+              Sign in as
             </div>
             <div className="grid max-h-56 grid-cols-1 gap-1.5 overflow-y-auto">
               {techs.map((t) => (
@@ -67,7 +69,7 @@ export default function Login() {
               ))}
               {techs.length === 0 && !error && (
                 <div className="rounded-lg border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-400">
-                  Loading team…
+                  Loading…
                 </div>
               )}
             </div>
