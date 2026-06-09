@@ -38,3 +38,21 @@ async def get_current_principal(
 
 
 CurrentPrincipal = Annotated[Principal, Depends(get_current_principal)]
+
+
+async def require_manager(
+    principal: Annotated[Principal, Depends(get_current_principal)],
+) -> Principal:
+    """Gate manager-only endpoints.
+
+    The router-level auth already requires a valid token (any role); this adds
+    the manager check on top, so a technician's token gets 403 instead of being
+    able to read shop-wide data (payroll, attendance board, corrections). The
+    web is manager-only; the mobile app never calls these endpoints.
+    """
+    if principal.role != "manager":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "manager role required")
+    return principal
+
+
+CurrentManager = Annotated[Principal, Depends(require_manager)]
