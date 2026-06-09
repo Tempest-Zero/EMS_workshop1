@@ -3,8 +3,12 @@ import {
   createAdjustment,
   fetchAdjustments,
   fetchBoard,
+  fetchGeofence,
   fetchGrid,
+  fetchShift,
   fetchTechDays,
+  saveGeofence,
+  saveShift,
 } from "./attendanceApi";
 
 function mockOk() {
@@ -65,6 +69,51 @@ describe("attendanceApi", () => {
     expect(body.shop_id).toBe("default");
     expect(body.tech_id).toBe("t1");
     expect(body.reason).toBe("forgot");
+  });
+
+  it("fetchGeofence passes shop_id", async () => {
+    await fetchGeofence();
+    const url = globalThis.fetch.mock.calls[0][0];
+    expect(url).toContain("/api/attendance/geofences?shop_id=default");
+  });
+
+  it("saveGeofence PUTs the geofence body", async () => {
+    await saveGeofence({
+      name: "Workshop",
+      center_lat: 33.65564,
+      center_lng: 72.8543,
+      radius_m: 80,
+      is_active: true,
+      wifi_bssids: null,
+    });
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/attendance/geofences?shop_id=default");
+    expect(init.method).toBe("PUT");
+    const body = JSON.parse(init.body);
+    expect(body.center_lat).toBe(33.65564);
+    expect(body.radius_m).toBe(80);
+  });
+
+  it("fetchShift builds the tech path with shop_id", async () => {
+    await fetchShift("t2");
+    const url = globalThis.fetch.mock.calls[0][0];
+    expect(url).toContain("/api/attendance/shifts/t2?shop_id=default");
+  });
+
+  it("saveShift PUTs the shift body", async () => {
+    await saveShift("t3", {
+      start_local: "09:00:00",
+      end_local: "18:00:00",
+      working_days: "1111110",
+      grace_minutes: 10,
+      timezone: "Asia/Karachi",
+    });
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("/api/attendance/shifts/t3?shop_id=default");
+    expect(init.method).toBe("PUT");
+    const body = JSON.parse(init.body);
+    expect(body.working_days).toBe("1111110");
+    expect(body.grace_minutes).toBe(10);
   });
 
   it("throws on a non-ok response", async () => {

@@ -36,7 +36,7 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 ## 3. Current state — requirements coverage (client brief: 4 modules)
 
 **Built & live (real, end-to-end):**
-- **M1 Attendance:** offline clock-in/out + selfie + GPS; geofence **flag** (live, real coords `33.65564, 72.8543`, 80 m, `is_active=true`, flag-only by design); **weekly payroll CSV export** + manager download.
+- **M1 Attendance:** offline clock-in/out + selfie + GPS; geofence **flag** (live, real coords `33.65564, 72.8543`, 80 m, `is_active=true`, flag-only by design); **weekly payroll CSV export** + manager download; **manager Settings edits the geofence + per-tech shifts in-app** (PUT-backed, PR #52).
 - **M2 Jobs:** live work list (web board + mobile My Jobs/Claim); **dual assignment** (manager `/assign` + tech `/claim`); **push-on-assign** (FCM direct from backend).
 - **M3 SOP:** customer details; before/after media; GPS depart+arrive punches → route + fuel; completion form (materials/time/fuel); **voice-note remark** (expo-av); **closing-video-required gate**.
 - **M4 Billing:** auto-bill on completion; **original vs negotiated** (both stored); cash ledger + corrections (void, append-only).
@@ -46,16 +46,15 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 
 **Pending (operational, not build):**
 - **v12 APK** ready: https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk — install for the full on-device demo (audio + outbox + push).
-- **PR #50** (manager role gate) — open; **already deployed to prod**. Merge to sync `main`.
+- **PR #52** (manager geofence + shift editor) — open; **web redeployed to Railway**. Merge to sync `main`. Pure front-end against existing PUT endpoints; no backend/migration.
 - **ERP upload final hop:** payroll **export** is built; the actual push into the client's ERP is a pluggable step pending their system/format. "Every Sunday" automation = same export on a Railway cron (not yet wired; export is on-demand today).
-- **Web hosting was moved to Railway (not GitHub Pages)** — the Pages workflow was removed. The `web` service deploys `Dockerfile.web`; backend `FIXFLOW_CORS_ORIGINS` allows the web origin. **Deploy gotcha:** Railway's build cache can serve a stale bundle — bump `REBUILD` in `Dockerfile.web` if a deploy looks unchanged; verify by diffing the served `/assets/index-*.js` hash.
-- **Dead files to delete** (manager-only web): `TechLayout.jsx`, `RoleSwitcher.jsx`, and the tech page components (tree-shaken, harmless; cleanup only).
+- **Web hosting was moved to Railway (not GitHub Pages)** — the Pages workflow was removed. The `web` service deploys `Dockerfile.web`; backend `FIXFLOW_CORS_ORIGINS` allows the web origin. Deploy with `railway up --service web --detach` (Railway is **not** GitHub-connected). **Deploy gotcha:** Railway's build cache can serve a stale bundle — bump the cache-bust ARG in `Dockerfile.web` if a deploy looks unchanged; verify by diffing the served `/assets/index-*.js` hash.
 
 ---
 
 ## 4. Open / recent PRs
-- **#50** `feat/manager-role-gate` — OPEN, gates green, **already deployed to prod**; merge to sync `main`. (Backend gates manager-only attendance/payroll/config endpoints behind a manager role; web `AuthContext` refuses non-manager sessions.)
-- Merged: #45 FCM-direct push, #47 web→Railway hosting, #48 live roster/attendance wiring, #49 manager-only web; #41 offline outbox, #42 expo-av audio, #43 push slice, #44 payroll export, #32–36 Phase 3, #29–31 Phase 2.
+- **#52** `feat/web-attendance-config` — OPEN, gates green (lint/format/build clean, 67 web tests), **web redeployed to Railway**; merge to sync `main`. (Manager Settings gains live geofence + per-tech shift editors against the existing PUT endpoints; front-end only.)
+- Merged: #50 manager role gate, #51 delete dead tech web files; #45 FCM-direct push, #47 web→Railway hosting, #48 live roster/attendance wiring, #49 manager-only web; #41 offline outbox, #42 expo-av audio, #43 push slice, #44 payroll export, #32–36 Phase 3, #29–31 Phase 2.
 - The owner merges PRs (protected `main`); the agent cannot merge. Each slice = its own PR.
 
 ---
