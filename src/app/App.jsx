@@ -1,17 +1,19 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import ManagerLayout from "@app/layouts/ManagerLayout";
-import TechLayout from "@app/layouts/TechLayout";
 import ToastHost from "@app/components/ToastHost";
 import { useAuth } from "@app/providers/AuthContext";
 import { Login } from "@features/auth";
 
 // Each feature exposes its pages through its public barrel (src/features/<x>/index.js).
+// This is the MANAGER web. Technician field workflows (clock-in, my-jobs, SOP
+// capture, completion form, closing video) live in the separate mobile app —
+// they are intentionally NOT routed here.
 import { Dashboard } from "@features/dashboard";
-import { JobsBoard, JobDetail, MyJobs, TechJobDetail } from "@features/jobs";
-import { Technicians, TechnicianDetail, Profile } from "@features/technicians";
-import { Attendance, AttendanceTechDetail, ClockIn } from "@features/attendance";
-import { Schedule, MyWeek } from "@features/schedule";
-import { Troubleshooting, TechTroubleshoot } from "@features/troubleshooting";
+import { JobsBoard, JobDetail } from "@features/jobs";
+import { Technicians, TechnicianDetail } from "@features/technicians";
+import { Attendance, AttendanceTechDetail } from "@features/attendance";
+import { Schedule } from "@features/schedule";
+import { Troubleshooting } from "@features/troubleshooting";
 import { Settings } from "@features/settings";
 
 export default function App() {
@@ -24,7 +26,6 @@ export default function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
-        {/* Manager (desktop) */}
         <Route element={<ManagerLayout />}>
           <Route index element={<Dashboard />} />
           <Route path="technicians" element={<Technicians />} />
@@ -36,17 +37,6 @@ export default function App() {
           <Route path="schedule" element={<Schedule />} />
           <Route path="troubleshooting" element={<Troubleshooting />} />
           <Route path="settings" element={<Settings />} />
-        </Route>
-
-        {/* Technician (mobile) */}
-        <Route path="tech" element={<TechLayout />}>
-          <Route index element={<Navigate to="/tech/jobs" replace />} />
-          <Route path="jobs" element={<MyJobs />} />
-          <Route path="jobs/:id" element={<TechJobDetail />} />
-          <Route path="clock" element={<ClockIn />} />
-          <Route path="troubleshoot" element={<TechTroubleshoot />} />
-          <Route path="profile" element={<Profile />} />
-          <Route path="schedule" element={<MyWeek />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
