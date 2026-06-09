@@ -14,6 +14,14 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# Cache-bust. Railway persists Docker build-layer cache between deploys, and it
+# can wrongly reuse a stale `npm run build` even when the source changed (the
+# bundle then ships unchanged). Bumping REBUILD invalidates the layers below so
+# the SPA is recompiled from the current source. Bump on any deploy that serves
+# stale assets.
+ARG REBUILD=2026-06-09a
+RUN echo "rebuild ${REBUILD}"
+
 # App source (.dockerignore keeps node_modules / dist / backend out of context).
 COPY . .
 

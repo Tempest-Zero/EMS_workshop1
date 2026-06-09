@@ -15,7 +15,7 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 | **EAS builds (APKs)** | https://expo.dev/accounts/instant_fidelity/projects/fixflow-technician/builds |
 | **Latest APK — v10 (audio fix only)** | https://expo.dev/artifacts/eas/aMFYezDKCsc2fsCPT88tPZ.apk |
 | **APK — v12 (full demo build: audio + outbox + push)** | https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk |
-| **Manager web (public, LIVE)** | **https://web-production-fd7de.up.railway.app/** — own Railway service (`web`), points at the prod backend. Demo login: PIN `1234`. |
+| **Manager web (public, LIVE)** | **https://web-production-fd7de.up.railway.app/** — own Railway service (`web`), points at the prod backend. **Manager-only console** (technicians use the mobile app); login shows manager accounts only — sign in as **Imran Ahmed**, PIN `1234`. |
 | **Manager web (local)** | `npm run dev` (Vite, http://localhost:5173); `.env.local` sets `VITE_API_URL` to prod. |
 | Railway project | `efficient-tenderness` (env `production`) — **two services**: `efficient-tenderness` (backend/FastAPI) + `web` (Vite SPA, Dockerfile.web). |
 | EAS project | `@instant_fidelity/fixflow-technician` (projectId `eb1d2f9f-2427-4aaf-934b-0e996b290692`) |
@@ -48,7 +48,8 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 - ✅ **PR #45** (FCM-direct push) — merged. ✅ **PR #46** (Pages) — merged, then **superseded** (we host on Railway, not Pages).
 - Merge **PR #47** (web → Railway service) — removes the dead Pages workflow; the web is already **live** at https://web-production-fd7de.up.railway.app/ (deploy was done out-of-band, this PR just lands the Dockerfile.web/.dockerignore + cleanup). **Do NOT enable GitHub Pages** — we abandoned that path.
 - **v12 APK** ready: https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk — install for the full on-device demo (audio + outbox + push).
-- **Web hosting note:** Railway `web` service builds `Dockerfile.web` (`RAILWAY_DOCKERFILE_PATH`) with build var `VITE_API_URL`=backend URL. Backend `FIXFLOW_CORS_ORIGINS` was extended to allow the web origin (JSON array; localhost dev origins kept). To redeploy the web after code changes: `railway up -s web` from repo root.
+- **Web hosting note:** Railway `web` service builds `Dockerfile.web` (`RAILWAY_DOCKERFILE_PATH`) with build var `VITE_API_URL`=backend URL. Backend `FIXFLOW_CORS_ORIGINS` was extended to allow the web origin (JSON array; localhost dev origins kept). To redeploy the web after code changes: `railway up -s web` from repo root. **Gotcha:** Railway's build-layer cache can serve a stale bundle even when source changed — if a deploy looks unchanged, bump `REBUILD` in `Dockerfile.web` to force a clean compile. Verify a deploy by diffing the served `/assets/index-*.js` hash.
+- **Web is manager-only** (PR #49): the `/tech/*` routes, the Manager|Technician `RoleSwitcher`, and the technician login were removed — technicians use the mobile app. `TechLayout.jsx`, `RoleSwitcher.jsx`, and the tech page components are now dead files (tree-shaken; safe to delete later).
 - **ERP upload final hop:** payroll **export** is built; the actual push into the client's ERP is a pluggable step pending their system/format. "Every Sunday" automation = same export on a Railway cron (not yet wired; export is on-demand today).
 
 ---
