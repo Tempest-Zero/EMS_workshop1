@@ -22,8 +22,9 @@ import {
   voidPayment as voidPaymentApi,
 } from "@features/jobs/data/jobsApi";
 import { mapApiJob, toCreateBody } from "@features/jobs/data/mapJob";
-import { technicians } from "@features/technicians/data/technicians";
-import { todayRecord } from "@features/attendance/data/attendance";
+import { technicians as seedTechnicians } from "@features/technicians/data/technicians";
+import { fetchTechnicians } from "@features/auth/data/authApi";
+import { fetchBoard } from "@features/attendance/data/attendanceApi";
 import { nowEntry, fmtTime } from "@shared/lib/date";
 import { estimateTotal } from "@shared/lib/job";
 import { rupeesToPaisa } from "@shared/lib/currency";
@@ -35,8 +36,6 @@ const RATE = 1200;
 // the authoritative job. Bill / revenue / completion are now API-backed (P2f),
 // so they're intentionally NOT here — the server is the single source of truth.
 const LOCAL_ONLY_FIELDS = ["estimate", "payment", "photos", "followUps"];
-
-const techName = (id) => technicians.find((t) => t.id === id)?.name || id;
 
 const AppContext = createContext(null);
 
@@ -51,15 +50,18 @@ function applyServerJob(prevJobs, mapped) {
   return next;
 }
 
-function initAttendanceToday() {
+// Map the live attendance board (server-authoritative for *today*, incl. mobile
+// punches) into the { [techId]: { status, clockIn, clockOut, clockedIn } } shape
+// the manager screens read.
+function boardToAttendance(rows) {
   const map = {};
-  technicians.forEach((t) => {
-    const rec = todayRecord(t.id) || { status: "absent", clockIn: null, clockOut: null };
-    map[t.id] = {
-      status: rec.status,
-      clockIn: rec.clockIn,
-      clockOut: rec.clockOut,
-      clockedIn: ["present", "field", "half"].includes(rec.status) && !rec.clockOut,
+  (rows || []).forEach((r) => {
+    const onDuty = ["present", "field", "half"].includes(r.status);
+    map[r.tech_id] = {
+      status: r.status,
+      clockIn: r.first_in ? fmtTime(new Date(r.first_in)) : null,
+      clockOut: r.last_out ? fmtTime(new Date(r.last_out)) : null,
+      clockedIn: onDuty && !r.last_out,
     };
   });
   return map;
@@ -68,9 +70,44 @@ function initAttendanceToday() {
 export function AppProvider({ children }) {
   const { isAuthenticated } = useAuth();
   const [jobs, setJobs] = useState([]);
+  // Seed the roster for an instant first paint / offline fallback; the live
+  // roster (and today's attendance) replace it once authenticated.
+  const [technicians, setTechnicians] = useState(seedTechnicians);
   const [currentTechId, setCurrentTechId] = useState("t1");
-  const [attendanceToday, setAttendanceToday] = useState(initAttendanceToday);
+  const [attendanceToday, setAttendanceToday] = useState({});
   const [toasts, setToasts] = useState([]);
+
+  // Stable accessor for the live roster — lets toast callbacks (assign/claim)
+  // resolve a tech name without re-creating on every roster change.
+  const techniciansRef = useRef(technicians);
+  useEffect(() => {
+    techniciansRef.current = technicians;
+  }, [technicians]);
+  const techName = useCallback(
+    (id) => techniciansRef.current.find((t) => t.id === id)?.name || id,
+    []
+  );
+
+  // Load the live roster + today's attendance board once authenticated, so the
+  // manager Dashboard / Technicians views reflect real data (including mobile
+  // clock-ins) instead of seed data. On failure the seeded roster stays.
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    let cancelled = false;
+    fetchTechnicians()
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows) && rows.length) setTechnicians(rows);
+      })
+      .catch(() => {});
+    fetchBoard(seedTechnicians.map((t) => t.id))
+      .then((board) => {
+        if (!cancelled) setAttendanceToday(boardToAttendance(board?.rows));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
 
   // Load the real jobs once the user is logged in (the API requires a token).
   useEffect(() => {
@@ -238,7 +275,7 @@ export function AppProvider({ children }) {
         addToast("Couldn't assign — please retry", "danger");
       }
     },
-    [replaceFromDetail, addToast]
+    [replaceFromDetail, addToast, techName]
   );
 
   const claimJob = useCallback(
@@ -251,7 +288,7 @@ export function AppProvider({ children }) {
         addToast("Couldn't claim — please retry", "danger");
       }
     },
-    [replaceFromDetail, addToast]
+    [replaceFromDetail, addToast, techName]
   );
 
   // ── Work completion (Module 3) → auto-generates the bill (Module 4) ──
