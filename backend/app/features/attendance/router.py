@@ -48,7 +48,7 @@ from app.features.attendance.service import (
     AttendanceService,
     SelfieTooLargeError,
 )
-from app.features.identity.deps import CurrentPrincipal, get_current_principal
+from app.features.identity.deps import CurrentPrincipal, get_current_principal, require_manager
 
 router = APIRouter(
     prefix="/attendance",
@@ -145,6 +145,7 @@ async def list_punches(
 @router.get(
     "/board",
     response_model=Board,
+    dependencies=[Depends(require_manager)],
     summary="Today's board for the shop",
 )
 async def board(
@@ -159,6 +160,7 @@ async def board(
 @router.get(
     "/grid",
     response_model=Grid,
+    dependencies=[Depends(require_manager)],
     summary="Monthly attendance grid",
 )
 async def grid(
@@ -173,6 +175,7 @@ async def grid(
 @router.get(
     "/techs/{tech_id}/days",
     response_model=TechDays,
+    dependencies=[Depends(require_manager)],
     summary="Per-tech daily detail (punches + selfie + location)",
 )
 async def tech_days(
@@ -188,6 +191,7 @@ async def tech_days(
 @router.get(
     "/payroll",
     response_model=PayrollExport,
+    dependencies=[Depends(require_manager)],
     summary="Weekly attendance export for payroll / ERP (defaults to the last 7 days)",
 )
 async def payroll(
@@ -209,6 +213,7 @@ async def payroll(
     "/adjustments",
     response_model=AdjustmentResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_manager)],
     summary="Append an audited manager correction",
 )
 async def create_adjustment(
@@ -225,6 +230,7 @@ async def create_adjustment(
 @router.get(
     "/adjustments",
     response_model=list[AdjustmentItem],
+    dependencies=[Depends(require_manager)],
     summary="List audited manager corrections",
 )
 async def list_adjustments(
@@ -241,6 +247,7 @@ async def list_adjustments(
 @router.get(
     "/shifts/{tech_id}",
     response_model=Shift,
+    dependencies=[Depends(require_manager)],
     summary="Get a tech's shift",
 )
 async def get_shift(tech_id: str, service: ServiceDep, shop_id: ShopId = DEFAULT_SHOP_ID) -> Shift:
@@ -250,6 +257,7 @@ async def get_shift(tech_id: str, service: ServiceDep, shop_id: ShopId = DEFAULT
 @router.put(
     "/shifts/{tech_id}",
     response_model=Shift,
+    dependencies=[Depends(require_manager)],
     summary="Create/update a tech's shift",
 )
 async def put_shift(
@@ -267,6 +275,7 @@ async def put_shift(
 @router.get(
     "/geofences",
     response_model=Geofence | None,
+    dependencies=[Depends(require_manager)],
     summary="Get the shop geofence",
 )
 async def get_geofence(service: ServiceDep, shop_id: ShopId = DEFAULT_SHOP_ID) -> Geofence | None:
@@ -276,6 +285,7 @@ async def get_geofence(service: ServiceDep, shop_id: ShopId = DEFAULT_SHOP_ID) -
 @router.put(
     "/geofences",
     response_model=Geofence,
+    dependencies=[Depends(require_manager)],
     summary="Create/update the shop geofence",
 )
 async def put_geofence(

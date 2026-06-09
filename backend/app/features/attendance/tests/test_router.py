@@ -183,6 +183,21 @@ async def test_manager_endpoint_requires_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
+async def test_manager_endpoint_rejects_technician(client: AsyncClient) -> None:
+    # A valid token with role=tech must be forbidden (403) from manager-only
+    # endpoints, so a technician cannot read shop-wide payroll / attendance.
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Bilal"
+    )
+    for path in (
+        "/api/attendance/board?shop_id=default",
+        "/api/attendance/payroll?start=2026-06-02&end=2026-06-09",
+        "/api/attendance/grid?month=2026-06",
+    ):
+        resp = await client.get(path)
+        assert resp.status_code == 403, path
+
+
 async def test_punch_requires_auth(client: AsyncClient) -> None:
     # Tech-facing endpoints are guarded now too (J0.5b): no token → 401.
     app.dependency_overrides.pop(get_current_principal, None)

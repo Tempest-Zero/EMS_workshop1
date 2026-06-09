@@ -15,13 +15,13 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 | **EAS builds (APKs)** | https://expo.dev/accounts/instant_fidelity/projects/fixflow-technician/builds |
 | **Latest APK — v10 (audio fix only)** | https://expo.dev/artifacts/eas/aMFYezDKCsc2fsCPT88tPZ.apk |
 | **APK — v12 (full demo build: audio + outbox + push)** | https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk |
-| **Manager web (public)** | https://tempest-zero.github.io/EMS_workshop1/ — live **after** PR #46 merges + Pages enabled once (Settings → Pages → Source: GitHub Actions). Points at the prod Railway backend. |
+| **Manager web (public, LIVE)** | **https://web-production-fd7de.up.railway.app/** — own Railway `web` service (Vite SPA via `Dockerfile.web`), points at the prod backend. **Manager-only console** (technicians use the mobile app); login lists managers only — sign in as **Imran Ahmed**, PIN `1234`. |
 | **Manager web (local)** | `npm run dev` (Vite, http://localhost:5173); `.env.local` sets `VITE_API_URL` to prod. |
-| Railway project | `efficient-tenderness` (service `efficient-tenderness`, env `production`) |
+| Railway project | `efficient-tenderness` (env `production`) — **two services**: `efficient-tenderness` (backend/FastAPI) + `web` (Vite SPA). Redeploy web: `railway up -s web`; backend: `railway up --service efficient-tenderness` from `backend/`. |
 | EAS project | `@instant_fidelity/fixflow-technician` (projectId `eb1d2f9f-2427-4aaf-934b-0e996b290692`) |
 | Firebase (FCM) project | `fixflow-app-5d0a8` (Android app `com.fixflow.technician`) |
 
-**Demo login:** technician app + manager web → pick a tech, **PIN `1234`**.
+**Demo login:** **Web** (manager console) → sign in as **Imran Ahmed** (the only manager), **PIN `1234`**. **Mobile app** (technicians) → pick a tech (Bilal/Asif/Kashif/Tariq), **PIN `1234`**. Manager-only API endpoints (payroll, attendance board/grid, corrections) now reject technician tokens with 403.
 
 ---
 
@@ -45,16 +45,17 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 **Cut by owner (out of scope):** WhatsApp intake/bill delivery, barcode check-in, face recognition.
 
 **Pending (operational, not build):**
-- Merge **PR #45** (FCM-direct push) — code already deployed to prod; this just syncs `main`.
-- Merge **PR #46** (web → GitHub Pages), then enable Pages once (Settings → Pages → Source: GitHub Actions). Site goes live at https://tempest-zero.github.io/EMS_workshop1/.
 - **v12 APK** ready: https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk — install for the full on-device demo (audio + outbox + push).
+- **PR #50** (manager role gate) — open; **already deployed to prod**. Merge to sync `main`.
 - **ERP upload final hop:** payroll **export** is built; the actual push into the client's ERP is a pluggable step pending their system/format. "Every Sunday" automation = same export on a Railway cron (not yet wired; export is on-demand today).
+- **Web hosting was moved to Railway (not GitHub Pages)** — the Pages workflow was removed. The `web` service deploys `Dockerfile.web`; backend `FIXFLOW_CORS_ORIGINS` allows the web origin. **Deploy gotcha:** Railway's build cache can serve a stale bundle — bump `REBUILD` in `Dockerfile.web` if a deploy looks unchanged; verify by diffing the served `/assets/index-*.js` hash.
+- **Dead files to delete** (manager-only web): `TechLayout.jsx`, `RoleSwitcher.jsx`, and the tech page components (tree-shaken, harmless; cleanup only).
 
 ---
 
 ## 4. Open / recent PRs
-- **#45** `feat/push-fcm-direct` — OPEN, gates green, **already deployed to prod**; merge to sync `main`.
-- Merged: #41 offline outbox, #42 expo-av audio, #43 push (notifications slice), #44 payroll export, #32–36 Phase 3 (GPS/route/closing gate/web), #29–31 Phase 2 cash/web-rewire, etc.
+- **#50** `feat/manager-role-gate` — OPEN, gates green, **already deployed to prod**; merge to sync `main`. (Backend gates manager-only attendance/payroll/config endpoints behind a manager role; web `AuthContext` refuses non-manager sessions.)
+- Merged: #45 FCM-direct push, #47 web→Railway hosting, #48 live roster/attendance wiring, #49 manager-only web; #41 offline outbox, #42 expo-av audio, #43 push slice, #44 payroll export, #32–36 Phase 3, #29–31 Phase 2.
 - The owner merges PRs (protected `main`); the agent cannot merge. Each slice = its own PR.
 
 ---
@@ -65,7 +66,7 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 - **Offline outbox** (`technician-app/src/lib/outbox.ts` + `outboxSync.ts` + `useOutboxSync.ts`): `sendOrQueue()` online-sends or queues; `flushOutbox()` drains on reconnect/foreground/backoff. Covers completion/payment/void/negotiate/location (all idempotent). Notes stay online-only.
 - **Media keyed on `job.token`** (string), reused for audio (phase=remark) + closing video (phase=closing). `MediaList` now returns `before/after/closing`.
 - **Append-only ledger** (`job_payment`): corrections void (with reason), never edit/delete.
-- **Auth:** JWT HS256, `get_current_principal`, flat permissions. All tech/media/punch/jobs endpoints auth-guarded. `record_punch` is JWT-attributed: a `tech` can only punch as themselves; a `manager` may record for any tech.
+- **Auth:** JWT HS256, `get_current_principal`, flat permissions. All tech/media/punch/jobs endpoints auth-guarded. `record_punch` is JWT-attributed: a `tech` can only punch as themselves; a `manager` may record for any tech. **`require_manager`** (`CurrentManager`) gates manager-only attendance endpoints (board, grid, tech_days, payroll, adjustments, shifts, geofences) → technician tokens get 403. Jobs `assign`/`claim` stay shared (dual-assignment by design). Web `AuthContext` also refuses non-manager sessions.
 - **Push = FCM HTTP v1 direct from backend** (NOT Expo relay): service account stored as Railway secret `FIXFLOW_FCM_SERVICE_ACCOUNT_B64` (base64 JSON); backend mints an OAuth token (PyJWT RS256) and POSTs to FCM v1. App registers the **native FCM device token** (`getDevicePushTokenAsync`). Best-effort; off if the secret is absent.
 - **Geofence = flag-only** (never blocks); owner's decision.
 - **Audio = expo-av** (`Audio.Recording`, HIGH_QUALITY → AAC/.m4a, browser-playable), NOT expo-audio (0.3.5 throws `IllegalStateException` on `stop()` — see lessons). expo-av is deprecated in SDK 52 (works fine; migrate to fixed expo-audio at SDK 53). `expo-doctor` excludes `expo-av` in `package.json`.
