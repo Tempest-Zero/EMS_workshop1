@@ -323,6 +323,20 @@ async def test_close_requires_a_closing_video(
     )
     assert media.status_code == 201, media.text
 
+    # Phase 4 money guard: even with the clip, a normal close also needs the
+    # completion form on record (409, not the gate's 400).
+    no_form = await app_client.post(
+        f"/api/jobs/{job_id}/transition", json={"action": "close"}, headers=auth_headers
+    )
+    assert no_form.status_code == 409, no_form.text
+
+    done = await app_client.post(
+        f"/api/jobs/{job_id}/completion",
+        json={"materials": [], "time_spent_mins": 30, "fuel_paisa": 0},
+        headers=auth_headers,
+    )
+    assert done.status_code == 200, done.text
+
     # A pending closing row satisfies the gate (offline-tolerant).
     ok = await app_client.post(
         f"/api/jobs/{job_id}/transition", json={"action": "close"}, headers=auth_headers
