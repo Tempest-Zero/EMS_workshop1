@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.notifications.models import DeviceToken
@@ -34,3 +34,8 @@ class NotificationRepository:
             select(DeviceToken.token).where(DeviceToken.tech_id == tech_id)
         )
         return list(result.scalars())
+
+    async def delete_token(self, token: str) -> None:
+        """Drop a dead device token (FCM said UNREGISTERED). Without this the
+        registry only ever grows and every assignment fans out to ghosts."""
+        await self._session.execute(delete(DeviceToken).where(DeviceToken.token == token))

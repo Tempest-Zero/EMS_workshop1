@@ -78,7 +78,14 @@ class NotificationService:
         await self._repo.upsert_token(tech_id=tech_id, token=token, platform=platform)
 
     async def notify_assignment(self, *, tech_id: str, job_token: int) -> None:
-        """Push a 'job assigned' notification to all of a tech's devices via FCM."""
+        """Push a 'job assigned' notification to all of a tech's devices via FCM.
+
+        Dead tokens are pruned: a 404/410 means UNREGISTERED (the app was
+        uninstalled or the token rotated) — that registration is deleted so the
+        registry doesn't fan out to ghosts forever. The deletes are flushed
+        here; the caller's commit boundary persists them (the jobs router
+        commits again after this call).
+        """
         tokens = await self._repo.list_tokens(tech_id)
         if not tokens:
             return
@@ -102,6 +109,16 @@ class NotificationService:
                             "data": {"job_token": str(job_token)},
                         }
                     }
-                    await client.post(url, json=message, headers=headers)
+                    resp = await client.post(url, json=message, headers=headers)
+                    if resp.status_code in (404, 410):  # UNREGISTERED — dead device
+                        logger.info("pruning dead FCM token for tech %s", tech_id)
+                        await self._repo.delete_token(token)
+                    elif resp.status_code >= 400:
+                        logger.warning(
+                            "FCM send to tech %s failed (%s): %s",
+                            tech_id,
+                            resp.status_code,
+                            resp.text[:200],
+                        )
         except Exception:  # noqa: BLE001 — push is best-effort; never break the caller
             logger.warning("FCM push failed for tech %s", tech_id, exc_info=True)
