@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     # Sentry DSN — empty disables error reporting (boots fine without an account).
     sentry_dsn: str = ""
 
+    # ── Scheduler (in-process APScheduler) ───────────────────────────────
+    # ASSUMES A SINGLE REPLICA: each replica would run its own scheduler and
+    # duplicate every job. If the service is ever scaled out, move the jobs to
+    # an external cron (Railway cron hitting admin endpoints) or add a DB lock.
+    enable_scheduler: bool = True
+    # Cron spec for the weekly payroll export, in the shop's timezone.
+    # Default: every Sunday at 18:00 Asia/Karachi (the client's payroll cycle).
+    scheduler_timezone: str = "Asia/Karachi"
+
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
         "http://localhost:5173",  # web (manager / Vite dev server)

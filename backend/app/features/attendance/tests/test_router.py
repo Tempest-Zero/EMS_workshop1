@@ -192,6 +192,7 @@ async def test_manager_endpoint_rejects_technician(client: AsyncClient) -> None:
     for path in (
         "/api/attendance/board?shop_id=default",
         "/api/attendance/payroll?start=2026-06-02&end=2026-06-09",
+        "/api/attendance/payroll/exports",
         "/api/attendance/grid?month=2026-06",
     ):
         resp = await client.get(path)

@@ -9,6 +9,7 @@ boundary.
 from __future__ import annotations
 
 import contextlib
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -16,12 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
-from app.features.identity.deps import CurrentPrincipal
+from app.features.identity.deps import CurrentPrincipal, require_manager
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     DEFAULT_SHOP_ID,
     AssignRequest,
     CompletionRequest,
+    EvidenceGap,
     Job,
     JobCreate,
     JobDetail,
@@ -89,6 +91,21 @@ async def create_job(
     job = await service.create_job(body)
     await session.commit()
     return job
+
+
+@router.get(
+    "/evidence-gaps",
+    response_model=list[EvidenceGap],
+    summary="Closed jobs whose closing video never uploaded (manager oversight)",
+    dependencies=[Depends(require_manager)],
+)
+async def evidence_gaps(
+    service: ServiceDep,
+    media: MediaServiceDep,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> list[EvidenceGap]:
+    today = datetime.now(UTC).date()
+    return await service.evidence_gaps(shop_id=shop_id, media=media, today=today)
 
 
 @router.get("/{job_id}", response_model=JobDetail, summary="Job detail + timeline")

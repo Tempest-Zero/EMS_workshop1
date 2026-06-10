@@ -34,6 +34,7 @@ from app.features.attendance.schemas import (
     GeofenceUpdate,
     Grid,
     PayrollExport,
+    PayrollExportFile,
     PunchItem,
     PunchRequest,
     PunchResponse,
@@ -209,6 +210,19 @@ async def payroll(
 
 
 # ── Manager: audited adjustment ──────────────────────────────────────────────
+@router.get(
+    "/payroll/exports",
+    response_model=list[PayrollExportFile],
+    summary="Generated weekly payroll CSVs (newest first, signed download URLs)",
+    dependencies=[Depends(require_manager)],
+)
+async def payroll_exports(
+    service: ServiceDep,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> list[PayrollExportFile]:
+    return await service.list_payroll_exports(shop_id=shop_id)
+
+
 @router.post(
     "/adjustments",
     response_model=AdjustmentResponse,

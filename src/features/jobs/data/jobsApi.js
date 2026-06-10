@@ -16,6 +16,12 @@ export function fetchJob(id) {
   return apiGet(`/api/jobs/${encodeURIComponent(id)}`);
 }
 
+/** Closed jobs whose closing video never actually uploaded (manager oversight —
+ * the close gate tolerates pending uploads; this is the reconciliation view). */
+export function fetchEvidenceGaps() {
+  return apiGet("/api/jobs/evidence-gaps");
+}
+
 export function createJob(body) {
   return apiSend("/api/jobs", "POST", body);
 }

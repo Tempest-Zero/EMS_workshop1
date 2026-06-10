@@ -184,6 +184,17 @@ class PayrollExport(BaseModel):
     rows: list[PayrollDay]
 
 
+class PayrollExportFile(BaseModel):
+    """A generated weekly CSV on record (bytes in R2; URL is a signed GET)."""
+
+    id: UUID
+    from_date: date
+    to_date: date
+    row_count: int
+    created_at: datetime
+    download_url: str
+
+
 # ── Manager: config (shift / geofence) ───────────────────────────────────────
 class Shift(BaseModel):
     model_config = ConfigDict(from_attributes=True)

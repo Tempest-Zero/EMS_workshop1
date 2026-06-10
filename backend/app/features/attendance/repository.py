@@ -5,6 +5,7 @@ business logic. Mutating methods ``flush`` (so ids/defaults populate) but never
 from __future__ import annotations
 
 from datetime import UTC, datetime, time
+from datetime import date as date_type
 from uuid import UUID
 
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from app.features.attendance.models import (
     AttendanceEvent,
     AttendanceGeofence,
     AttendanceShift,
+    PayrollExportRecord,
 )
 
 
@@ -259,3 +261,45 @@ class AttendanceRepository:
         stmt = stmt.order_by(AttendanceEvent.server_time.desc())
         result = await self._session.execute(stmt)
         return [(row[0], row[1]) for row in result.all()]
+
+    # ── Payroll exports ──────────────────────────────────────────────────
+    async def get_export_for_window(
+        self, *, shop_id: str, from_date: date_type, to_date: date_type
+    ) -> PayrollExportRecord | None:
+        result = await self._session.execute(
+            select(PayrollExportRecord).where(
+                PayrollExportRecord.shop_id == shop_id,
+                PayrollExportRecord.from_date == from_date,
+                PayrollExportRecord.to_date == to_date,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def add_export(
+        self,
+        *,
+        shop_id: str,
+        from_date: date_type,
+        to_date: date_type,
+        storage_path: str,
+        row_count: int,
+    ) -> PayrollExportRecord:
+        record = PayrollExportRecord(
+            shop_id=shop_id,
+            from_date=from_date,
+            to_date=to_date,
+            storage_path=storage_path,
+            row_count=row_count,
+        )
+        self._session.add(record)
+        await self._session.flush()
+        return record
+
+    async def list_exports(self, *, shop_id: str, limit: int = 26) -> list[PayrollExportRecord]:
+        result = await self._session.execute(
+            select(PayrollExportRecord)
+            .where(PayrollExportRecord.shop_id == shop_id)
+            .order_by(PayrollExportRecord.to_date.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())

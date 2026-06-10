@@ -9,6 +9,8 @@ lives here so `derive.py` stays pure.
 from __future__ import annotations
 
 import calendar
+import csv as csv_module
+import io as io_module
 import logging
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
@@ -27,7 +29,11 @@ from app.features.attendance.derive import (
     classify_day,
     geofence_flags,
 )
-from app.features.attendance.models import AttendanceEvent, AttendanceShift
+from app.features.attendance.models import (
+    AttendanceEvent,
+    AttendanceShift,
+    PayrollExportRecord,
+)
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.schemas import (
     AdjustmentItem,
@@ -42,6 +48,7 @@ from app.features.attendance.schemas import (
     GridRow,
     PayrollDay,
     PayrollExport,
+    PayrollExportFile,
     PunchItem,
     PunchRequest,
     PunchResponse,
@@ -65,6 +72,36 @@ class AttendanceNotFoundError(LookupError):
 
 class SelfieTooLargeError(ValueError):
     """Raised when a finalized selfie exceeds the configured ceiling."""
+
+
+# ── Weekly payroll export (the Sunday cycle) ──────────────────────────────────
+def payroll_week_window(today: date) -> tuple[date, date]:
+    """The Mon→Sun week ending on the most recent Sunday (or ``today`` if it IS
+    Sunday — the scheduler fires Sunday evening, exporting the week just done)."""
+    # Monday=0 … Sunday=6
+    days_past_sunday = (today.weekday() + 1) % 7
+    sunday = today - timedelta(days=days_past_sunday)
+    return sunday - timedelta(days=6), sunday
+
+
+def payroll_csv(export: PayrollExport) -> str:
+    """The same flat shape the manager web builds for its on-demand download —
+    one row per tech per day, ERP-friendly."""
+    buf = io_module.StringIO()
+    writer = csv_module.writer(buf, lineterminator="\n")
+    writer.writerow(["tech_id", "date", "status", "first_in", "last_out", "worked_minutes"])
+    for row in export.rows:
+        writer.writerow(
+            [
+                row.tech_id,
+                row.date.isoformat(),
+                row.status,
+                row.first_in.isoformat() if row.first_in else "",
+                row.last_out.isoformat() if row.last_out else "",
+                row.worked_minutes if row.worked_minutes is not None else "",
+            ]
+        )
+    return buf.getvalue()
 
 
 class AttendanceService:
@@ -517,8 +554,49 @@ class AttendanceService:
             roster = sorted(set(bucket.keys()) | shift_techs)
         return bucket, roster
 
+    # ── Module-level pure helpers ────────────────────────────────────────────────
 
-# ── Module-level pure helpers ────────────────────────────────────────────────
+    # ── Weekly payroll export ────────────────────────────────────────────
+    async def run_weekly_export(self, *, shop_id: str, today: date) -> PayrollExportRecord:
+        """Generate last week's CSV into storage and record it. Idempotent on
+        the (shop, window) key — a re-run (scheduler restart, manual trigger)
+        returns the existing record untouched."""
+        from_date, to_date = payroll_week_window(today)
+        existing = await self._repo.get_export_for_window(
+            shop_id=shop_id, from_date=from_date, to_date=to_date
+        )
+        if existing is not None:
+            return existing
+
+        export = await self.payroll(shop_id=shop_id, from_date=from_date, to_date=to_date)
+        csv_text = payroll_csv(export)
+        storage_path = f"payroll/{shop_id}/{from_date.isoformat()}_{to_date.isoformat()}.csv"
+        self._storage.put_bytes(storage_path, csv_text.encode("utf-8"), "text/csv")
+        record = await self._repo.add_export(
+            shop_id=shop_id,
+            from_date=from_date,
+            to_date=to_date,
+            storage_path=storage_path,
+            row_count=len(export.rows),
+        )
+        logger.info("payroll export written: %s (%d rows)", storage_path, len(export.rows))
+        return record
+
+    async def list_payroll_exports(self, *, shop_id: str) -> list[PayrollExportFile]:
+        records = await self._repo.list_exports(shop_id=shop_id)
+        return [
+            PayrollExportFile(
+                id=r.id,
+                from_date=r.from_date,
+                to_date=r.to_date,
+                row_count=r.row_count,
+                created_at=r.created_at,
+                download_url=self._storage.mint_playback_url(r.storage_path),
+            )
+            for r in records
+        ]
+
+
 def _compute_drift(server_now: datetime, device_time: datetime | None) -> int | None:
     if device_time is None:
         return None

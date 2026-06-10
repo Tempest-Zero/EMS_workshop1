@@ -57,6 +57,23 @@ class MediaRepository:
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
 
+    async def uploaded_counts_for_phase(self, job_ids: list[str], phase: str) -> dict[str, int]:
+        """Per-job count of media rows for a phase whose bytes actually landed
+        (status=uploaded). Jobs with no uploaded rows are absent from the map."""
+        if not job_ids:
+            return {}
+        stmt = (
+            select(JobMedia.job_id, func.count())
+            .where(
+                JobMedia.job_id.in_(job_ids),
+                JobMedia.phase == phase,
+                JobMedia.status == MediaStatus.UPLOADED.value,
+            )
+            .group_by(JobMedia.job_id)
+        )
+        result = await self._session.execute(stmt)
+        return {str(job_id): int(count) for job_id, count in result.all()}
+
     async def mark_uploaded(
         self,
         media: JobMedia,

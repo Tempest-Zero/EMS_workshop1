@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Clock, Download, MapPinOff, ShieldAlert, Wifi } from "lucide-react";
+import { Clock, Download, FileSpreadsheet, MapPinOff, ShieldAlert, Wifi } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
-import { fetchPayroll } from "@features/attendance/data/attendanceApi";
+import { fetchPayroll, fetchPayrollExports } from "@features/attendance/data/attendanceApi";
 import { Button, Card, EmptyState, SectionHeader } from "@shared/ui/primitives";
 import Avatar from "@shared/ui/Avatar";
 import { PresenceBadge } from "@shared/ui/StatusChip";
@@ -58,9 +58,24 @@ export default function Attendance() {
     [technicians]
   );
 
+  // The Sunday scheduler's generated CSVs (newest first, signed download URLs).
+  const [autoExports, setAutoExports] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchPayrollExports()
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows)) setAutoExports(rows);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [exporting, setExporting] = useState(false);
-  // Pull the weekly attendance from the API and download it as a payroll CSV.
-  // (The "every Sunday" automation is the same export on a Railway cron.)
+  // Pull the weekly attendance from the API and download it as a payroll CSV
+  // on demand. (The Sunday automation writes the same CSV server-side — see
+  // the Weekly exports card below.)
   const downloadPayroll = async () => {
     setExporting(true);
     try {
@@ -171,6 +186,39 @@ export default function Attendance() {
             </tbody>
           </table>
         </div>
+      </Card>
+
+      {/* Weekly exports the Sunday scheduler generated (server-side, in R2) */}
+      <Card className="p-4 md:p-5">
+        <SectionHeader
+          title="Weekly exports"
+          sub="Generated automatically every Sunday evening — ready for payroll/ERP"
+        />
+        {autoExports.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-400">
+            No automatic exports yet — the first one is written this Sunday at 6 PM. The Payroll CSV
+            button above downloads the same data on demand.
+          </p>
+        ) : (
+          <ul className="mt-3 divide-y divide-slate-100">
+            {autoExports.map((x) => (
+              <li key={x.id} className="flex items-center gap-3 py-2.5">
+                <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-600" />
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-700">
+                  Week {x.from_date} → {x.to_date}
+                </span>
+                <span className="text-xs text-slate-400">{x.row_count} rows</span>
+                <a
+                  href={x.download_url}
+                  download
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50"
+                >
+                  <Download className="h-4 w-4" /> CSV
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
 
       {/* Monthly grid */}

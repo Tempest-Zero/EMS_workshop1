@@ -314,3 +314,22 @@ async def test_record_location_rejects_bad_kind(client: AsyncClient) -> None:
         json={"kind": "teleport", "lat": 24.0, "lng": 67.0, "client_id": str(uuid4())},
     )
     assert resp.status_code == 422
+
+
+async def test_evidence_gaps_is_manager_only_and_not_swallowed_by_job_route(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    # A technician token is forbidden (403, not a UUID-parse 422 — proving the
+    # static route wins over GET /{job_id}).
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Bilal"
+    )
+    resp = await client.get("/api/jobs/evidence-gaps")
+    assert resp.status_code == 403
+
+    # The manager gets the list straight from the service.
+    app.dependency_overrides[get_current_principal] = lambda: _FAKE_PRINCIPAL
+    fake_service.evidence_gaps = AsyncMock(return_value=[])
+    resp = await client.get("/api/jobs/evidence-gaps")
+    assert resp.status_code == 200
+    assert resp.json() == []

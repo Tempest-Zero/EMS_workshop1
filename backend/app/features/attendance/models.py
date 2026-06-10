@@ -15,6 +15,7 @@ Conventions mirror the media slice (`features/media/models.py`): UUID PKs with a
 
 from __future__ import annotations
 
+from datetime import date as date_type
 from datetime import datetime, time
 from enum import StrEnum
 from uuid import UUID
@@ -23,6 +24,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -202,6 +204,29 @@ class AttendanceAdjustment(Base):
     )
     manager_id: Mapped[str] = mapped_column(String(128), nullable=False)
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class PayrollExportRecord(Base):
+    """One generated weekly payroll CSV (the bytes live in R2 at
+    ``storage_path``). Written by the Sunday scheduler or an on-demand run;
+    the (shop, window) unique key makes re-runs no-ops."""
+
+    __tablename__ = "payroll_export"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "from_date", "to_date", name="payroll_export_window_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    shop_id: Mapped[str] = mapped_column(String(64), nullable=False, server_default="default")
+    from_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    to_date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
