@@ -125,6 +125,9 @@ jobs:
       - name: Mypy
         run: mypy app
 
+      - name: Import contracts (slice-dependency rules from ARCHITECTURE.md)
+        run: lint-imports
+
       - name: Apply migrations (validates 0001→0003 on real Postgres)
         run: alembic upgrade head
 

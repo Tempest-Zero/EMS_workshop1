@@ -210,12 +210,26 @@ so Alembic and the test schema see them.
 ### Dependency rules
 
 1. **`shared/` is dependency-free in the business sense.** Pure helpers, base
-   schemas, error classes. May depend on third-party libs only.
+   schemas, error classes (e.g. `shared/geo.py` — haversine used by both
+   attendance and jobs). May depend on third-party libs only.
 2. **Feature slices may depend on `core/` and `shared/`.** Never on another
    feature's `repository.py` or `models.py`.
-3. **Cross-slice consumption goes through `service.py`.** That's the
-   contracted surface area — repositories and models are private internals.
-4. **`main.py` only composes.** Mounts routers; no business code.
+3. **Cross-slice consumption goes through the target slice's `service.py` and
+   `deps.py`.** `service.py` is the logic surface; `deps.py` exports the
+   FastAPI dependency providers that _construct_ it (e.g. jobs' close-gate
+   uses `media.deps.get_media_service`). Repositories and models are private
+   internals.
+4. **`identity` is the one blessed cross-cutting slice.** Every slice may
+   import `identity.deps` (the auth seam: `CurrentPrincipal`,
+   `CurrentManager`) and `identity.schemas`; identity itself imports no other
+   feature.
+5. **`main.py` only composes.** Mounts routers; no business code.
+
+These rules are **enforced in CI** by [import-linter](https://import-linter.readthedocs.io)
+(`lint-imports`, config in `backend/pyproject.toml` under `[tool.importlinter]`).
+A new legitimate cross-slice edge means adding it to the contract's
+`ignore_imports` in the same PR — which is exactly the review conversation the
+rule exists to force.
 
 ### Signed-URL upload pattern (media)
 

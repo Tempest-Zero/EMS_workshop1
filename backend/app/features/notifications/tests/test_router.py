@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.db import get_session
 from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
-from app.features.notifications.router import get_service
+from app.features.notifications.deps import get_notification_service as get_service
 from app.features.notifications.service import NotificationService
 from app.main import app
 

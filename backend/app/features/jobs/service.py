@@ -9,7 +9,6 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
-from app.features.attendance.derive import haversine_m
 from app.features.jobs.models import Job as JobRow
 from app.features.jobs.models import (
     JobCompletion,
@@ -35,6 +34,7 @@ from app.features.jobs.schemas import (
     TransitionRequest,
 )
 from app.features.media.service import MediaService
+from app.shared.geo import haversine_m
 
 
 def _materials_total_paisa(materials: list[MaterialIn]) -> int:

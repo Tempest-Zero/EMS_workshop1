@@ -15,9 +15,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.db import get_session
-from app.core.storage import StorageClient, get_storage
 from app.features.identity.deps import CurrentPrincipal
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
@@ -41,35 +39,23 @@ from app.features.jobs.service import (
     JobNotFoundError,
     JobService,
 )
-from app.features.media.repository import MediaRepository
-from app.features.media.service import MediaService
-from app.features.notifications.repository import NotificationRepository
-from app.features.notifications.service import NotificationService
+
+# Cross-slice consumption goes through the other slice's deps/service surface —
+# never its repository. The close-gate (P3c) checks `closing` media via the
+# media service; manager-assign pushes via the notifications service.
+from app.features.media.deps import MediaServiceDep
+from app.features.notifications.deps import NotificationServiceDep
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-StorageDep = Annotated[StorageClient, Depends(get_storage)]
 
 
 def get_service(session: SessionDep) -> JobService:
     return JobService(JobRepository(session))
 
 
-# The close-gate (P3c) needs to check for a `closing` media row, so it reaches the
-# media slice through its public service (not its table). Scoped to transition.
-def get_media_service(session: SessionDep, storage: StorageDep) -> MediaService:
-    return MediaService(MediaRepository(session), storage, settings.r2_max_upload_bytes)
-
-
-# Manager-assign pushes a notification to the assigned tech (Module 2).
-def get_notification_service(session: SessionDep) -> NotificationService:
-    return NotificationService(NotificationRepository(session))
-
-
 ServiceDep = Annotated[JobService, Depends(get_service)]
-MediaServiceDep = Annotated[MediaService, Depends(get_media_service)]
-NotificationServiceDep = Annotated[NotificationService, Depends(get_notification_service)]
 
 ShopId = Annotated[str, Query(max_length=64)]
 

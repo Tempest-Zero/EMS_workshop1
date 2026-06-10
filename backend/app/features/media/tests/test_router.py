@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.db import get_session
 from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
-from app.features.media.router import get_service
+from app.features.media.deps import get_media_service as get_service
 from app.features.media.schemas import MediaList, MediaUploadResponse
 from app.features.media.service import MediaNotFoundError, MediaService, MediaTooLargeError
 from app.main import app
