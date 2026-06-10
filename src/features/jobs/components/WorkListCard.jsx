@@ -1,17 +1,18 @@
 /**
- * A card in the unassigned Work List (Module 2 dual assignment). Shows both
- * paths simultaneously: a technician can **Claim** it (free-pick) or a manager
- * can **Assign to…** a specific technician.
+ * A card in the unassigned Work List (Module 2 dual assignment). The manager
+ * assigns from here; the technician's free-pick **Claim** lives on the mobile
+ * app, where the claimer's identity comes from their own login.
  */
 
 import { Link } from "react-router-dom";
-import { Home, Hand } from "lucide-react";
+import { Home } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
-import { Card, Button } from "@shared/ui/primitives";
+import { Card } from "@shared/ui/primitives";
 import StatusChip from "@shared/ui/StatusChip";
 
 export default function WorkListCard({ job }) {
-  const { technicians, currentTechId, claimJob, assignJob } = useApp();
+  const { technicians, assignJob } = useApp();
+  const assignable = technicians.filter((t) => t.role !== "manager");
   const isVisit = job.jobType === "home-visit";
 
   return (
@@ -37,9 +38,6 @@ export default function WorkListCard({ job }) {
       </Link>
 
       <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-3">
-        <Button size="sm" variant="primary" onClick={() => claimJob(job.id, currentTechId)}>
-          <Hand className="h-4 w-4" /> Claim
-        </Button>
         <select
           defaultValue=""
           onChange={(e) => {
@@ -51,7 +49,7 @@ export default function WorkListCard({ job }) {
           <option value="" disabled>
             Assign to…
           </option>
-          {technicians.map((t) => (
+          {assignable.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name}
             </option>

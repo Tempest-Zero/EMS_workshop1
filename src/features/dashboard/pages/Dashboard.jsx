@@ -5,7 +5,6 @@ import {
   ClipboardList,
   PackageSearch,
   Wallet,
-  AlertTriangle,
   Clock3,
   UserX,
   ChevronRight,
@@ -74,21 +73,6 @@ export default function Dashboard() {
           .map((j) => `#${j.token} · ${j.customer.name} (${daysSince(j.readySince)}d)`)
           .join("   "),
         to: "/jobs?status=ready",
-      });
-    }
-    const needApproval = jobs.filter(
-      (j) => j.status === "waiting" && j.estimate?.status === "estimated"
-    );
-    if (needApproval.length) {
-      out.push({
-        id: "approval",
-        icon: AlertTriangle,
-        tone: "blue",
-        title: `${needApproval.length} ${
-          needApproval.length === 1 ? "estimate" : "estimates"
-        } awaiting customer approval`,
-        sub: needApproval.map((j) => `#${j.token} · ${j.customer.name}`).join("   "),
-        to: "/jobs?status=waiting",
       });
     }
     const absent = technicians.filter((t) => attendanceToday[t.id]?.status === "absent");

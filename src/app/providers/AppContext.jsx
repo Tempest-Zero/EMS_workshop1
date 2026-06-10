@@ -22,31 +22,23 @@ import {
   voidPayment as voidPaymentApi,
 } from "@features/jobs/data/jobsApi";
 import { mapApiJob, toCreateBody } from "@features/jobs/data/mapJob";
-import { technicians as seedTechnicians } from "@features/technicians/data/technicians";
 import { fetchTechnicians } from "@features/auth/data/authApi";
 import { fetchBoard } from "@features/attendance/data/attendanceApi";
-import { nowEntry, fmtTime } from "@shared/lib/date";
-import { estimateTotal } from "@shared/lib/job";
+import { fmtTime } from "@shared/lib/date";
 import { rupeesToPaisa } from "@shared/lib/currency";
 
 const RATE = 1200;
 
-// Fields the API doesn't own yet — preserved across server refreshes so a
-// locally-set estimate/assignment isn't wiped when a lifecycle action returns
-// the authoritative job. Bill / revenue / completion are now API-backed (P2f),
-// so they're intentionally NOT here — the server is the single source of truth.
-const LOCAL_ONLY_FIELDS = ["estimate", "payment", "photos", "followUps"];
-
 const AppContext = createContext(null);
 
-/** Overlay a server-authoritative job onto the list, keeping local-only fields. */
+/** Overlay a server-authoritative job onto the list. Every field is API-backed
+ * now — the LOCAL_ONLY_FIELDS escape hatch (the old client-side mock layer)
+ * is gone. */
 function applyServerJob(prevJobs, mapped) {
   const idx = prevJobs.findIndex((j) => j.id === mapped.id);
   if (idx === -1) return [mapped, ...prevJobs];
-  const server = { ...mapped };
-  LOCAL_ONLY_FIELDS.forEach((k) => delete server[k]);
   const next = [...prevJobs];
-  next[idx] = { ...next[idx], ...server };
+  next[idx] = { ...next[idx], ...mapped };
   return next;
 }
 
@@ -70,10 +62,9 @@ function boardToAttendance(rows) {
 export function AppProvider({ children }) {
   const { isAuthenticated } = useAuth();
   const [jobs, setJobs] = useState([]);
-  // Seed the roster for an instant first paint / offline fallback; the live
-  // roster (and today's attendance) replace it once authenticated.
-  const [technicians, setTechnicians] = useState(seedTechnicians);
-  const [currentTechId, setCurrentTechId] = useState("t1");
+  // Live roster only — no seed fallback. An empty array until the API answers;
+  // screens render their empty states rather than fabricated names.
+  const [technicians, setTechnicians] = useState([]);
   const [attendanceToday, setAttendanceToday] = useState({});
   const [toasts, setToasts] = useState([]);
 
@@ -87,27 +78,6 @@ export function AppProvider({ children }) {
     (id) => techniciansRef.current.find((t) => t.id === id)?.name || id,
     []
   );
-
-  // Load the live roster + today's attendance board once authenticated, so the
-  // manager Dashboard / Technicians views reflect real data (including mobile
-  // clock-ins) instead of seed data. On failure the seeded roster stays.
-  useEffect(() => {
-    if (!isAuthenticated) return undefined;
-    let cancelled = false;
-    fetchTechnicians()
-      .then((rows) => {
-        if (!cancelled && Array.isArray(rows) && rows.length) setTechnicians(rows);
-      })
-      .catch(() => {});
-    fetchBoard(seedTechnicians.map((t) => t.id))
-      .then((board) => {
-        if (!cancelled) setAttendanceToday(boardToAttendance(board?.rows));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuthenticated]);
 
   // Load the real jobs once the user is logged in (the API requires a token).
   useEffect(() => {
@@ -166,16 +136,31 @@ export function AppProvider({ children }) {
     setToasts((t) => t.filter((x) => x.id !== id));
   }, []);
 
-  const patchJob = useCallback((jobId, updater, entry) => {
-    setJobs((prev) =>
-      prev.map((j) => {
-        if (j.id !== jobId) return j;
-        const next = typeof updater === "function" ? updater(j) : { ...j, ...updater };
-        if (entry) next.timeline = [...(next.timeline || []), entry];
-        return next;
+  // Load the live roster once authenticated, then today's attendance board for
+  // exactly those ids — the board's id list comes from the same live roster the
+  // screens render, so a new hire shows up everywhere the day they exist.
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    let cancelled = false;
+    fetchTechnicians()
+      .then((rows) => {
+        if (cancelled || !Array.isArray(rows)) return undefined;
+        setTechnicians(rows);
+        return fetchBoard(rows.map((t) => t.id))
+          .then((board) => {
+            if (!cancelled) setAttendanceToday(boardToAttendance(board?.rows));
+          })
+          .catch(() => {});
       })
-    );
-  }, []);
+      .catch(() => {
+        if (!cancelled) {
+          addToast("Couldn't load the technician roster — refresh to retry", "danger");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, addToast]);
 
   // Real create: POST to the API, then prepend the mapped job. Returns the new
   // job so the caller can navigate to it / toast its token.
@@ -196,57 +181,6 @@ export function AppProvider({ children }) {
       }
     },
     [replaceFromDetail, addToast]
-  );
-
-  const setEstimate = useCallback(
-    (jobId, { parts, laborHours, laborRate }) => {
-      const est = { status: "estimated", parts, laborHours, laborRate: laborRate || RATE };
-      const total = estimateTotal(est);
-      patchJob(
-        jobId,
-        (j) => ({ ...j, estimate: est }),
-        nowEntry(
-          `Estimate set: Rs ${total.toLocaleString("en-PK")} — awaiting approval`,
-          "estimate"
-        )
-      );
-    },
-    [patchJob]
-  );
-
-  const addEstimateLineItem = useCallback(
-    (jobId, part) => {
-      patchJob(
-        jobId,
-        (j) => {
-          const prev = j.estimate || { status: "none", parts: [], laborHours: 0, laborRate: RATE };
-          return {
-            ...j,
-            estimate: {
-              ...prev,
-              status: prev.status === "none" ? "estimated" : prev.status,
-              parts: [...(prev.parts || []), part],
-            },
-          };
-        },
-        nowEntry(`Part added from troubleshooting: ${part.name}`, "estimate")
-      );
-    },
-    [patchJob]
-  );
-
-  const setEstimateStatus = useCallback(
-    (jobId, status) => {
-      patchJob(
-        jobId,
-        (j) => ({ ...j, estimate: { ...j.estimate, status } }),
-        nowEntry(
-          status === "approved" ? "Customer approved estimate" : "Customer declined estimate",
-          status
-        )
-      );
-    },
-    [patchJob]
   );
 
   const markReady = useCallback(
@@ -273,19 +207,6 @@ export function AppProvider({ children }) {
         addToast(`Assigned to ${techName(techId)}`, "default");
       } catch {
         addToast("Couldn't assign — please retry", "danger");
-      }
-    },
-    [replaceFromDetail, addToast, techName]
-  );
-
-  const claimJob = useCallback(
-    async (jobId, techId) => {
-      try {
-        const detail = await assignJobApi(jobId, techId);
-        replaceFromDetail(detail);
-        addToast(`Claimed by ${techName(techId)}`, "ready");
-      } catch {
-        addToast("Couldn't claim — please retry", "danger");
       }
     },
     [replaceFromDetail, addToast, techName]
@@ -439,28 +360,6 @@ export function AppProvider({ children }) {
     [replaceFromDetail, addToast]
   );
 
-  const clockIn = useCallback((techId) => {
-    const t = fmtTime(new Date());
-    setAttendanceToday((prev) => ({
-      ...prev,
-      [techId]: {
-        ...prev[techId],
-        status: prev[techId]?.status === "field" ? "field" : "present",
-        clockedIn: true,
-        clockIn: t,
-        clockOut: null,
-      },
-    }));
-  }, []);
-
-  const clockOut = useCallback((techId) => {
-    const t = fmtTime(new Date());
-    setAttendanceToday((prev) => ({
-      ...prev,
-      [techId]: { ...prev[techId], clockedIn: false, clockOut: t },
-    }));
-  }, []);
-
   // Resolve by UUID id or by human token, so links built from either (e.g. the
   // schedule's token references) keep working.
   const getJob = useCallback(
@@ -485,9 +384,8 @@ export function AppProvider({ children }) {
   const value = {
     jobs,
     technicians,
+    techName,
     attendanceToday,
-    currentTechId,
-    setCurrentTechId,
     toasts,
     addToast,
     removeToast,
@@ -495,12 +393,8 @@ export function AppProvider({ children }) {
     addJob,
     loadJobDetail,
     addNote,
-    setEstimate,
-    addEstimateLineItem,
-    setEstimateStatus,
     markReady,
     assignJob,
-    claimJob,
     submitCompletion,
     setNegotiatedBill,
     logPayment,
@@ -510,8 +404,6 @@ export function AppProvider({ children }) {
     abandonJob,
     haulToShop,
     reschedule,
-    clockIn,
-    clockOut,
     // selectors
     getJob,
     jobsByStatus,

@@ -1,27 +1,71 @@
+/**
+ * One technician, manager view — built entirely from live data: the roster
+ * (useApp), this month's attendance (/api/attendance/grid), and the real jobs
+ * list. The prototype's fabricated payroll table, invented performance stats,
+ * and static May-2026 month were removed — payroll truth lives in the
+ * Attendance page's CSV export until a real payroll integration exists.
+ */
+
+import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { ArrowLeft, Phone, CalendarCheck, Award } from "lucide-react";
+import { ArrowLeft, CalendarCheck, Award } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import { Card, SectionHeader, Button, EmptyState } from "@shared/ui/primitives";
 import Avatar from "@shared/ui/Avatar";
 import StatusChip, { PresenceBadge } from "@shared/ui/StatusChip";
-import IntegrationBadge from "@shared/ui/IntegrationBadge";
 import MonthDots from "@features/attendance/components/MonthDots";
-import { techById } from "@features/technicians/data/technicians";
-import { monthSummary } from "@features/attendance/data/attendance";
+import { fetchGrid } from "@features/attendance/data/attendanceApi";
 import { formatPKR } from "@shared/lib/currency";
 import { fmtDate } from "@shared/lib/date";
 import { amountOwed } from "@shared/lib/job";
+import { TODAY } from "@shared/config/constants";
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
 export default function TechnicianDetail() {
   const { id } = useParams();
   const nav = useNavigate();
-  const { attendanceToday, jobsForTech } = useApp();
-  const t = techById(id);
+  const { technicians, attendanceToday, jobsForTech, jobs } = useApp();
+  const t = technicians.find((tech) => tech.id === id);
+
+  // This month's attendance for this tech, straight from the live grid API.
+  const month = TODAY.slice(0, 7); // YYYY-MM
+  const [grid, setGrid] = useState(null); // { present, working, cells } | null
+  useEffect(() => {
+    if (!t) return undefined;
+    let cancelled = false;
+    fetchGrid(month, [t.id])
+      .then((g) => {
+        if (!cancelled) setGrid(g?.rows?.[0] ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setGrid(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t, month]);
 
   if (!t) {
     return (
       <div>
-        <EmptyState title="Technician not found" />
+        <EmptyState
+          title="Technician not found"
+          sub="The roster may still be loading, or this person is no longer active."
+        />
         <div className="mt-4 text-center">
           <Button onClick={() => nav("/technicians")}>Back</Button>
         </div>
@@ -29,9 +73,10 @@ export default function TechnicianDetail() {
     );
   }
 
-  const status = attendanceToday[t.id]?.status || t.status;
-  const summary = monthSummary(t.id);
-  const jobs = jobsForTech(t.id);
+  const status = attendanceToday[t.id]?.status || "absent";
+  const activeJobs = jobsForTech(t.id);
+  const closedJobs = jobs.filter((j) => j.assignedTechId === t.id && j.status === "closed");
+  const monthLabel = `${MONTH_NAMES[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`;
 
   return (
     <div className="space-y-5">
@@ -49,66 +94,62 @@ export default function TechnicianDetail() {
           <div className="flex-1">
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{t.name}</h1>
             <div className="text-sm font-medium text-slate-500">{t.specialty}</div>
-            <div className="mt-2 flex items-center gap-2">
+            <div className="mt-2">
               <PresenceBadge status={status} />
-              <span className="text-xs text-slate-400">Joined {fmtDate(t.joinedDate, true)}</span>
             </div>
           </div>
-          <a href={`tel:${t.phone}`}>
-            <Button variant="primary">
-              <Phone className="h-4 w-4" /> {t.phone}
-            </Button>
-          </a>
         </div>
       </Card>
 
       <div className="grid gap-5 lg:grid-cols-2">
-        {/* Attendance */}
+        {/* Attendance — live grid for the current month */}
         <Card className="p-5">
-          <SectionHeader
-            title="Attendance — May 2026"
-            action={<IntegrationBadge>Synced with Attendance Service</IntegrationBadge>}
-          />
-          <div className="mt-3 flex items-center gap-4">
-            <div className="rounded-xl bg-emerald-50 px-4 py-2 text-center">
-              <div className="text-2xl font-extrabold text-emerald-700">{summary.present}</div>
-              <div className="text-[11px] font-bold uppercase tracking-wide text-emerald-500">
-                Present
+          <SectionHeader title={`Attendance — ${monthLabel}`} />
+          {grid ? (
+            <>
+              <div className="mt-3 flex items-center gap-4">
+                <div className="rounded-xl bg-emerald-50 px-4 py-2 text-center">
+                  <div className="text-2xl font-extrabold text-emerald-700">{grid.present}</div>
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-emerald-500">
+                    Present
+                  </div>
+                </div>
+                <div className="rounded-xl bg-slate-50 px-4 py-2 text-center">
+                  <div className="text-2xl font-extrabold text-slate-700">{grid.working}</div>
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                    Working days
+                  </div>
+                </div>
+                {grid.working > 0 && (
+                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                    <CalendarCheck className="h-4 w-4 text-slate-400" />
+                    {Math.round((grid.present / grid.working) * 100)}% rate
+                  </div>
+                )}
               </div>
-            </div>
-            <div className="rounded-xl bg-slate-50 px-4 py-2 text-center">
-              <div className="text-2xl font-extrabold text-slate-700">{summary.working}</div>
-              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
-                Working days
+              <div className="mt-4">
+                <MonthDots cells={grid.cells} showNums />
               </div>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <CalendarCheck className="h-4 w-4 text-slate-400" />
-              {Math.round((summary.present / summary.working) * 100)}% rate
-            </div>
-          </div>
-          <div className="mt-4">
-            <MonthDots techId={t.id} showNums />
-          </div>
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-slate-400">Loading attendance…</p>
+          )}
         </Card>
 
-        {/* Performance */}
+        {/* Work — counted from the real jobs list */}
         <Card className="p-5">
-          <SectionHeader title="Performance" sub="This month" />
+          <SectionHeader title="Work" sub="From the live jobs list" />
           <div className="mt-3 grid grid-cols-2 gap-3">
             <div className="rounded-xl border border-slate-100 p-4">
               <Award className="h-5 w-5 text-blue-500" />
-              <div className="mt-2 text-3xl font-extrabold text-slate-900">{t.perf.completed}</div>
-              <div className="text-xs font-semibold text-slate-500">Jobs completed</div>
+              <div className="mt-2 text-3xl font-extrabold text-slate-900">{closedJobs.length}</div>
+              <div className="text-xs font-semibold text-slate-500">Jobs closed</div>
             </div>
             <div className="rounded-xl border border-slate-100 p-4">
               <CalendarCheck className="h-5 w-5 text-emerald-500" />
-              <div className="mt-2 text-3xl font-extrabold text-slate-900">{t.perf.avgDays}</div>
-              <div className="text-xs font-semibold text-slate-500">Avg days / job</div>
+              <div className="mt-2 text-3xl font-extrabold text-slate-900">{activeJobs.length}</div>
+              <div className="text-xs font-semibold text-slate-500">Active right now</div>
             </div>
-          </div>
-          <div className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
-            {jobs.length} active {jobs.length === 1 ? "job" : "jobs"} right now
           </div>
         </Card>
       </div>
@@ -116,9 +157,9 @@ export default function TechnicianDetail() {
       {/* Current jobs */}
       <Card className="p-5">
         <SectionHeader title="Current Jobs" />
-        {jobs.length ? (
+        {activeJobs.length ? (
           <ul className="mt-3 divide-y divide-slate-100">
-            {jobs.map((j) => (
+            {activeJobs.map((j) => (
               <li key={j.id}>
                 <Link
                   to={`/jobs/${j.id}`}
@@ -132,6 +173,7 @@ export default function TechnicianDetail() {
                   <span className="text-sm font-bold text-slate-700">
                     {amountOwed(j) ? formatPKR(amountOwed(j)) : "—"}
                   </span>
+                  <span className="text-xs text-slate-400">{fmtDate(j.createdAt)}</span>
                 </Link>
               </li>
             ))}
@@ -139,47 +181,6 @@ export default function TechnicianDetail() {
         ) : (
           <p className="mt-3 text-sm text-slate-400">No active jobs assigned.</p>
         )}
-      </Card>
-
-      {/* Pay table */}
-      <Card className="p-5">
-        <SectionHeader
-          title="Payroll"
-          sub="Last 3 months"
-          action={<IntegrationBadge>Synced with Payroll Service</IntegrationBadge>}
-        />
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-xs font-bold uppercase tracking-wide text-slate-400">
-                <th className="pb-2">Month</th>
-                <th className="pb-2 text-right">Base</th>
-                <th className="pb-2 text-center">Days</th>
-                <th className="pb-2 text-right">Deductions</th>
-                <th className="pb-2 text-right">Advances</th>
-                <th className="pb-2 text-right">Net Pay</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {t.pay.map((p) => (
-                <tr key={p.month}>
-                  <td className="py-2.5 font-semibold text-slate-700">{p.month}</td>
-                  <td className="py-2.5 text-right text-slate-600">{formatPKR(p.base)}</td>
-                  <td className="py-2.5 text-center text-slate-600">{p.daysWorked}</td>
-                  <td className="py-2.5 text-right text-red-500">
-                    {p.deductions ? `−${formatPKR(p.deductions)}` : "—"}
-                  </td>
-                  <td className="py-2.5 text-right text-amber-600">
-                    {p.advances ? `−${formatPKR(p.advances)}` : "—"}
-                  </td>
-                  <td className="py-2.5 text-right font-extrabold text-slate-900">
-                    {formatPKR(p.net)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       </Card>
     </div>
   );

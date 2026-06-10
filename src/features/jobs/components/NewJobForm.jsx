@@ -1,15 +1,19 @@
 import { useState } from "react";
 import { Home, Package } from "lucide-react";
+import { useApp } from "@app/providers/AppContext";
 import { inputClass, Field } from "@shared/ui/primitives";
 import { APPLIANCE_TYPES } from "@shared/config/constants";
-import { technicians } from "@features/technicians/data/technicians";
 
 const FORM_ID = "new-job-form";
 
 export default function NewJobForm({ onSubmit }) {
+  const { technicians } = useApp();
+  // Field technicians only — the manager account isn't assignable. Default to
+  // unassigned: the job lands on the work list for dual assignment.
+  const assignable = technicians.filter((t) => t.role !== "manager");
   const [jobType, setJobType] = useState("carry-in");
   const [applianceType, setApplianceType] = useState(APPLIANCE_TYPES[0]);
-  const [assignedTechId, setAssignedTechId] = useState(technicians[0].id);
+  const [assignedTechId, setAssignedTechId] = useState("");
   const [form, setForm] = useState({
     customerName: "",
     customerPhone: "",
@@ -147,7 +151,8 @@ export default function NewJobForm({ onSubmit }) {
           value={assignedTechId}
           onChange={(e) => setAssignedTechId(e.target.value)}
         >
-          {technicians.map((t) => (
+          <option value="">Unassigned — goes to the work list</option>
+          {assignable.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name} — {t.specialty}
             </option>

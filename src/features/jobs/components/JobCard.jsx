@@ -1,17 +1,17 @@
 import { Link } from "react-router-dom";
 import { Home, Clock3 } from "lucide-react";
+import { useApp } from "@app/providers/AppContext";
 import StatusChip from "@shared/ui/StatusChip";
 import Avatar from "@shared/ui/Avatar";
 import { Card } from "@shared/ui/primitives";
 import { formatPKR } from "@shared/lib/currency";
-import { amountOwed } from "@shared/lib/job";
-import { hasEstimate } from "@shared/lib/job";
+import { amountOwed, hasBill } from "@shared/lib/job";
 import { daysSince } from "@shared/lib/date";
-import { techById } from "@features/technicians/data/technicians";
 import { statusConfig } from "@shared/lib/statusConfig";
 
 export default function JobCard({ job }) {
-  const tech = techById(job.assignedTechId);
+  const { technicians } = useApp();
+  const tech = technicians.find((t) => t.id === job.assignedTechId);
   const owed = amountOwed(job);
   const c = statusConfig[job.status];
   const isVisit = job.jobType === "home-visit";
@@ -69,10 +69,10 @@ export default function JobCard({ job }) {
               <span className="text-xs font-semibold text-slate-600">{tech?.name}</span>
             </div>
             <div className="text-right">
-              {hasEstimate(job) ? (
+              {hasBill(job) ? (
                 <span className="text-sm font-extrabold text-slate-900">{formatPKR(owed)}</span>
               ) : (
-                <span className="text-xs font-semibold text-slate-400">Pending estimate</span>
+                <span className="text-xs font-semibold text-slate-400">No bill yet</span>
               )}
             </div>
           </div>

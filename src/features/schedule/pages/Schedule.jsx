@@ -12,6 +12,14 @@ export default function Schedule() {
 
   return (
     <div className="space-y-4">
+      {/* Honest label: this board is a design preview on sample data — visit
+          scheduling has no backend yet. Kept because it shows the intended
+          feature; remove the route if that reads as overpromising. */}
+      <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800">
+        Preview — sample data. Visit scheduling isn’t live yet; job dates come from each job’s
+        detail page.
+      </div>
+
       {/* Week nav (decorative) */}
       <div className="flex items-center justify-between">
         <button

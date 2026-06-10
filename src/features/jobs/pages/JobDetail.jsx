@@ -6,10 +6,8 @@ import {
   MapPin,
   Home,
   Plus,
-  Trash2,
   FileText,
   CheckCircle2,
-  XCircle,
   BellRing,
   Wallet,
   Lock,
@@ -23,7 +21,6 @@ import {
   ClipboardList,
   Clock,
   Fuel,
-  Hand,
 } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import JobMediaGallery from "@features/media/components/JobMediaGallery";
@@ -31,13 +28,9 @@ import CompletionForm from "@features/jobs/components/CompletionForm";
 import { Card, Button, SectionHeader, EmptyState, Field, inputClass } from "@shared/ui/primitives";
 import StatusChip from "@shared/ui/StatusChip";
 import Avatar from "@shared/ui/Avatar";
-import { Modal, SlideOver } from "@shared/ui/Overlay";
+import { Modal } from "@shared/ui/Overlay";
 import { formatPKR } from "@shared/lib/currency";
 import {
-  partsTotal,
-  laborTotal,
-  estimateTotal,
-  hasEstimate,
   amountOwed,
   amountPaid,
   balance,
@@ -51,10 +44,8 @@ import {
   materialsTotal,
   completionLabor,
   isUnassigned,
-  ESTIMATE_LABEL,
 } from "@shared/lib/job";
 import { fmtDate, daysSince } from "@shared/lib/date";
-import { techById } from "@features/technicians/data/technicians";
 
 function kindDot(kind) {
   const map = {
@@ -98,9 +89,8 @@ export default function JobDetail({ tech = false }) {
     );
   }
 
-  const technician = techById(job.assignedTechId);
+  const technician = app.technicians.find((t) => t.id === job.assignedTechId);
   const isVisit = job.jobType === "home-visit";
-  const est = job.estimate;
   const owed = amountOwed(job);
   const paid = amountPaid(job);
   const bal = balance(job);
@@ -176,28 +166,23 @@ export default function JobDetail({ tech = false }) {
                 <div className="mt-1.5">
                   <div className="text-sm font-bold text-amber-600">Unassigned · in work list</div>
                   {!closed && (
-                    <div className="mt-2 flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={() => app.claimJob(job.id, app.currentTechId)}
-                      >
-                        <Hand className="h-4 w-4" /> Claim
-                      </Button>
+                    <div className="mt-2">
                       <select
                         defaultValue=""
                         onChange={(e) => e.target.value && app.assignJob(job.id, e.target.value)}
                         aria-label="Assign to technician"
-                        className="flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm font-semibold text-slate-700 focus:border-slate-400 focus:outline-none"
+                        className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm font-semibold text-slate-700 focus:border-slate-400 focus:outline-none"
                       >
                         <option value="" disabled>
                           Assign to…
                         </option>
-                        {app.technicians.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name}
-                          </option>
-                        ))}
+                        {app.technicians
+                          .filter((t) => t.role !== "manager")
+                          .map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                            </option>
+                          ))}
                       </select>
                     </div>
                   )}
@@ -267,98 +252,6 @@ export default function JobDetail({ tech = false }) {
 
         {/* Before/After capture — live from the technician app */}
         <JobMediaGallery jobKey={String(job.token)} />
-      </Card>
-
-      {/* Estimate */}
-      <Card className="p-4 md:p-5">
-        <SectionHeader
-          title="Estimate"
-          sub={ESTIMATE_LABEL[est?.status] || "Not yet estimated"}
-          action={
-            !closed && (
-              <Button
-                size="sm"
-                variant={hasEstimate(job) ? "secondary" : "primary"}
-                onClick={() => setModal("estimate")}
-              >
-                {hasEstimate(job) ? "Edit Estimate" : "Set Estimate"}
-              </Button>
-            )
-          }
-        />
-
-        {hasEstimate(job) ? (
-          <div className="mt-3">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-left text-xs font-bold uppercase tracking-wide text-slate-400">
-                  <th className="pb-2">Part</th>
-                  <th className="pb-2 text-center">Qty</th>
-                  <th className="pb-2 text-right">Unit</th>
-                  <th className="pb-2 text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {est.parts.map((p, i) => (
-                  <tr key={i}>
-                    <td className="py-2 font-medium text-slate-700">{p.name}</td>
-                    <td className="py-2 text-center text-slate-500">{p.qty}</td>
-                    <td className="py-2 text-right text-slate-500">{formatPKR(p.unitPrice)}</td>
-                    <td className="py-2 text-right font-semibold text-slate-800">
-                      {formatPKR(p.qty * p.unitPrice)}
-                    </td>
-                  </tr>
-                ))}
-                <tr>
-                  <td className="py-2 font-medium text-slate-700">
-                    Labor{" "}
-                    <span className="text-xs text-slate-400">
-                      ({est.laborHours}h × {formatPKR(est.laborRate)})
-                    </span>
-                  </td>
-                  <td />
-                  <td />
-                  <td className="py-2 text-right font-semibold text-slate-800">
-                    {formatPKR(laborTotal(est))}
-                  </td>
-                </tr>
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-slate-200">
-                  <td className="pt-2 text-sm font-extrabold text-slate-900" colSpan={3}>
-                    Grand Total
-                  </td>
-                  <td className="pt-2 text-right text-lg font-extrabold text-slate-900">
-                    {formatPKR(estimateTotal(est))}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-
-            {est.status === "estimated" && !closed && (
-              <div className="mt-3 flex gap-2">
-                <Button
-                  size="sm"
-                  variant="success"
-                  onClick={() => app.setEstimateStatus(job.id, "approved")}
-                >
-                  <CheckCircle2 className="h-4 w-4" /> Mark Approved
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outlineDanger"
-                  onClick={() => app.setEstimateStatus(job.id, "declined")}
-                >
-                  <XCircle className="h-4 w-4" /> Decline
-                </Button>
-              </div>
-            )}
-          </div>
-        ) : (
-          <p className="mt-3 text-sm text-slate-400">
-            No estimate yet. Set one to itemize parts and labor.
-          </p>
-        )}
       </Card>
 
       {/* Work Completion — materials / time / fuel / remarks (+ voice note) */}
@@ -665,9 +558,9 @@ export default function JobDetail({ tech = false }) {
       {!closed && (
         <div className="sticky bottom-0 -mx-4 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur md:mx-0 md:rounded-xl md:border md:shadow-lg">
           <div className="flex flex-wrap gap-2">
-            {job.estimate?.status === "approved" && job.status !== "ready" && (
+            {job.status !== "ready" && (
               <Button variant="success" onClick={() => app.markReady(job.id)}>
-                <BellRing className="h-4 w-4" /> Mark Ready & SMS
+                <BellRing className="h-4 w-4" /> Mark Ready
               </Button>
             )}
             {job.status === "ready" && (
@@ -704,16 +597,6 @@ export default function JobDetail({ tech = false }) {
         onClose={() => setModal(null)}
         onSave={(text) => {
           app.addNote(job.id, text);
-          setModal(null);
-        }}
-      />
-      <EstimateEditor
-        open={modal === "estimate"}
-        onClose={() => setModal(null)}
-        job={job}
-        rate={app.RATE}
-        onSave={(payload) => {
-          app.setEstimate(job.id, payload);
           setModal(null);
         }}
       />
@@ -1077,126 +960,5 @@ function RescheduleModal({ open, onClose, onSave, job }) {
         </Field>
       </div>
     </Modal>
-  );
-}
-
-function EstimateEditor({ open, onClose, onSave, job, rate }) {
-  const [parts, setParts] = useState(() =>
-    job.estimate?.parts?.length
-      ? job.estimate.parts.map((p) => ({ ...p }))
-      : [{ name: "", qty: 1, unitPrice: "" }]
-  );
-  const [laborHours, setLaborHours] = useState(job.estimate?.laborHours || 1);
-
-  const setPart = (i, key, value) =>
-    setParts((ps) => ps.map((p, idx) => (idx === i ? { ...p, [key]: value } : p)));
-  const addRow = () => setParts((ps) => [...ps, { name: "", qty: 1, unitPrice: "" }]);
-  const removeRow = (i) => setParts((ps) => ps.filter((_, idx) => idx !== i));
-
-  const cleanParts = parts
-    .filter((p) => p.name.trim() && Number(p.unitPrice) > 0)
-    .map((p) => ({ name: p.name.trim(), qty: Number(p.qty) || 1, unitPrice: Number(p.unitPrice) }));
-  const preview = { parts: cleanParts, laborHours: Number(laborHours) || 0, laborRate: rate };
-  const total = estimateTotal(preview);
-
-  return (
-    <SlideOver
-      open={open}
-      onClose={onClose}
-      title="Set Estimate"
-      subtitle="Itemize parts and labor"
-      footer={
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-sm">
-            <span className="text-slate-400">Total </span>
-            <span className="font-extrabold text-slate-900">{formatPKR(total)}</span>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button variant="primary" disabled={!cleanParts.length} onClick={() => onSave(preview)}>
-              Save Estimate
-            </Button>
-          </div>
-        </div>
-      }
-    >
-      <div className="space-y-3">
-        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Parts</div>
-        {parts.map((p, i) => (
-          <div key={i} className="rounded-xl border border-slate-200 p-3">
-            <input
-              className={`${inputClass} mb-2`}
-              value={p.name}
-              onChange={(e) => setPart(i, "name", e.target.value)}
-              placeholder="Part name (e.g. Run capacitor 35μF)"
-            />
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1.5 text-xs text-slate-500">
-                Qty
-                <input
-                  type="number"
-                  className="w-16 rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
-                  value={p.qty}
-                  min={1}
-                  onChange={(e) => setPart(i, "qty", e.target.value)}
-                />
-              </label>
-              <label className="flex flex-1 items-center gap-1.5 text-xs text-slate-500">
-                Unit Rs
-                <input
-                  type="number"
-                  className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
-                  value={p.unitPrice}
-                  onChange={(e) => setPart(i, "unitPrice", e.target.value)}
-                  placeholder="0"
-                />
-              </label>
-              {parts.length > 1 && (
-                <button
-                  onClick={() => removeRow(i)}
-                  className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
-                  aria-label="Remove part"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-        <Button size="sm" variant="secondary" onClick={addRow}>
-          <Plus className="h-4 w-4" /> Add Part
-        </Button>
-
-        <div className="pt-2">
-          <Field label="Labor Hours" hint={`Rate ${formatPKR(rate)}/hour`}>
-            <input
-              type="number"
-              step="0.5"
-              min={0}
-              className={inputClass}
-              value={laborHours}
-              onChange={(e) => setLaborHours(e.target.value)}
-            />
-          </Field>
-        </div>
-
-        <div className="rounded-xl bg-slate-50 p-3 text-sm">
-          <div className="flex justify-between text-slate-500">
-            <span>Parts</span>
-            <span className="font-semibold text-slate-700">{formatPKR(partsTotal(preview))}</span>
-          </div>
-          <div className="mt-1 flex justify-between text-slate-500">
-            <span>Labor</span>
-            <span className="font-semibold text-slate-700">{formatPKR(laborTotal(preview))}</span>
-          </div>
-          <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 text-base">
-            <span className="font-extrabold text-slate-900">Total</span>
-            <span className="font-extrabold text-slate-900">{formatPKR(total)}</span>
-          </div>
-        </div>
-      </div>
-    </SlideOver>
   );
 }
