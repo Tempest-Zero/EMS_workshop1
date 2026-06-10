@@ -18,7 +18,12 @@ from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
 from app.features.jobs.router import get_media_service, get_notification_service, get_service
 from app.features.jobs.schemas import Job, JobDetail
-from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
+from app.features.jobs.service import (
+    JobActionError,
+    JobConflictError,
+    JobNotFoundError,
+    JobService,
+)
 from app.features.media.service import MediaService
 from app.features.notifications.service import NotificationService
 from app.main import app
@@ -188,11 +193,18 @@ async def test_assign_rejects_missing_tech(client: AsyncClient) -> None:
 async def test_claim_returns_200_and_commits(
     client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
 ) -> None:
-    fake_service.assign_job.return_value = _detail(assigned_tech_id="t1")
+    fake_service.claim_job.return_value = _detail(assigned_tech_id="t1")
     resp = await client.post(f"/api/jobs/{uuid4()}/claim")
     assert resp.status_code == 200, resp.text
     assert resp.json()["assigned_tech_id"] == "t1"
     fake_session.commit.assert_awaited()
+
+
+async def test_claim_of_a_taken_job_is_409(client: AsyncClient, fake_service: AsyncMock) -> None:
+    fake_service.claim_job.side_effect = JobConflictError("already assigned to t9")
+    resp = await client.post(f"/api/jobs/{uuid4()}/claim")
+    assert resp.status_code == 409, resp.text
+    assert "already assigned" in resp.json()["detail"]
 
 
 async def test_submit_completion_returns_200_and_commits(

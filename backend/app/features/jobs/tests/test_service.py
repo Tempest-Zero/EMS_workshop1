@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.features.jobs.models import Job as JobRow
 from app.features.jobs.models import JobCompletion, JobEvent, JobLocation, JobPayment
@@ -20,6 +21,7 @@ from app.features.jobs.schemas import (
 )
 from app.features.jobs.service import (
     JobActionError,
+    JobConflictError,
     JobNotFoundError,
     JobService,
     route_fuel_paisa,
@@ -68,6 +70,9 @@ def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo.list_locations = AsyncMock(return_value=[])
     repo.get_location_by_client = AsyncMock(return_value=None)
     repo.add_location = AsyncMock(side_effect=lambda loc: loc)
+    repo.try_claim = AsyncMock(return_value=True)
+    repo.refresh = AsyncMock()
+    repo.rollback = AsyncMock()
     yield JobService(repo), repo
 
 
@@ -281,22 +286,117 @@ async def test_assign_sets_tech_and_logs_assign_event(svc: tuple[JobService, Mag
     service, repo = svc
     job = _open_job()
     repo.get.return_value = job
-    detail = await service.assign_job(
-        job_id=job.id, shop_id="default", tech_id="t3", actor="t1", claimed=False
-    )
+    detail = await service.assign_job(job_id=job.id, shop_id="default", tech_id="t3", actor="t1")
     assert detail.assigned_tech_id == "t3"
     assert repo.add_event.await_args.args[0].kind == "assign"
+
+
+async def test_assign_may_override_an_existing_claim(svc: tuple[JobService, MagicMock]) -> None:
+    # Manager reassignment is deliberately unconditional — only the technician
+    # free-pick is guarded.
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t2"
+    repo.get.return_value = job
+    detail = await service.assign_job(job_id=job.id, shop_id="default", tech_id="t4", actor="t1")
+    assert detail.assigned_tech_id == "t4"
 
 
 async def test_claim_sets_tech_and_logs_claim_event(svc: tuple[JobService, MagicMock]) -> None:
     service, repo = svc
     job = _open_job()
     repo.get.return_value = job
-    detail = await service.assign_job(
-        job_id=job.id, shop_id="default", tech_id="t2", actor="t2", claimed=True
-    )
+
+    async def _refresh(row: JobRow) -> None:  # the conditional UPDATE wrote the DB
+        row.assigned_tech_id = "t2"
+
+    repo.refresh.side_effect = _refresh
+    detail = await service.claim_job(job_id=job.id, shop_id="default", tech_id="t2")
     assert detail.assigned_tech_id == "t2"
+    repo.try_claim.assert_awaited_once_with(job.id, "t2")
     assert repo.add_event.await_args.args[0].kind == "claim"
+
+
+async def test_claim_of_a_taken_job_conflicts_with_the_holder_named(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.try_claim.return_value = False  # lost the race / already taken
+
+    async def _refresh(row: JobRow) -> None:
+        row.assigned_tech_id = "t9"
+
+    repo.refresh.side_effect = _refresh
+    with pytest.raises(JobConflictError, match="already assigned to t9"):
+        await service.claim_job(job_id=job.id, shop_id="default", tech_id="t2")
+    repo.add_event.assert_not_awaited()
+
+
+async def test_reclaiming_your_own_job_is_idempotent(svc: tuple[JobService, MagicMock]) -> None:
+    # An offline retry of a claim that already landed must succeed quietly —
+    # and must not append a duplicate timeline event.
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t2"
+    repo.get.return_value = job
+    detail = await service.claim_job(job_id=job.id, shop_id="default", tech_id="t2")
+    assert detail.assigned_tech_id == "t2"
+    repo.add_event.assert_not_awaited()
+
+
+async def test_claiming_a_closed_job_conflicts(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.status = "closed"
+    repo.get.return_value = job
+    with pytest.raises(JobConflictError, match="closed"):
+        await service.claim_job(job_id=job.id, shop_id="default", tech_id="t2")
+    repo.try_claim.assert_not_awaited()
+
+
+# ── create: token-collision retry ────────────────────────────────────────────
+def _collide_once() -> object:
+    """A repo.create side effect: first call hits uq_job_token, second persists."""
+    calls = {"n": 0}
+
+    async def _side(job: JobRow) -> JobRow:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("stmt", {}, Exception("duplicate key uq_job_token"))
+        return _persist(job)
+
+    return _side
+
+
+async def test_create_retries_token_collision(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    repo.next_token.side_effect = [1052, 1053]
+    repo.create.side_effect = _collide_once()
+
+    job = await service.create_job(
+        JobCreate(customer_name="Abdul", appliance_type="Split AC", problem="x")
+    )
+
+    # The second attempt wins with the recomputed token.
+    assert job.token == 1053
+    repo.rollback.assert_awaited_once()
+    assert repo.next_token.await_count == 2
+
+
+async def test_create_gives_up_after_three_collisions(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    repo.next_token.side_effect = [1052, 1053, 1054]
+    repo.create.side_effect = IntegrityError("stmt", {}, Exception("dup"))
+    with pytest.raises(IntegrityError):
+        await service.create_job(
+            JobCreate(customer_name="Abdul", appliance_type="Split AC", problem="x")
+        )
+    assert repo.rollback.await_count == 3
+    repo.add_event.assert_not_awaited()
 
 
 # ── completion + bill (paisa) ────────────────────────────────────────────────
@@ -392,6 +492,61 @@ async def test_log_payment_is_idempotent_on_client_id(svc: tuple[JobService, Mag
         actor="t1",
     )
     repo.add_payment.assert_awaited_once()  # still once
+
+
+async def test_log_payment_recovers_the_concurrent_duplicate_race(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """Two concurrent sends of the same client_id: both pass the fast-path
+    lookup, the unique constraint catches the loser at flush — which must
+    recover as the no-op it is (same pattern as attendance), not surface a 500.
+    """
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    cid = uuid4()
+
+    # Fast path sees nothing (we're mid-race) …
+    repo.get_payment_by_client.side_effect = [
+        None,  # the pre-insert dedup check
+        JobPayment(job_id=job.id, client_id=cid, amount_paisa=200000, method="cash"),  # recovery
+    ]
+    # … and the insert collides on uq_job_payment_client.
+    repo.add_payment.side_effect = IntegrityError("stmt", {}, Exception("uq_job_payment_client"))
+
+    detail = await service.log_payment(
+        job_id=job.id,
+        shop_id="default",
+        amount_paisa=200000,
+        method="cash",
+        client_id=cid,
+        actor="t1",
+    )
+
+    assert detail.id == job.id
+    repo.rollback.assert_awaited_once()
+    repo.add_event.assert_not_awaited()  # the winning request wrote the event
+
+
+async def test_log_payment_reraises_a_non_duplicate_integrity_error(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.get_payment_by_client.return_value = None  # nothing before OR after
+    repo.add_payment.side_effect = IntegrityError("stmt", {}, Exception("some other constraint"))
+
+    with pytest.raises(IntegrityError):
+        await service.log_payment(
+            job_id=job.id,
+            shop_id="default",
+            amount_paisa=200000,
+            method="cash",
+            client_id=uuid4(),
+            actor="t1",
+        )
+    repo.rollback.assert_awaited_once()
 
 
 async def test_void_payment_marks_voided(svc: tuple[JobService, MagicMock]) -> None:

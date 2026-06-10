@@ -1,14 +1,37 @@
 """End-to-end jobs tests against a **real Postgres**: the create → get → list
-flow through the ASGI app, and the auth guard (jobs hold customer PII)."""
+flow through the ASGI app, the auth guard (jobs hold customer PII), and the
+guarded claim (409 instead of a silent steal)."""
 
 from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.features.identity.models import Technician
+from app.features.identity.security import create_access_token, hash_pin
 
 pytestmark = pytest.mark.integration
 
 Headers = dict[str, str]
+
+
+async def _tech_headers(session: AsyncSession, tech_id: str) -> Headers:
+    """A second authenticated identity, with its row seeded — the auth
+    dependency verifies callers against the live technician table."""
+    session.add(
+        Technician(
+            id=tech_id,
+            name=f"Tech {tech_id}",
+            role="tech",
+            pin_hash=hash_pin("1234"),
+            active=True,
+        )
+    )
+    await session.commit()
+    token = create_access_token(tech_id=tech_id, role="tech", name=f"Tech {tech_id}")
+    return {"Authorization": f"Bearer {token}"}
+
 
 _INTAKE = {
     "job_type": "home-visit",
@@ -311,3 +334,70 @@ async def test_close_requires_a_closing_video(
 async def test_jobs_require_auth(app_client: AsyncClient) -> None:
     assert (await app_client.get("/api/jobs")).status_code == 401
     assert (await app_client.post("/api/jobs", json=_INTAKE)).status_code == 401
+
+
+# ── Guarded claim (1b) ───────────────────────────────────────────────────────
+_UNASSIGNED = {**_INTAKE, "assigned_tech_id": None}
+
+
+async def test_claim_then_steal_attempt_is_409(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    created = await app_client.post("/api/jobs", json=_UNASSIGNED, headers=auth_headers)
+    job_id = created.json()["id"]
+    t2 = await _tech_headers(session, "t2")
+
+    # First claim wins.
+    first = await app_client.post(f"/api/jobs/{job_id}/claim", headers=t2)
+    assert first.status_code == 200, first.text
+    assert first.json()["assigned_tech_id"] == "t2"
+
+    # Re-claiming your OWN job is an idempotent success (offline retry)…
+    again = await app_client.post(f"/api/jobs/{job_id}/claim", headers=t2)
+    assert again.status_code == 200, again.text
+    # …and doesn't duplicate the timeline event.
+    claims = [e for e in again.json()["events"] if e["kind"] == "claim"]
+    assert len(claims) == 1
+
+    # A different tech claiming the held job is a conflict, naming the holder.
+    blocked = await app_client.post(f"/api/jobs/{job_id}/claim", headers=auth_headers)
+    assert blocked.status_code == 409, blocked.text
+    assert "t2" in blocked.json()["detail"]
+
+    # The holder is unchanged — no silent steal.
+    detail = await app_client.get(f"/api/jobs/{job_id}", headers=auth_headers)
+    assert detail.json()["assigned_tech_id"] == "t2"
+
+
+async def test_claiming_a_closed_job_is_409(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    created = await app_client.post("/api/jobs", json=_UNASSIGNED, headers=auth_headers)
+    job_id = created.json()["id"]
+    # Abandon closes without the closing-video gate.
+    closed = await app_client.post(
+        f"/api/jobs/{job_id}/transition",
+        json={"action": "abandon", "reason": "customer cancelled"},
+        headers=auth_headers,
+    )
+    assert closed.status_code == 200, closed.text
+
+    t2 = await _tech_headers(session, "t2")
+    blocked = await app_client.post(f"/api/jobs/{job_id}/claim", headers=t2)
+    assert blocked.status_code == 409, blocked.text
+
+
+async def test_manager_assign_still_overrides_a_claim(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    created = await app_client.post("/api/jobs", json=_UNASSIGNED, headers=auth_headers)
+    job_id = created.json()["id"]
+    t2 = await _tech_headers(session, "t2")
+    assert (await app_client.post(f"/api/jobs/{job_id}/claim", headers=t2)).status_code == 200
+
+    # Manager reassignment stays unconditional (their prerogative).
+    reassigned = await app_client.post(
+        f"/api/jobs/{job_id}/assign", json={"tech_id": "t1"}, headers=auth_headers
+    )
+    assert reassigned.status_code == 200, reassigned.text
+    assert reassigned.json()["assigned_tech_id"] == "t1"

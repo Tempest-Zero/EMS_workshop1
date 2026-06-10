@@ -35,7 +35,12 @@ from app.features.jobs.schemas import (
     TransitionRequest,
     VoidRequest,
 )
-from app.features.jobs.service import JobActionError, JobNotFoundError, JobService
+from app.features.jobs.service import (
+    JobActionError,
+    JobConflictError,
+    JobNotFoundError,
+    JobService,
+)
 from app.features.media.repository import MediaRepository
 from app.features.media.service import MediaService
 from app.features.notifications.repository import NotificationRepository
@@ -191,7 +196,7 @@ async def assign(
     principal: CurrentPrincipal,
     notifications: NotificationServiceDep,
 ) -> JobDetail:
-    detail = await _assign(service, job_id, body.tech_id, principal.tech_id, claimed=False)
+    detail = await _assign(service, job_id, body.tech_id, principal.tech_id)
     await session.commit()
     # Best-effort push to the assigned tech — never let it break the assignment.
     with contextlib.suppress(Exception):
@@ -202,7 +207,7 @@ async def assign(
 @router.post(
     "/{job_id}/claim",
     response_model=JobDetail,
-    summary="Claim a job from the work list (technician free-pick)",
+    summary="Claim a job from the work list (technician free-pick) — 409 if already taken",
 )
 async def claim(
     job_id: UUID,
@@ -210,7 +215,14 @@ async def claim(
     session: SessionDep,
     principal: CurrentPrincipal,
 ) -> JobDetail:
-    detail = await _assign(service, job_id, principal.tech_id, principal.tech_id, claimed=True)
+    try:
+        detail = await service.claim_job(
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, tech_id=principal.tech_id
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobConflictError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     await session.commit()
     return detail
 
@@ -341,12 +353,10 @@ async def record_location(
     return detail
 
 
-async def _assign(
-    service: JobService, job_id: UUID, tech_id: str, actor: str, *, claimed: bool
-) -> JobDetail:
+async def _assign(service: JobService, job_id: UUID, tech_id: str, actor: str) -> JobDetail:
     try:
         return await service.assign_job(
-            job_id=job_id, shop_id=DEFAULT_SHOP_ID, tech_id=tech_id, actor=actor, claimed=claimed
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, tech_id=tech_id, actor=actor
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e

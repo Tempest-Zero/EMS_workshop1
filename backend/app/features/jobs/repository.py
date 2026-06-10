@@ -4,9 +4,11 @@ the request boundary."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import CursorResult, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.jobs.models import (
@@ -25,6 +27,34 @@ class JobRepository:
 
     async def get(self, job_id: UUID) -> Job | None:
         return await self._session.get(Job, job_id)
+
+    async def rollback(self) -> None:
+        """Roll back the in-flight transaction (IntegrityError recovery)."""
+        await self._session.rollback()
+
+    async def refresh(self, instance: object) -> None:
+        """Re-read an ORM row from the DB (after a raw UPDATE or a rollback)."""
+        await self._session.refresh(instance)
+
+    async def try_claim(self, job_id: UUID, tech_id: str) -> bool:
+        """Atomically claim a job for ``tech_id`` — only if it is unassigned
+        (or already theirs) and not closed. The conditional UPDATE takes the
+        row lock, so two concurrent claims can't both win; the loser sees
+        rowcount 0. This is the guard the check-then-set path can't provide.
+        """
+        stmt = (
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status != "closed",
+                or_(Job.assigned_tech_id.is_(None), Job.assigned_tech_id == tech_id),
+            )
+            .values(assigned_tech_id=tech_id, updated_at=datetime.now(UTC))
+        )
+        result = await self._session.execute(stmt)
+        # execute() is typed as the base Result; an UPDATE actually yields a
+        # CursorResult, which is what carries rowcount.
+        return bool(cast(CursorResult[Any], result).rowcount)
 
     async def next_token(self) -> int:
         """The next human-facing job number. Starts at 1052 (the prototype's
