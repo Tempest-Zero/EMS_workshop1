@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, String, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -33,4 +33,23 @@ class Technician(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    # ── Login throttle state (migration 0013) ───────────────────────────────
+    # Consecutive failed logins; only reset on a successful login, so escalation
+    # persists across an expired lock. ``locked_until`` (when set in the future)
+    # blocks login → 429. Self-healing: the lock decays, it never hard-locks
+    # (there is one manager account — a permanent lock would be a DoS gift).
+    # `default=0` alongside the server default so direct `session.add(...)`
+    # inserts don't need to spell these out. (Both apply at INSERT — a fresh
+    # in-memory instance still reads None, which the service tolerates.)
+    failed_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Bumped to invalidate every live JWT for this tech (lost-phone kill switch).
+    # The token carries this as a ``ver`` claim; a missing claim is treated as 0,
+    # so tokens issued before 0013 stay valid until a deliberate bump.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
     )

@@ -19,3 +19,8 @@ class IdentityRepository:
         stmt = select(Technician).where(Technician.active.is_(True)).order_by(Technician.name.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars())
+
+    async def flush(self) -> None:
+        """Flush pending mutations (throttle counters, pin/version updates).
+        The router owns the commit, as everywhere else."""
+        await self._session.flush()
