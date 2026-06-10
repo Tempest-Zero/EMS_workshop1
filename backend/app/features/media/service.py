@@ -145,12 +145,12 @@ class MediaService:
         Counts pending rows too, so the gate is offline-tolerant."""
         return await self._repo.count_phase(job_id, phase)
 
-    async def uploaded_closing_counts(self, *, job_ids: list[str]) -> dict[str, int]:
-        """Per-job count of closing clips whose bytes actually arrived in R2.
-        The close-gate deliberately accepts pending rows (offline tolerance);
-        this is the reconciliation view that closes that loophole — a job
-        absent from this map has evidence on record but no bytes."""
-        return await self._repo.uploaded_counts_for_phase(job_ids, "closing")
+    async def closing_counts(self, *, job_ids: list[str]) -> dict[str, tuple[int, int]]:
+        """Per-job ``(total, uploaded)`` closing-clip counts. The close-gate
+        deliberately accepts pending rows (offline tolerance); reconciliation
+        uses this to find clips that were promised but whose bytes never came.
+        Jobs with no closing rows at all are absent (pre-gate closures)."""
+        return await self._repo.phase_counts(job_ids, "closing")
 
     # ── Internals ───────────────────────────────────────────────────────
     async def _load(self, job_id: str, media_id: UUID) -> JobMedia:

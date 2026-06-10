@@ -38,14 +38,16 @@ def svc() -> tuple[JobService, MagicMock, MagicMock]:
     return JobService(repo), repo, media
 
 
-async def test_flags_closed_jobs_with_no_uploaded_closing_bytes(
+async def test_flags_promised_but_never_uploaded_closing_clips(
     svc: tuple[JobService, MagicMock, MagicMock],
 ) -> None:
     service, repo, media = svc
-    ghost, honest = _closed_job(1051), _closed_job(1052)
-    repo.list_closed_unabandoned = AsyncMock(return_value=[ghost, honest])
-    # 1052's clip actually landed; 1051's never did (pending forever / no row).
-    media.uploaded_closing_counts = AsyncMock(return_value={"1052": 1})
+    ghost, honest, legacy = _closed_job(1051), _closed_job(1052), _closed_job(1038)
+    repo.list_closed_unabandoned = AsyncMock(return_value=[ghost, honest, legacy])
+    # 1051 promised a clip (row exists) but the bytes never landed → flagged.
+    # 1052's clip uploaded → fine. 1038 predates the gate (no closing rows at
+    # all) → not noise-flagged forever.
+    media.closing_counts = AsyncMock(return_value={"1051": (1, 0), "1052": (1, 1)})
 
     gaps = await service.evidence_gaps(shop_id="default", media=media, today=TODAY)
 
@@ -61,9 +63,9 @@ async def test_no_closed_jobs_short_circuits_without_media_call(
 ) -> None:
     service, repo, media = svc
     repo.list_closed_unabandoned = AsyncMock(return_value=[])
-    media.uploaded_closing_counts = AsyncMock()
+    media.closing_counts = AsyncMock()
 
     gaps = await service.evidence_gaps(shop_id="default", media=media, today=TODAY)
 
     assert gaps == []
-    media.uploaded_closing_counts.assert_not_awaited()
+    media.closing_counts.assert_not_awaited()

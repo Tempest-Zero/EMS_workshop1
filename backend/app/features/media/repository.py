@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.media.models import JobMedia, MediaStatus
@@ -57,22 +57,19 @@ class MediaRepository:
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
 
-    async def uploaded_counts_for_phase(self, job_ids: list[str], phase: str) -> dict[str, int]:
-        """Per-job count of media rows for a phase whose bytes actually landed
-        (status=uploaded). Jobs with no uploaded rows are absent from the map."""
+    async def phase_counts(self, job_ids: list[str], phase: str) -> dict[str, tuple[int, int]]:
+        """Per-job ``(total, uploaded)`` media counts for a phase. Jobs with no
+        rows at all are absent from the map."""
         if not job_ids:
             return {}
+        uploaded = func.sum(case((JobMedia.status == MediaStatus.UPLOADED.value, 1), else_=0))
         stmt = (
-            select(JobMedia.job_id, func.count())
-            .where(
-                JobMedia.job_id.in_(job_ids),
-                JobMedia.phase == phase,
-                JobMedia.status == MediaStatus.UPLOADED.value,
-            )
+            select(JobMedia.job_id, func.count(), uploaded)
+            .where(JobMedia.job_id.in_(job_ids), JobMedia.phase == phase)
             .group_by(JobMedia.job_id)
         )
         result = await self._session.execute(stmt)
-        return {str(job_id): int(count) for job_id, count in result.all()}
+        return {str(job_id): (int(total), int(up or 0)) for job_id, total, up in result.all()}
 
     async def mark_uploaded(
         self,

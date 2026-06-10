@@ -441,18 +441,24 @@ class JobService:
         rows = await self._repo.list_closed_unabandoned(shop_id=shop_id, closed_before=cutoff)
         if not rows:
             return []
-        uploaded = await media.uploaded_closing_counts(job_ids=[str(r.token) for r in rows])
-        return [
-            EvidenceGap(
-                id=r.id,
-                token=r.token,
-                customer_name=r.customer_name,
-                closed_at=r.closed_at,
-                closing_uploaded=uploaded.get(str(r.token), 0),
-            )
-            for r in rows
-            if uploaded.get(str(r.token), 0) == 0
-        ]
+        counts = await media.closing_counts(job_ids=[str(r.token) for r in rows])
+        gaps: list[EvidenceGap] = []
+        for r in rows:
+            total, uploaded = counts.get(str(r.token), (0, 0))
+            # Only "promised but never arrived": a closing row exists (the gate
+            # saw it) but no bytes ever landed. Jobs with no closing rows at all
+            # predate the gate — flagging them forever would be noise.
+            if total > 0 and uploaded == 0:
+                gaps.append(
+                    EvidenceGap(
+                        id=r.id,
+                        token=r.token,
+                        customer_name=r.customer_name,
+                        closed_at=r.closed_at,
+                        closing_uploaded=0,
+                    )
+                )
+        return gaps
 
     # ── Internals ────────────────────────────────────────────────────────
     async def _load(self, job_id: UUID, shop_id: str) -> JobRow:
