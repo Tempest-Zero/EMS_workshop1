@@ -45,16 +45,29 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 **Cut by owner (out of scope):** WhatsApp intake/bill delivery, barcode check-in, face recognition.
 
 **Pending (operational, not build):**
-- **v12 APK** ready: https://expo.dev/artifacts/eas/k1YDiowqHjWfLT7yqUHYZR.apk — install for the full on-device demo (audio + outbox + push).
-- **PR #52** (manager geofence + shift editor) — open; **web redeployed to Railway**. Merge to sync `main`. Pure front-end against existing PUT endpoints; no backend/migration.
+- ⛔ **THE DEPLOY GATE (read before ANY backend/web deploy):** `main` contains the
+  Phase-4 money guards (merged #62) but they are **deliberately NOT deployed**.
+  The guards 409-reject writes against closed jobs; phones still running the
+  pre-outbox-v2 app would **silently delete** those queued writes (possibly cash).
+  Sequence: install the **v13 outbox-v2 APK** on EVERY technician phone
+  (https://expo.dev/artifacts/eas/3qvGMvqLvpFkBUxP2zmSWn.apk — checklist on PR #59),
+  verify each phone syncs with an empty outbox, **then** deploy backend + web
+  together (`railway up` each; the web's Put-on-Hold button needs the backend's
+  `wait` action, so neither deploys alone). Until then: do not `railway up` the
+  backend from `main`.
 - **ERP upload final hop:** the **Sunday automation is live** — an in-process scheduler (APScheduler, single-replica assumption) writes the week's payroll CSV to R2 every Sunday 18:00 Asia/Karachi; the manager web lists/downloads them (Attendance → Weekly exports). Only the push *into the client's ERP* remains pending their system/format (adapter seam ready).
 - **Web hosting was moved to Railway (not GitHub Pages)** — the Pages workflow was removed. The `web` service deploys `Dockerfile.web`; backend `FIXFLOW_CORS_ORIGINS` allows the web origin. Deploy with `railway up --service web --detach` (Railway is **not** GitHub-connected). **Deploy gotcha:** Railway's build cache can serve a stale bundle — bump the cache-bust ARG in `Dockerfile.web` if a deploy looks unchanged; verify by diffing the served `/assets/index-*.js` hash.
 
 ---
 
 ## 4. Open / recent PRs
-- **#52** `feat/web-attendance-config` — OPEN, gates green (lint/format/build clean, 67 web tests), **web redeployed to Railway**; merge to sync `main`. (Manager Settings gains live geofence + per-tech shift editors against the existing PUT endpoints; front-end only.)
-- Merged: #50 manager role gate, #51 delete dead tech web files; #45 FCM-direct push, #47 web→Railway hosting, #48 live roster/attendance wiring, #49 manager-only web; #41 offline outbox, #42 expo-av audio, #43 push slice, #44 payroll export, #32–36 Phase 3, #29–31 Phase 2.
+- **Everything is merged through #62.** The remediation arc (docs/REMEDIATION-PLAN.md):
+  #55–58 Phase 1 backend safety (deployed) · #59 Phase 3 outbox v2 (merged; APK
+  built, rollout pending) · #60 Phase 2 web truth purge (deployed) · #61 Phase 5
+  scheduler/payroll-export/evidence-gaps (deployed) · **#62 Phase 4 money guards
+  (merged, DEPLOY-GATED — see Pending above)**.
+- Earlier: #52 geofence/shift editors, #53 login auto-select, #54 Person A manager,
+  #50/51 manager-only web, #45–49 hosting/push/roster, #41–44, #29–36.
 - The owner merges PRs (protected `main`); the agent cannot merge. Each slice = its own PR.
 
 ---
@@ -71,7 +84,7 @@ management for a Karachi appliance-repair shop. Modular monolith, 3 runtimes.
 - **Scheduler seam:** in-process APScheduler started from `main.py`'s lifespan (`FIXFLOW_ENABLE_SCHEDULER`, default on; **single-replica assumption** — scaling out duplicates jobs; the payroll job is idempotent on its (shop, week) key so a duplicate run is harmless). Jobs are registered in `main.py` (the composition root), never in `core/`.
 - **Evidence reconciliation:** the close-gate accepts *pending* closing media (offline tolerance); `GET /api/jobs/evidence-gaps` (manager) lists closed jobs whose closing bytes never reached R2 after a 2-day grace — surfaced as a red Dashboard alert. This closes the "close offline, never upload" loophole.
 - **Audio = expo-av** (`Audio.Recording`, HIGH_QUALITY → AAC/.m4a, browser-playable), NOT expo-audio (0.3.5 throws `IllegalStateException` on `stop()` — see lessons). expo-av is deprecated in SDK 52 (works fine; migrate to fixed expo-audio at SDK 53). `expo-doctor` excludes `expo-av` in `package.json`.
-- **Migrations:** sequential Alembic 0001→0014. Recent: 0012 dedicated manager, 0013 technician security (lockout/token_version), 0014 `payroll_export`. Recent: 0010 `job_location` (GPS), 0011 `device_token` (push), 0012 dedicated manager account (seed Person A `m1`, demote `t1` to tech). All applied in prod (`alembic_version=0012`). Railway **auto-runs `alembic upgrade head` on deploy**.
+- **Migrations:** sequential Alembic 0001→0015. Recent: 0012 dedicated manager (Person A), 0013 technician security (lockout/token_version), 0014 `payroll_export`, 0015 money guards (labour-rate snapshot, `job_media.created_by`, `closed_at`→timestamptz). **Prod is at 0014; 0015 ships with the gated Phase-4 deploy.** Railway **auto-runs `alembic upgrade head` on deploy**.
 
 ---
 
