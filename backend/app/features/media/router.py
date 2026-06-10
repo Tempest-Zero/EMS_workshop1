@@ -17,11 +17,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.db import get_session
-from app.core.storage import StorageClient, get_storage
 from app.features.identity.deps import get_current_principal
-from app.features.media.repository import MediaRepository
+
+# Construction lives in deps.py (the cross-slice surface shared with jobs'
+# close-gate). Aliased so this router's tests keep their override seam.
+from app.features.media.deps import MediaServiceDep as ServiceDep
 from app.features.media.schemas import (
     MediaCompleteRequest,
     MediaItem,
@@ -31,7 +32,6 @@ from app.features.media.schemas import (
 )
 from app.features.media.service import (
     MediaNotFoundError,
-    MediaService,
     MediaTooLargeError,
 )
 
@@ -45,14 +45,6 @@ router = APIRouter(
 )
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-StorageDep = Annotated[StorageClient, Depends(get_storage)]
-
-
-def get_service(session: SessionDep, storage: StorageDep) -> MediaService:
-    return MediaService(MediaRepository(session), storage, settings.r2_max_upload_bytes)
-
-
-ServiceDep = Annotated[MediaService, Depends(get_service)]
 
 
 @router.post(

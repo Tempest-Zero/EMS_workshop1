@@ -36,6 +36,9 @@ dev = [
   "httpx>=0.27,<1.0",
   "ruff>=0.7,<1.0",
   "mypy>=1.13,<2.0",
+  # Enforces the slice-dependency contract (ARCHITECTURE.md) in CI — the rules
+  # were prose-only before, and review demonstrably missed violations.
+  "import-linter>=2.0,<3.0",
 ]
 
 # We are an application, not a distributable library. `pip install -e .` still
@@ -84,3 +87,63 @@ warn_return_any = true
 [[tool.mypy.overrides]]
 module = ["boto3.*", "botocore.*", "alembic.*"]
 ignore_missing_imports = true
+
+# ── Import Linter (slice-dependency contract) ────────────────────────────────
+# The prose rules in ARCHITECTURE.md, made mechanical. `lint-imports` runs in
+# CI after mypy. Identity is the blessed cross-cutting slice (auth seam) and is
+# deliberately outside the independence set; every other cross-slice edge must
+# go through the target slice's deps.py/service.py and be listed here.
+[tool.importlinter]
+root_package = "app"
+
+[[tool.importlinter.contracts]]
+name = "Feature slices stay independent (cross-slice only via deps/service)"
+type = "independence"
+modules = [
+  "app.features.attendance",
+  "app.features.health",
+  "app.features.jobs",
+  "app.features.media",
+  "app.features.notifications",
+]
+ignore_imports = [
+  # Jobs' close-gate checks closing media through the media surface.
+  "app.features.jobs.router -> app.features.media.deps",
+  "app.features.jobs.service -> app.features.media.service",
+  # Manager-assign pushes through the notifications surface.
+  "app.features.jobs.router -> app.features.notifications.deps",
+  # Router tests boot the whole app (which mounts every slice) and spec their
+  # fakes against other slices' public services — test harness, not a
+  # production dependency. Only the *.service/*.deps surfaces are excepted, so
+  # a test reaching into another slice's repository/models still fails.
+  "app.features.*.tests.* -> app.main",
+  "app.features.*.tests.* -> app.features.*.service",
+  "app.features.*.tests.* -> app.features.*.deps",
+]
+
+[[tool.importlinter.contracts]]
+name = "Identity (the blessed cross-cutting slice) imports no other feature"
+type = "forbidden"
+source_modules = ["app.features.identity"]
+forbidden_modules = [
+  "app.features.attendance",
+  "app.features.health",
+  "app.features.jobs",
+  "app.features.media",
+  "app.features.notifications",
+]
+ignore_imports = [
+  "app.features.identity.tests.* -> app.main",
+]
+
+[[tool.importlinter.contracts]]
+name = "shared/ is a pure kernel (imports nothing internal)"
+type = "forbidden"
+source_modules = ["app.shared"]
+forbidden_modules = ["app.core", "app.features"]
+
+[[tool.importlinter.contracts]]
+name = "core/ never reaches into features"
+type = "forbidden"
+source_modules = ["app.core"]
+forbidden_modules = ["app.features"]

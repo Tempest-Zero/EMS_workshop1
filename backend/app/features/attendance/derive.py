@@ -6,15 +6,17 @@ service is responsible for converting the authoritative UTC ``server_time`` into
 the shop's local timezone before calling in. Keeping it pure means the manager
 board/grid logic is unit-tested without a database (matching how the media slice
 unit-tests its service).
+
+The haversine itself lives in ``app.shared.geo`` (the jobs slice needs it too,
+and cross-slice imports of another slice's internals are off-limits).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from math import asin, cos, radians, sin, sqrt
 
-EARTH_RADIUS_M = 6_371_000.0
+from app.shared.geo import haversine_m
 
 # Mirror of models.PunchKind values, kept as literals so this module imports
 # nothing internal.
@@ -66,15 +68,6 @@ class DayRollup:
 
 
 # ── Geofence ─────────────────────────────────────────────────────────────────
-def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Great-circle distance in metres between two lat/lng points."""
-    p1, p2 = radians(lat1), radians(lat2)
-    dphi = radians(lat2 - lat1)
-    dlambda = radians(lng2 - lng1)
-    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlambda / 2) ** 2
-    return 2 * EARTH_RADIUS_M * asin(sqrt(a))
-
-
 def geofence_flags(
     lat: float, lng: float, *, center_lat: float, center_lng: float, radius_m: float
 ) -> tuple[bool, float]:

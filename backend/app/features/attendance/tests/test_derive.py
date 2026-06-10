@@ -10,8 +10,8 @@ from app.features.attendance.derive import (
     ShiftSpec,
     classify_day,
     geofence_flags,
-    haversine_m,
 )
+from app.shared.geo import haversine_m
 
 
 def _in(d: date, h: int, m: int, *, inside: bool | None = True) -> LocalPunch:

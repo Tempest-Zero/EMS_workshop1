@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.db import get_session
 from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
-from app.features.jobs.router import get_media_service, get_notification_service, get_service
+from app.features.jobs.router import get_service
 from app.features.jobs.schemas import Job, JobDetail
 from app.features.jobs.service import (
     JobActionError,
@@ -24,7 +24,9 @@ from app.features.jobs.service import (
     JobNotFoundError,
     JobService,
 )
+from app.features.media.deps import get_media_service
 from app.features.media.service import MediaService
+from app.features.notifications.deps import get_notification_service
 from app.features.notifications.service import NotificationService
 from app.main import app
 

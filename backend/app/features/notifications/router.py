@@ -13,20 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
 from app.features.identity.deps import CurrentPrincipal
-from app.features.notifications.repository import NotificationRepository
+
+# Construction lives in deps.py (the cross-slice surface shared with jobs'
+# push-on-assign). Aliased so this router's tests keep their override seam.
+from app.features.notifications.deps import NotificationServiceDep as ServiceDep
 from app.features.notifications.schemas import DeviceRegister
-from app.features.notifications.service import NotificationService
 
 router = APIRouter(prefix="/devices", tags=["notifications"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-
-
-def get_service(session: SessionDep) -> NotificationService:
-    return NotificationService(NotificationRepository(session))
-
-
-ServiceDep = Annotated[NotificationService, Depends(get_service)]
 
 
 @router.post(
