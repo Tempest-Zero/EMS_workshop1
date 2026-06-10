@@ -16,6 +16,7 @@ import {
   View,
 } from "react-native";
 
+import { ApiError } from "../../lib/api";
 import { jobsApi, type Job } from "../../lib/jobsApi";
 import { useAuth } from "../auth/AuthContext";
 import type { JobsStackParamList } from "./types";
@@ -103,8 +104,14 @@ export function JobsListScreen({ navigation }: Props) {
     try {
       await jobsApi.claim(id);
       await load();
-    } catch {
-      setError("Couldn't claim that job — try again.");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // The Phase-1 claim guard: someone else got there first.
+        setError("Already claimed by another technician — list refreshed.");
+        await load();
+      } else {
+        setError("Couldn't claim that job — try again.");
+      }
     } finally {
       setClaiming(null);
     }

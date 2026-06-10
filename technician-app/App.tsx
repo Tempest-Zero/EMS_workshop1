@@ -10,8 +10,11 @@ import { AuthProvider, useAuth } from "./src/features/auth/AuthContext";
 import { LoginScreen } from "./src/features/auth/LoginScreen";
 import { JobsStack } from "./src/features/jobs/JobsStack";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
+import { initSentry } from "./src/lib/sentry";
 import { useOutboxSync } from "./src/lib/useOutboxSync";
 import { usePushRegistration } from "./src/lib/usePushRegistration";
+
+initSentry();
 
 const Tab = createBottomTabNavigator();
 
@@ -22,14 +25,20 @@ const TAB_ICON: Record<string, keyof typeof Feather.glyphMap> = {
 };
 
 // Shown app-wide while job writes (completion / cash / punches) are queued
-// offline. Drains automatically on reconnect.
-function OfflineBanner({ count }: { count: number }) {
+// offline (amber) or were rejected and need the technician's decision (red —
+// the failed items live on each job's detail screen with Retry / Discard).
+function OfflineBanner({ queued, failed }: { queued: number; failed: number }) {
   const insets = useSafeAreaInsets();
+  const hasFailed = failed > 0;
   return (
-    <View style={[styles.banner, { paddingTop: insets.top + 6 }]}>
-      <Feather name="wifi-off" size={13} color="#92400e" />
-      <Text style={styles.bannerText}>
-        {count} change{count === 1 ? "" : "s"} saved offline — syncing when reconnected…
+    <View
+      style={[styles.banner, hasFailed && styles.bannerFailed, { paddingTop: insets.top + 6 }]}
+    >
+      <Feather name={hasFailed ? "alert-triangle" : "wifi-off"} size={13} color={hasFailed ? "#b91c1c" : "#92400e"} />
+      <Text style={[styles.bannerText, hasFailed && styles.bannerTextFailed]}>
+        {hasFailed
+          ? `${failed} change${failed === 1 ? "" : "s"} need attention (see the job) · ${queued} syncing`
+          : `${queued} change${queued === 1 ? "" : "s"} saved offline — syncing when reconnected…`}
       </Text>
     </View>
   );
@@ -38,11 +47,11 @@ function OfflineBanner({ count }: { count: number }) {
 function Tabs() {
   // Mounted once for the whole authenticated app so the outbox keeps draining
   // even after the tech leaves the screen that queued a write.
-  const pending = useOutboxSync();
+  const { queued, failed } = useOutboxSync();
   usePushRegistration();
   return (
     <View style={styles.flex}>
-      {pending > 0 ? <OfflineBanner count={pending} /> : null}
+      {queued > 0 || failed > 0 ? <OfflineBanner queued={queued} failed={failed} /> : null}
       <Tab.Navigator
         screenOptions={({ route }) => ({
           headerShown: route.name !== "My Jobs", // the Jobs stack draws its own headers
@@ -73,6 +82,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   bannerText: { color: "#92400e", fontSize: 12, fontWeight: "700" },
+  bannerFailed: { backgroundColor: "#fee2e2" },
+  bannerTextFailed: { color: "#b91c1c" },
 });
 
 function Root() {

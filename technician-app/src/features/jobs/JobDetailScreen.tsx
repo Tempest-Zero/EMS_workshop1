@@ -17,6 +17,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,11 +31,40 @@ import { JobMediaCapture } from "../media/JobMediaCapture";
 import { uploadMedia } from "../media/uploadMedia";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
-import { onOutboxChange } from "../../lib/outbox";
-import { sendOrQueue } from "../../lib/outboxSync";
+import {
+  discardItem,
+  makeItem,
+  onOutboxChange,
+  retryItem,
+  type OutboxItem,
+} from "../../lib/outbox";
+import { sendOrQueue, type PaymentPayload } from "../../lib/outboxSync";
+import { useJobOutbox } from "../../lib/useJobOutbox";
 import type { JobsStackParamList } from "./types";
 
 const OFFLINE_MSG = "Saved offline — will sync when reconnected.";
+
+/** Human label for a queued/failed outbox entry in the overlay lists. */
+function itemLabel(item: OutboxItem): string {
+  switch (item.kind) {
+    case "payment": {
+      const p = item.payload as PaymentPayload;
+      return `Payment ${formatPaisa(p.amountPaisa)} (${p.method})`;
+    }
+    case "completion":
+      return "Completion form";
+    case "negotiate":
+      return `Negotiated ${formatPaisa((item.payload as { amountPaisa: number }).amountPaisa)}`;
+    case "void":
+      return "Payment correction (void)";
+    case "location":
+      return "GPS punch";
+    case "ready":
+      return "Mark Ready";
+    case "note":
+      return "Note";
+  }
+}
 
 type Props = NativeStackScreenProps<JobsStackParamList, "JobDetail">;
 
@@ -91,13 +121,36 @@ export function JobDetailScreen({ route, navigation }: Props) {
   // bill / cash / route appears in place of the optimistic "saved offline" note.
   useEffect(() => onOutboxChange(() => void load()), [load]);
 
+  // The pending overlay: queued/failed outbox items for THIS job, rendered on
+  // top of server truth so an offline tech sees what they recorded.
+  const outboxView = useJobOutbox(id);
+  const pendingPayments = outboxView.queued.filter((i) => i.kind === "payment");
+  const pendingPaisa = pendingPayments.reduce(
+    (s, i) => s + (i.payload as PaymentPayload).amountPaisa,
+    0,
+  );
+  const pendingCompletion = outboxView.queued.some((i) => i.kind === "completion");
+  const pendingNegotiate = outboxView.queued.find((i) => i.kind === "negotiate");
+  const pendingReady = outboxView.queued.some((i) => i.kind === "ready");
+
   const submitNote = useCallback(async () => {
     const text = note.trim();
     if (!text || busy) return;
     setBusy("note");
     setError(null);
+    setInfo(null);
     try {
-      setJob(await jobsApi.addNote(id, text));
+      const detail = await sendOrQueue(
+        makeItem({
+          id: `note:${Crypto.randomUUID()}`,
+          kind: "note",
+          jobId: id,
+          payload: { text },
+        }),
+        () => jobsApi.addNote(id, text),
+      );
+      if (detail) setJob(detail);
+      else setInfo(OFFLINE_MSG);
       setNote("");
     } catch {
       setError("Couldn't add the note — try again.");
@@ -110,8 +163,14 @@ export function JobDetailScreen({ route, navigation }: Props) {
     if (busy) return;
     setBusy("ready");
     setError(null);
+    setInfo(null);
     try {
-      setJob(await jobsApi.transition(id, "ready"));
+      const detail = await sendOrQueue(
+        makeItem({ id: `ready:${id}`, kind: "ready", jobId: id, payload: {} }),
+        () => jobsApi.transition(id, "ready"),
+      );
+      if (detail) setJob(detail);
+      else setInfo(OFFLINE_MSG);
     } catch {
       setError("Couldn't mark ready — try again.");
     } finally {
@@ -164,14 +223,12 @@ export function JobDetailScreen({ route, navigation }: Props) {
     setInfo(null);
     try {
       const detail = await sendOrQueue(
-        {
+        makeItem({
           id: `negotiate:${id}`,
           kind: "negotiate",
           jobId: id,
           payload: { amountPaisa: paisa },
-          createdAt: new Date().toISOString(),
-          attempts: 0,
-        },
+        }),
         () => jobsApi.negotiateBill(id, paisa),
       );
       if (detail) setJob(detail);
@@ -184,35 +241,57 @@ export function JobDetailScreen({ route, navigation }: Props) {
     }
   }, [id, negotiate, busy]);
 
+  const submitPayment = useCallback(
+    async (paisa: number) => {
+      setBusy("payment");
+      setError(null);
+      setInfo(null);
+      try {
+        // client_id → the backend dedups, so a queued/retried payment never doubles.
+        const clientId = Crypto.randomUUID();
+        const detail = await sendOrQueue(
+          makeItem({
+            id: clientId,
+            kind: "payment",
+            jobId: id,
+            payload: { amountPaisa: paisa, method: payMethod, clientId },
+          }),
+          () => jobsApi.logPayment(id, paisa, payMethod, clientId),
+        );
+        if (detail) setJob(detail);
+        else setInfo(OFFLINE_MSG);
+        setPayAmount("");
+      } catch {
+        setError("Couldn't log the payment — try again.");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, payMethod],
+  );
+
   const logPayment = useCallback(async () => {
     const paisa = rupeesToPaisa(payAmount);
     if (paisa <= 0 || busy) return;
-    setBusy("payment");
-    setError(null);
-    setInfo(null);
-    try {
-      // client_id → the backend dedups, so a queued/retried payment never doubles.
-      const clientId = Crypto.randomUUID();
-      const detail = await sendOrQueue(
-        {
-          id: clientId,
-          kind: "payment",
-          jobId: id,
-          payload: { amountPaisa: paisa, method: payMethod, clientId },
-          createdAt: new Date().toISOString(),
-          attempts: 0,
-        },
-        () => jobsApi.logPayment(id, paisa, payMethod, clientId),
+    // The double-charge guard: the server dedups a *retried* tap, but a doubting
+    // tech tapping twice mints a fresh client_id each time — only the UI can
+    // catch that. Warn when the same amount is already waiting to sync.
+    const duplicate = pendingPayments.some(
+      (i) => (i.payload as PaymentPayload).amountPaisa === paisa,
+    );
+    if (duplicate) {
+      Alert.alert(
+        "Possible duplicate",
+        `A payment of ${formatPaisa(paisa)} is already waiting to sync on this job. Log another one?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Log anyway", style: "destructive", onPress: () => void submitPayment(paisa) },
+        ],
       );
-      if (detail) setJob(detail);
-      else setInfo(OFFLINE_MSG);
-      setPayAmount("");
-    } catch {
-      setError("Couldn't log the payment — try again.");
-    } finally {
-      setBusy(null);
+      return;
     }
-  }, [id, payAmount, payMethod, busy]);
+    await submitPayment(paisa);
+  }, [payAmount, busy, pendingPayments, submitPayment]);
 
   const voidPayment = useCallback(
     async (paymentId: string) => {
@@ -223,14 +302,12 @@ export function JobDetailScreen({ route, navigation }: Props) {
       setInfo(null);
       try {
         const detail = await sendOrQueue(
-          {
+          makeItem({
             id: `void:${paymentId}`,
             kind: "void",
             jobId: id,
             payload: { paymentId, reason },
-            createdAt: new Date().toISOString(),
-            attempts: 0,
-          },
+          }),
           () => jobsApi.voidPayment(id, paymentId, reason),
         );
         if (detail) setJob(detail);
@@ -269,14 +346,12 @@ export function JobDetailScreen({ route, navigation }: Props) {
           client_id: Crypto.randomUUID(),
         };
         const detail = await sendOrQueue(
-          {
+          makeItem({
             id: `location:${kind}:${id}`,
             kind: "location",
             jobId: id,
             payload: { body },
-            createdAt: new Date().toISOString(),
-            attempts: 0,
-          },
+          }),
           () => jobsApi.recordLocation(id, body),
         );
         if (detail) setJob(detail);
@@ -365,11 +440,18 @@ export function JobDetailScreen({ route, navigation }: Props) {
         <View style={styles.statusRow}>
           {canReady ? (
             <Pressable
-              style={[styles.btn, styles.btnReady, busy === "ready" && styles.btnBusy, styles.grow]}
+              style={[
+                styles.btn,
+                styles.btnReady,
+                (busy === "ready" || pendingReady) && styles.btnBusy,
+                styles.grow,
+              ]}
               onPress={() => void markReady()}
-              disabled={!!busy}
+              disabled={!!busy || pendingReady}
             >
-              <Text style={styles.btnReadyText}>{busy === "ready" ? "…" : "Mark Ready"}</Text>
+              <Text style={styles.btnReadyText}>
+                {busy === "ready" ? "…" : pendingReady ? "Ready · syncing…" : "Mark Ready"}
+              </Text>
             </Pressable>
           ) : null}
           {canClose ? (
@@ -390,6 +472,39 @@ export function JobDetailScreen({ route, navigation }: Props) {
           ) : null}
         </View>
       </View>
+
+      {outboxView.failed.length > 0 ? (
+        <View style={[styles.card, styles.failedCard]}>
+          <Text style={[styles.label, styles.failedLabel]}>NEEDS ATTENTION — DID NOT SYNC</Text>
+          {outboxView.failed.map((i) => (
+            <View key={i.id} style={styles.payRow}>
+              <View style={styles.grow}>
+                <Text style={styles.payAmt}>{itemLabel(i)}</Text>
+                <Text style={styles.failedReason}>{i.failedReason ?? "rejected by the server"}</Text>
+              </View>
+              <Pressable onPress={() => void retryItem(i.id)} hitSlop={8} style={styles.failedAction}>
+                <Text style={styles.retryText}>Retry</Text>
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  Alert.alert(
+                    "Discard this record?",
+                    `${itemLabel(i)} will be permanently removed. It was rejected: ${i.failedReason ?? "unknown reason"}.`,
+                    [
+                      { text: "Keep", style: "cancel" },
+                      { text: "Discard", style: "destructive", onPress: () => void discardItem(i.id) },
+                    ],
+                  )
+                }
+                hitSlop={8}
+                style={styles.failedAction}
+              >
+                <Text style={styles.correctText}>Discard</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       {isVisit ? (
         <View style={styles.card}>
@@ -464,6 +579,9 @@ export function JobDetailScreen({ route, navigation }: Props) {
 
       <View style={styles.card}>
         <Text style={styles.label}>WORK &amp; BILL</Text>
+        {pendingCompletion ? (
+          <Text style={styles.pendingNote}>Completion saved offline — syncing…</Text>
+        ) : null}
         {hasBill ? (
           <>
             <View style={styles.billGrid}>
@@ -474,20 +592,33 @@ export function JobDetailScreen({ route, navigation }: Props) {
               <View style={styles.billBox}>
                 <Text style={styles.billBoxLabel}>Negotiated</Text>
                 <Text style={styles.billBoxValue}>
-                  {job.bill_negotiated_paisa != null ? formatPaisa(job.bill_negotiated_paisa) : "—"}
+                  {pendingNegotiate
+                    ? `${formatPaisa((pendingNegotiate.payload as { amountPaisa: number }).amountPaisa)} ⏳`
+                    : job.bill_negotiated_paisa != null
+                      ? formatPaisa(job.bill_negotiated_paisa)
+                      : "—"}
                 </Text>
               </View>
             </View>
             <View style={styles.billGrid}>
               <View style={styles.billBox}>
                 <Text style={styles.billBoxLabel}>Received</Text>
-                <Text style={styles.billBoxValue}>{formatPaisa(job.received_paisa)}</Text>
+                <Text style={styles.billBoxValue}>
+                  {formatPaisa(job.received_paisa + pendingPaisa)}
+                </Text>
               </View>
               <View style={styles.billBox}>
                 <Text style={styles.billBoxLabel}>Balance</Text>
-                <Text style={styles.billBoxValue}>{formatPaisa(job.balance_paisa)}</Text>
+                <Text style={styles.billBoxValue}>
+                  {formatPaisa(job.balance_paisa - pendingPaisa)}
+                </Text>
               </View>
             </View>
+            {pendingPaisa > 0 ? (
+              <Text style={styles.pendingNote}>
+                Includes {formatPaisa(pendingPaisa)} still syncing.
+              </Text>
+            ) : null}
           </>
         ) : (
           <Text style={styles.sub}>Not completed yet — log materials, time and fuel.</Text>
@@ -530,11 +661,25 @@ export function JobDetailScreen({ route, navigation }: Props) {
         ) : null}
       </View>
 
-      {hasBill || job.payments.length > 0 ? (
+      {hasBill || job.payments.length > 0 || pendingPayments.length > 0 ? (
         <View style={styles.card}>
           <Text style={styles.label}>CASH &amp; REVENUE</Text>
 
-          {job.payments.length === 0 ? (
+          {pendingPayments.map((i) => {
+            const p = i.payload as PaymentPayload;
+            return (
+              <View key={i.id} style={styles.payRow}>
+                <View style={styles.grow}>
+                  <Text style={styles.payAmt}>
+                    {formatPaisa(p.amountPaisa)} · {p.method}
+                  </Text>
+                  <Text style={styles.pendingBadge}>⏳ syncing…</Text>
+                </View>
+              </View>
+            );
+          })}
+
+          {job.payments.length === 0 && pendingPayments.length === 0 ? (
             <Text style={styles.sub}>No payments logged yet.</Text>
           ) : (
             job.payments.map((p) => (
@@ -757,4 +902,11 @@ const styles = StyleSheet.create({
   event: { paddingVertical: 6, borderTopWidth: 1, borderTopColor: "#f1f5f9" },
   eventText: { fontSize: 13, color: "#334155" },
   eventTime: { fontSize: 11, color: "#94a3b8", marginTop: 1 },
+  pendingNote: { fontSize: 12, fontWeight: "700", color: "#b45309", marginTop: 6 },
+  pendingBadge: { fontSize: 11, fontWeight: "700", color: "#b45309", marginTop: 1 },
+  failedCard: { borderColor: "#fecaca", backgroundColor: "#fef2f2" },
+  failedLabel: { color: "#b91c1c" },
+  failedReason: { fontSize: 11, color: "#b91c1c", marginTop: 1 },
+  failedAction: { paddingHorizontal: 8, paddingVertical: 4 },
+  retryText: { color: "#1d4ed8", fontWeight: "800", fontSize: 13 },
 });
