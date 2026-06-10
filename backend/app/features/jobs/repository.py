@@ -99,6 +99,12 @@ class JobRepository:
         return job
 
     # ── Timeline ─────────────────────────────────────────────────────────
+    async def get_by_token(self, *, token: int, shop_id: str) -> Job | None:
+        result = await self._session.execute(
+            select(Job).where(Job.token == token, Job.shop_id == shop_id)
+        )
+        return result.scalar_one_or_none()
+
     async def list_closed_unabandoned(self, *, shop_id: str, closed_before: date) -> list[Job]:
         """Closed (not abandoned) jobs whose closure is old enough that their
         closing-video bytes should long since have synced."""

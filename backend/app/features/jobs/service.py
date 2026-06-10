@@ -229,6 +229,15 @@ class JobService:
             row.status = "ready"
             row.ready_since = today
             kind, text = "ready", "Marked Ready"
+        elif body.action == "wait":
+            # "Waiting" (on hold — parts on order, customer approval…) finally
+            # has a way in. Reason required: an unexplained hold is invisible work.
+            if not body.reason:
+                raise JobActionError("putting a job on hold requires a reason")
+            row.status = "waiting"
+            row.waiting_since = today
+            row.waiting_reason = body.reason
+            kind, text = "status", f"On hold — {body.reason}"
         elif body.action == "close":
             # Closing-video gate (Phase 3): a job can't be closed without at least
             # one `closing` media row. Offline-tolerant — a pending (not-yet-
@@ -238,14 +247,20 @@ class JobService:
                 closing = await media.count_phase(job_id=str(row.token), phase="closing")
                 if closing == 0:
                     raise JobActionError("a closing video is required to close")
+            # Money guard (Phase 4): a normal close needs the completion form —
+            # otherwise a manager close strands the tech's queued completion
+            # (409 on replay) and cash gets collected against a job that never
+            # billed. Abandon stays the no-completion exit.
+            if await self._repo.get_completion(row.id) is None:
+                raise JobConflictError("close requires the work-completion form (or abandon)")
             row.status = "closed"
-            row.closed_at = today
+            row.closed_at = datetime.now(UTC)
             kind, text = "status", "Job closed"
         elif body.action == "abandon":
             if not body.reason:
                 raise JobActionError("abandon requires a reason")
             row.status = "closed"
-            row.closed_at = today
+            row.closed_at = datetime.now(UTC)
             row.abandoned = True
             row.abandon_reason = body.reason
             kind, text = "status", f"Job abandoned — {body.reason}"
@@ -268,10 +283,17 @@ class JobService:
         """Upsert the completion form (one per job) and (re)generate the
         original bill. Idempotent — safe to replay from the offline queue."""
         row = await self._load(job_id, shop_id)
+        # Money guard (Phase 4): a closed job's bill is a settled document.
+        if row.status == "closed":
+            raise JobConflictError("job is closed — the completion can no longer be changed")
 
         completion = await self._repo.get_completion(row.id)
         if completion is None:
-            completion = await self._repo.add_completion(JobCompletion(job_id=row.id))
+            # Snapshot the labour rate at FIRST submission: the bill must never
+            # be silently repriced by a later config change. Resubmits reuse it.
+            completion = await self._repo.add_completion(
+                JobCompletion(job_id=row.id, labour_rate_paisa=settings.labour_rate_paisa)
+            )
         else:
             await self._repo.clear_materials(completion.id)
 
@@ -291,7 +313,7 @@ class JobService:
                 )
             )
 
-        original = completion_total_paisa(body, settings.labour_rate_paisa)
+        original = completion_total_paisa(body, completion.labour_rate_paisa)
         row.bill_original_paisa = original
         row.bill_status = "negotiated" if row.bill_negotiated_paisa is not None else "generated"
         row.updated_at = datetime.now(UTC)
@@ -309,20 +331,22 @@ class JobService:
         self, *, job_id: UUID, shop_id: str, amount_paisa: int, note: str | None, actor: str | None
     ) -> JobDetail:
         row = await self._load(job_id, shop_id)
+        if row.status == "closed":
+            raise JobConflictError("job is closed — the bill can no longer be renegotiated")
         if row.bill_original_paisa is None:
             raise JobActionError("no bill yet — submit the completion form first")
+        # Provenance: the event keeps the figure being replaced, so the
+        # original-vs-negotiated report has history, not just current values.
+        prior = row.bill_negotiated_paisa
         row.bill_negotiated_paisa = amount_paisa
         row.bill_status = "negotiated"
         row.updated_at = datetime.now(UTC)
         suffix = f" ({note})" if note else ""
-        await self._repo.add_event(
-            JobEvent(
-                job_id=row.id,
-                kind="bill",
-                text=f"Bill negotiated → Rs {amount_paisa // 100:,}{suffix}",
-                actor=actor,
-            )
-        )
+        if prior is not None:
+            text = f"Bill negotiated Rs {prior // 100:,} → Rs {amount_paisa // 100:,}{suffix}"
+        else:
+            text = f"Bill negotiated → Rs {amount_paisa // 100:,}{suffix}"
+        await self._repo.add_event(JobEvent(job_id=row.id, kind="bill", text=text, actor=actor))
         return await self._detail(row)
 
     # ── Cash / revenue ledger (Module 4) ─────────────────────────────────
@@ -429,6 +453,17 @@ class JobService:
             row.updated_at = datetime.now(UTC)
         return await self._detail(row)
 
+    async def status_by_token(self, *, token: str, shop_id: str) -> str | None:
+        """The job's current status, looked up by its human token (media rows
+        key on the token). ``None`` for an unknown/non-numeric token — callers
+        treat that as "no job to protect"."""
+        try:
+            numeric = int(token)
+        except ValueError:
+            return None
+        row = await self._repo.get_by_token(token=numeric, shop_id=shop_id)
+        return None if row is None else row.status
+
     # ── Evidence reconciliation (Phase 5) ────────────────────────────────
     async def evidence_gaps(
         self, *, shop_id: str, media: MediaService, today: date, grace_days: int = 2
@@ -441,18 +476,24 @@ class JobService:
         rows = await self._repo.list_closed_unabandoned(shop_id=shop_id, closed_before=cutoff)
         if not rows:
             return []
-        uploaded = await media.uploaded_closing_counts(job_ids=[str(r.token) for r in rows])
-        return [
-            EvidenceGap(
-                id=r.id,
-                token=r.token,
-                customer_name=r.customer_name,
-                closed_at=r.closed_at,
-                closing_uploaded=uploaded.get(str(r.token), 0),
-            )
-            for r in rows
-            if uploaded.get(str(r.token), 0) == 0
-        ]
+        counts = await media.closing_counts(job_ids=[str(r.token) for r in rows])
+        gaps: list[EvidenceGap] = []
+        for r in rows:
+            total, uploaded = counts.get(str(r.token), (0, 0))
+            # Only "promised but never arrived": a closing row exists (the gate
+            # saw it) but no bytes ever landed. Jobs with no closing rows at all
+            # predate the gate — flagging them forever would be noise.
+            if total > 0 and uploaded == 0:
+                gaps.append(
+                    EvidenceGap(
+                        id=r.id,
+                        token=r.token,
+                        customer_name=r.customer_name,
+                        closed_at=r.closed_at,
+                        closing_uploaded=0,
+                    )
+                )
+        return gaps
 
     # ── Internals ────────────────────────────────────────────────────────
     async def _load(self, job_id: UUID, shop_id: str) -> JobRow:
@@ -471,6 +512,7 @@ class JobService:
             detail.completion = CompletionOut(
                 time_spent_mins=completion.time_spent_mins,
                 fuel_paisa=completion.fuel_paisa,
+                labour_rate_paisa=completion.labour_rate_paisa,
                 remarks_text=completion.remarks_text,
                 remarks_audio_media_id=completion.remarks_audio_media_id,
                 submitted_at=completion.submitted_at,

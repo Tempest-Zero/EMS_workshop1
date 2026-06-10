@@ -59,6 +59,9 @@ class JobMedia(Base):
     phase: Mapped[str] = mapped_column(String(16), nullable=False)
     type: Mapped[str] = mapped_column(String(16), nullable=False)
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    # Who uploaded it (tech id from the JWT). NULL on rows from before this
+    # column existed — the delete policy grandfathers those.
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

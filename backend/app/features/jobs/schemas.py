@@ -117,6 +117,7 @@ class CompletionOut(BaseModel):
 
     time_spent_mins: int
     fuel_paisa: int
+    labour_rate_paisa: int
     remarks_text: str | None = None
     remarks_audio_media_id: UUID | None = None
     submitted_at: datetime
@@ -169,16 +170,16 @@ class EvidenceGap(BaseModel):
     id: UUID
     token: int
     customer_name: str
-    closed_at: date | None = None
+    closed_at: datetime | None = None
     closing_uploaded: int
 
 
-TransitionAction = Literal["ready", "close", "abandon", "reschedule", "haul"]
+TransitionAction = Literal["ready", "wait", "close", "abandon", "reschedule", "haul"]
 
 
 class TransitionRequest(BaseModel):
-    """A status/lifecycle change. ``reason`` is required for ``abandon``;
-    ``preferred_date``/``time_window`` for ``reschedule``."""
+    """A status/lifecycle change. ``reason`` is required for ``abandon`` and
+    ``wait``; ``preferred_date``/``time_window`` for ``reschedule``."""
 
     action: TransitionAction
     reason: str | None = Field(default=None, max_length=256)
@@ -209,7 +210,7 @@ class Job(BaseModel):
     waiting_reason: str | None = None
     waiting_since: date | None = None
     ready_since: date | None = None
-    closed_at: date | None = None
+    closed_at: datetime | None = None
     abandoned: bool
     abandon_reason: str | None = None
     # Bill (integer paisa). Both amounts kept: auto original + on-site negotiated.

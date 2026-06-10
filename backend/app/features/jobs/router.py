@@ -182,6 +182,8 @@ async def transition(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     except JobActionError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except JobConflictError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     await session.commit()
     return detail
 
@@ -252,6 +254,8 @@ async def submit_completion(
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobConflictError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     await session.commit()
     return detail
 
@@ -280,6 +284,8 @@ async def negotiate_bill(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     except JobActionError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except JobConflictError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     await session.commit()
     return detail
 

@@ -568,6 +568,11 @@ export default function JobDetail({ tech = false }) {
                 <Lock className="h-4 w-4" /> Close Job
               </Button>
             )}
+            {job.status !== "waiting" && (
+              <Button variant="warning" onClick={() => setModal("hold")}>
+                <Clock className="h-4 w-4" /> Put on Hold
+              </Button>
+            )}
             <Button variant="secondary" onClick={() => setModal("note")}>
               <Plus className="h-4 w-4" /> Note
             </Button>
@@ -597,6 +602,14 @@ export default function JobDetail({ tech = false }) {
         onClose={() => setModal(null)}
         onSave={(text) => {
           app.addNote(job.id, text);
+          setModal(null);
+        }}
+      />
+      <HoldModal
+        open={modal === "hold"}
+        onClose={() => setModal(null)}
+        onSave={(reason) => {
+          app.markWaiting(job.id, reason);
           setModal(null);
         }}
       />
@@ -681,6 +694,47 @@ export default function JobDetail({ tech = false }) {
 }
 
 /* ──────────────────────────── Sub-components ──────────────────────────── */
+
+function HoldModal({ open, onClose, onSave }) {
+  const [reason, setReason] = useState("");
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Put on Hold"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="warning"
+            disabled={!reason.trim()}
+            onClick={() => {
+              onSave(reason.trim());
+              setReason("");
+            }}
+          >
+            Put on Hold
+          </Button>
+        </>
+      }
+    >
+      <Field
+        label="Why is this job waiting?"
+        hint="Shown on the board, e.g. “Needs part: PCB (on order)”"
+      >
+        <textarea
+          className={inputClass}
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Needs part / awaiting customer approval…"
+        />
+      </Field>
+    </Modal>
+  );
+}
 
 function NoteModal({ open, onClose, onSave }) {
   const [text, setText] = useState("");

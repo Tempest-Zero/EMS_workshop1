@@ -37,6 +37,10 @@ class MediaTooLargeError(ValueError):
     """Raised when a finalized upload exceeds the configured size ceiling."""
 
 
+class MediaForbiddenError(PermissionError):
+    """Raised when the caller may not delete this media (evidence protection)."""
+
+
 class MediaService:
     def __init__(
         self,
@@ -49,7 +53,9 @@ class MediaService:
         self._max_upload_bytes = max_upload_bytes
 
     # ── Commands ────────────────────────────────────────────────────────
-    async def request_upload(self, *, job_id: str, body: MediaUploadRequest) -> MediaUploadResponse:
+    async def request_upload(
+        self, *, job_id: str, body: MediaUploadRequest, created_by: str | None = None
+    ) -> MediaUploadResponse:
         """Reserve a media row and mint a signed R2 upload URL."""
         media_uuid = uuid4()
         ext = PurePosixPath(body.filename).suffix.lstrip(".").lower() or _default_ext(body.type)
@@ -62,6 +68,7 @@ class MediaService:
             filename=body.filename,
             storage_path=storage_path,
             content_type=body.content_type,
+            created_by=created_by,
         )
 
         signed = self._storage.mint_upload_url(storage_path)
@@ -108,14 +115,32 @@ class MediaService:
         )
         return self._to_item(media)
 
-    async def delete(self, *, job_id: str, media_id: UUID) -> None:
-        """Remove the storage object then the DB row.
+    async def delete(
+        self,
+        *,
+        job_id: str,
+        media_id: UUID,
+        requested_by: str | None = None,
+        is_manager: bool = False,
+        job_open: bool = True,
+    ) -> None:
+        """Remove the storage object then the DB row — under the evidence
+        policy: a manager may always delete; a technician may delete **their
+        own** media (the retake flow) **while the job is open**. Once a job
+        closes, its evidence is frozen for everyone but the manager. Rows from
+        before ownership existed (``created_by`` NULL) are grandfathered as
+        own-media.
 
         Storage delete is best-effort: if the object is already gone we treat
         it as success and continue with the DB delete so the row never becomes
         a tombstone pointing at nothing.
         """
         media = await self._load(job_id, media_id)
+        if not is_manager:
+            if not job_open:
+                raise MediaForbiddenError("the job is closed — its evidence is frozen")
+            if media.created_by is not None and media.created_by != requested_by:
+                raise MediaForbiddenError("only the technician who captured this can delete it")
         try:
             self._storage.delete(media.storage_path)
         except Exception:  # noqa: BLE001 — idempotent cleanup
@@ -145,12 +170,12 @@ class MediaService:
         Counts pending rows too, so the gate is offline-tolerant."""
         return await self._repo.count_phase(job_id, phase)
 
-    async def uploaded_closing_counts(self, *, job_ids: list[str]) -> dict[str, int]:
-        """Per-job count of closing clips whose bytes actually arrived in R2.
-        The close-gate deliberately accepts pending rows (offline tolerance);
-        this is the reconciliation view that closes that loophole — a job
-        absent from this map has evidence on record but no bytes."""
-        return await self._repo.uploaded_counts_for_phase(job_ids, "closing")
+    async def closing_counts(self, *, job_ids: list[str]) -> dict[str, tuple[int, int]]:
+        """Per-job ``(total, uploaded)`` closing-clip counts. The close-gate
+        deliberately accepts pending rows (offline tolerance); reconciliation
+        uses this to find clips that were promised but whose bytes never came.
+        Jobs with no closing rows at all are absent (pre-gate closures)."""
+        return await self._repo.phase_counts(job_ids, "closing")
 
     # ── Internals ───────────────────────────────────────────────────────
     async def _load(self, job_id: str, media_id: UUID) -> JobMedia:

@@ -269,6 +269,16 @@ async def test_close_succeeds_with_a_closing_video(svc: tuple[JobService, MagicM
     service, repo = svc
     job = _open_job()
     repo.get.return_value = job
+    # The Phase-4 guard: a normal close also needs the completion form on record.
+    done = JobCompletion(
+        job_id=job.id,
+        labour_rate_paisa=120000,
+        time_spent_mins=30,
+        fuel_paisa=0,
+        submitted_at=datetime.now(UTC),
+    )
+    done.id = uuid4()
+    repo.get_completion.return_value = done
     media = AsyncMock()
     media.count_phase = AsyncMock(return_value=1)  # a pending closing row counts
     detail = await service.transition(
@@ -424,7 +434,7 @@ async def test_completion_upsert_clears_old_materials(svc: tuple[JobService, Mag
     service, repo = svc
     job = _open_job()
     repo.get.return_value = job
-    existing = JobCompletion(job_id=job.id)
+    existing = JobCompletion(job_id=job.id, labour_rate_paisa=120000)
     existing.id = uuid4()
     repo.get_completion.return_value = existing
     await service.submit_completion(
