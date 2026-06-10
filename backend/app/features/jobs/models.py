@@ -111,7 +111,8 @@ class Job(Base):
     waiting_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
     waiting_since: Mapped[date | None] = mapped_column(Date, nullable=True)
     ready_since: Mapped[date | None] = mapped_column(Date, nullable=True)
-    closed_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Timestamp (was a bare Date): orders same-day events and measures durations.
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     abandoned: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa_text("false")
     )
@@ -167,6 +168,10 @@ class JobCompletion(Base):
         Integer, nullable=False, server_default=sa_text("0")
     )
     fuel_paisa: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa_text("0"))
+    # Snapshotted at first submission — a config-rate change never reprices old work.
+    labour_rate_paisa: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=sa_text("120000")
+    )
     remarks_text: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     # Loose reference to a job_media row (type=audio) — no hard FK so the voice
     # note can upload after the form submits (offline-friendly).

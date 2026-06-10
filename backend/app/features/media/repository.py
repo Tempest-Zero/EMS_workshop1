@@ -24,6 +24,7 @@ class MediaRepository:
         filename: str,
         storage_path: str,
         content_type: str | None,
+        created_by: str | None = None,
     ) -> JobMedia:
         media = JobMedia(
             job_id=job_id,
@@ -32,6 +33,7 @@ class MediaRepository:
             filename=filename,
             storage_path=storage_path,
             content_type=content_type,
+            created_by=created_by,
         )
         self._session.add(media)
         await self._session.flush()  # populates id + server defaults

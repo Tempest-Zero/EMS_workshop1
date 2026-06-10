@@ -115,6 +115,10 @@ ignore_imports = [
   "app.features.jobs.service -> app.features.media.service",
   # Manager-assign pushes through the notifications surface.
   "app.features.jobs.router -> app.features.notifications.deps",
+  # Media's delete policy asks jobs for the job's status (evidence freezes at
+  # close) — router-level composition through the jobs deps/service surface.
+  "app.features.media.router -> app.features.jobs.deps",
+  "app.features.media.router -> app.features.jobs.schemas",
   # Router tests boot the whole app (which mounts every slice) and spec their
   # fakes against other slices' public services — test harness, not a
   # production dependency. Only the *.service/*.deps surfaces are excepted, so

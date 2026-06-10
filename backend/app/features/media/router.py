@@ -18,7 +18,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
-from app.features.identity.deps import get_current_principal
+from app.features.identity.deps import CurrentPrincipal, get_current_principal
+
+# The delete policy needs the job's status (evidence freezes at close). Jobs is
+# reached through its public deps/service surface only — composition at the
+# router layer avoids a service-level jobs↔media cycle.
+from app.features.jobs.deps import JobsServiceDep
+from app.features.jobs.schemas import DEFAULT_SHOP_ID
 
 # Construction lives in deps.py (the cross-slice surface shared with jobs'
 # close-gate). Aliased so this router's tests keep their override seam.
@@ -31,6 +37,7 @@ from app.features.media.schemas import (
     MediaUploadResponse,
 )
 from app.features.media.service import (
+    MediaForbiddenError,
     MediaNotFoundError,
     MediaTooLargeError,
 )
@@ -58,8 +65,9 @@ async def request_upload(
     body: MediaUploadRequest,
     service: ServiceDep,
     session: SessionDep,
+    principal: CurrentPrincipal,
 ) -> MediaUploadResponse:
-    response = await service.request_upload(job_id=job_id, body=body)
+    response = await service.request_upload(job_id=job_id, body=body, created_by=principal.tech_id)
     await session.commit()
     return response
 
@@ -107,10 +115,21 @@ async def delete_media(
     media_id: UUID,
     service: ServiceDep,
     session: SessionDep,
+    principal: CurrentPrincipal,
+    jobs: JobsServiceDep,
 ) -> Response:
+    job_status = await jobs.status_by_token(token=job_id, shop_id=DEFAULT_SHOP_ID)
     try:
-        await service.delete(job_id=job_id, media_id=media_id)
+        await service.delete(
+            job_id=job_id,
+            media_id=media_id,
+            requested_by=principal.tech_id,
+            is_manager=principal.role == "manager",
+            job_open=job_status != "closed",
+        )
     except MediaNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except MediaForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

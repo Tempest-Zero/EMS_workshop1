@@ -183,6 +183,10 @@ export function AppProvider({ children }) {
     [replaceFromDetail, addToast]
   );
 
+  // The server's human-readable reason from a guard rejection (FastAPI puts it
+  // in the JSON body, which our client embeds in the thrown Error message).
+  const serverReason = (e) => /"detail"\s*:\s*"([^"]+)"/.exec(e?.message || "")?.[1];
+
   const markReady = useCallback(
     async (jobId) => {
       try {
@@ -231,8 +235,8 @@ export function AppProvider({ children }) {
         });
         replaceFromDetail(detail);
         addToast("Completion submitted — bill generated", "ready");
-      } catch {
-        addToast("Couldn't submit completion — please retry", "danger");
+      } catch (e) {
+        addToast(serverReason(e) || "Couldn't submit completion — please retry", "danger");
       }
     },
     [replaceFromDetail, addToast]
@@ -247,8 +251,8 @@ export function AppProvider({ children }) {
         const detail = await negotiateBillApi(jobId, rupeesToPaisa(amount), note);
         replaceFromDetail(detail);
         addToast("Negotiated amount recorded", "ready");
-      } catch {
-        addToast("Couldn't record negotiation — please retry", "danger");
+      } catch (e) {
+        addToast(serverReason(e) || "Couldn't record negotiation — please retry", "danger");
       }
     },
     [replaceFromDetail, addToast]
@@ -297,8 +301,22 @@ export function AppProvider({ children }) {
         const detail = await transitionJob(jobId, { action: "close" });
         replaceFromDetail(detail);
         addToast("Job closed and moved to history", "default");
-      } catch {
-        addToast("Couldn't close job — please retry", "danger");
+      } catch (e) {
+        addToast(serverReason(e) || "Couldn't close job — please retry", "danger");
+      }
+    },
+    [replaceFromDetail, addToast]
+  );
+
+  // Put a job on hold (waiting) with the reason the board shows.
+  const markWaiting = useCallback(
+    async (jobId, reason) => {
+      try {
+        const detail = await transitionJob(jobId, { action: "wait", reason });
+        replaceFromDetail(detail);
+        addToast("Job put on hold", "default");
+      } catch (e) {
+        addToast(serverReason(e) || "Couldn't put the job on hold — please retry", "danger");
       }
     },
     [replaceFromDetail, addToast]
@@ -400,6 +418,7 @@ export function AppProvider({ children }) {
     logPayment,
     voidRevenueEntry,
     closeJob,
+    markWaiting,
     followUp,
     abandonJob,
     haulToShop,
