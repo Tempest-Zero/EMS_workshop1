@@ -2,15 +2,17 @@
 
 Keep this file thin: every feature module exposes an `APIRouter` from its
 `router.py`, and `create_app()` mounts each under `/api`. Cross-cutting
-concerns (CORS, logging, error handlers) configured here only.
+concerns (CORS, logging/request ids, error tracking) configured here only.
 """
 
 from __future__ import annotations
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.request_id import RequestIdMiddleware, configure_logging
 from app.features.attendance.router import router as attendance_router
 from app.features.health.router import router as health_router
 from app.features.identity.router import router as identity_router
@@ -24,12 +26,27 @@ def create_app() -> FastAPI:
     # the insecure dev JWT secret (forgeable tokens). No-op in dev.
     settings.assert_safe_for_production()
 
+    configure_logging()
+
+    # Error tracking — off unless a DSN is configured (boots fine without an
+    # account). PII stays out: no default PII, request bodies never attached
+    # (they carry customer names/phones), errors only (no perf tracing).
+    if settings.sentry_dsn:
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.environment,
+            send_default_pii=False,
+            max_request_body_size="never",
+            traces_sample_rate=0,
+        )
+
     app = FastAPI(
         title="FixFlow API",
         version="0.1.0",
         description="Control plane for the FixFlow workshop platform.",
     )
 
+    app.add_middleware(RequestIdMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

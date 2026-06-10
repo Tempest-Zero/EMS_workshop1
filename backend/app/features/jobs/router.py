@@ -201,6 +201,10 @@ async def assign(
     # Best-effort push to the assigned tech — never let it break the assignment.
     with contextlib.suppress(Exception):
         await notifications.notify_assignment(tech_id=body.tech_id, job_token=detail.token)
+        # The push may have pruned dead device tokens (FCM UNREGISTERED) —
+        # those deletes only flushed; without this second commit they vanish
+        # and the registry fans out to ghosts forever.
+        await session.commit()
     return detail
 
 
