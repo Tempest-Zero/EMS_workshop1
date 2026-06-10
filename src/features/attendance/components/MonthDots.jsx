@@ -1,4 +1,9 @@
-import { attendance } from "@features/attendance/data/attendance";
+/**
+ * A month of attendance as a 7-wide dot grid. Purely presentational: callers
+ * pass the `cells` from the live `/api/attendance/grid` endpoint
+ * (`[{ day, status, late }]`) — this component holds no data of its own.
+ */
+
 import { parseISO } from "@shared/lib/date";
 import { ATT_CELL } from "@features/attendance/lib/cells";
 
@@ -11,19 +16,18 @@ const LEGEND = [
   ["holiday", "Holiday"],
 ];
 
-export default function MonthDots({ techId, showLegend = true, showNums = false }) {
-  const rows = attendance[techId] || [];
+export default function MonthDots({ cells = [], showLegend = true, showNums = false }) {
   return (
     <div>
       <div className="grid grid-cols-7 gap-1.5">
-        {rows.map((r) => {
-          const day = parseISO(r.date).getDate();
+        {cells.map((c) => {
+          const day = parseISO(c.day).getDate();
           return (
             <div
-              key={r.date}
-              title={`${r.date} · ${r.status}`}
-              className={`flex aspect-square items-center justify-center rounded-md text-[10px] font-bold text-white ${ATT_CELL[r.status]} ${
-                r.status === "holiday" ? "text-slate-300" : ""
+              key={c.day}
+              title={`${c.day} · ${c.status}${c.late ? " · late" : ""}`}
+              className={`flex aspect-square items-center justify-center rounded-md text-[10px] font-bold text-white ${ATT_CELL[c.status]} ${
+                c.status === "holiday" ? "text-slate-300" : ""
               }`}
             >
               {showNums ? day : ""}

@@ -35,8 +35,6 @@ describe("mapApiJob", () => {
     expect(job.appliance.type).toBe("Refrigerator");
     expect(job.createdAt).toBe("2026-05-22"); // date-only
     expect(job.waitingReason).toBe("Awaiting customer approval");
-    // Still-local sections come back empty so the UI renders.
-    expect(job.estimate.status).toBe("none");
     expect(job.notes).toEqual([]);
     expect(job.timeline).toEqual([]);
     // No bill/completion/ledger on the wire → empty (null amounts, not Rs 0).

@@ -5,16 +5,13 @@
  * The job's append-only `events` timeline (J2) is mapped to the view's
  * `timeline` and the `note`-kind events are surfaced in `notes`.
  *
- * Bill, work-completion, and the cash/revenue ledger are now API-backed (P2f):
+ * Bill, work-completion, and the cash/revenue ledger are API-backed (P2f):
  * the manager sees exactly what the technician submitted from the phone. Money
- * arrives as integer paisa and is converted to rupees here (the display unit);
- * the still-local estimate/photos remain mocks until their own slice.
+ * arrives as integer paisa and is converted to rupees here (the display unit).
  */
 
 import { fmtDateTime } from "@shared/lib/date";
 import { paisaToRupees } from "@shared/lib/currency";
-
-const DEFAULT_LABOR_RATE = 1200;
 
 function dateOnly(value) {
   return value ? String(value).slice(0, 10) : undefined;
@@ -142,11 +139,6 @@ export function mapApiJob(api) {
     // P3e — GPS route + fuel estimate and the punch pins (oversight, read-only).
     route: mapRoute(api.route),
     locations: mapLocations(api.locations),
-    // Still local-only mocks until their own slice — empty so the view renders.
-    estimate: { status: "none", laborHours: 0, laborRate: DEFAULT_LABOR_RATE, parts: [] },
-    payment: { method: "pending", paid: 0 },
-    photos: [],
-    followUps: [],
   };
 }
 

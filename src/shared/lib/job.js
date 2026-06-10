@@ -1,30 +1,8 @@
-export function partsTotal(estimate) {
-  if (!estimate || !estimate.parts) return 0;
-  return estimate.parts.reduce((s, p) => s + p.qty * p.unitPrice, 0);
-}
-
-export function laborTotal(estimate) {
-  if (!estimate) return 0;
-  return (estimate.laborHours || 0) * (estimate.laborRate || 0);
-}
-
-export function estimateTotal(estimate) {
-  return partsTotal(estimate) + laborTotal(estimate);
-}
-
-export function hasEstimate(job) {
-  return job.estimate && job.estimate.status && job.estimate.status !== "none";
-}
-
 // ── Bill: original (auto-generated) vs negotiated (agreed on-site) ──────────
-function estimateAmount(job) {
-  return hasEstimate(job) ? estimateTotal(job.estimate) : 0;
-}
-
-// The auto-generated "original" bill. Falls back to the estimate total until a
-// work-completion form sets an explicit amount.
+// The bill exists only once the technician's completion form generates it on
+// the server — there is no client-side estimate fallback.
 export function billOriginal(job) {
-  return job.bill?.original != null ? job.bill.original : estimateAmount(job);
+  return job.bill?.original ?? 0;
 }
 
 // The amount actually payable: the technician's negotiated figure if one was
@@ -56,12 +34,10 @@ export function amountOwed(job) {
 }
 
 export function amountPaid(job) {
-  const entries = revenueEntries(job);
-  if (entries.length) {
-    // Append-only ledger: voided entries (corrections) don't count.
-    return entries.filter((e) => !e.voided).reduce((s, e) => s + Number(e.amount || 0), 0);
-  }
-  return job.payment?.paid || 0; // backward-compat with the older single-field shape
+  // Append-only ledger: voided entries (corrections) don't count.
+  return revenueEntries(job)
+    .filter((e) => !e.voided)
+    .reduce((s, e) => s + Number(e.amount || 0), 0);
 }
 
 export function balance(job) {
@@ -102,10 +78,3 @@ export function hasCompletion(job) {
 export function isUnassigned(job) {
   return !job.assignedTechId;
 }
-
-export const ESTIMATE_LABEL = {
-  none: "Not yet estimated",
-  estimated: "Estimated — Awaiting Approval",
-  approved: "Approved",
-  declined: "Declined",
-};

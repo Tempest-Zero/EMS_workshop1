@@ -20,4 +20,45 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+
+  // ── Layer boundaries (ARCHITECTURE.md, enforced) ──────────────────────────
+  // The codebase imports exclusively via the @app/@shared/@features aliases,
+  // so guarding the aliases guards the graph.
+  {
+    // shared/ is the pure kernel: it may not import anything internal.
+    files: ["src/shared/**/*.{js,jsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@app/*", "@features/*"],
+              message: "shared/ is the dependency-free kernel — it imports nothing internal.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // features/ may use shared/, other features' public surfaces, and the app
+    // providers (the composition root's contexts) — but never app layouts,
+    // pages, or the router.
+    files: ["src/features/**/*.{js,jsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@app/*", "!@app/providers", "!@app/providers/*"],
+              message:
+                "features/ may import only @app/providers from the app layer — layouts, pages and the router belong to the composition root.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]);

@@ -3,7 +3,6 @@ import { Search, Wrench, ChevronDown, PackagePlus, CircleDollarSign } from "luci
 import { useApp } from "@app/providers/AppContext";
 import { Card, Button, EmptyState, Field, inputClass } from "@shared/ui/primitives";
 import { Modal } from "@shared/ui/Overlay";
-import IntegrationBadge from "@shared/ui/IntegrationBadge";
 import StatusChip from "@shared/ui/StatusChip";
 import { faultCodes } from "@features/troubleshooting/data/faultCodes";
 import { commonFixes } from "@features/troubleshooting/data/commonFixes";
@@ -15,7 +14,7 @@ function lowPrice(range) {
 }
 
 export default function TroubleshootGuide({ compact = false }) {
-  const { jobs, addEstimateLineItem, addToast } = useApp();
+  const { jobs, addNote, addToast } = useApp();
   const [q, setQ] = useState("");
   const [openFix, setOpenFix] = useState(null);
   const [addTarget, setAddTarget] = useState(null); // { name, unitPrice }
@@ -45,12 +44,6 @@ export default function TroubleshootGuide({ compact = false }) {
           className="w-full rounded-lg border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
         />
       </div>
-
-      {!compact && (
-        <div className="flex justify-end">
-          <IntegrationBadge>Linked to Parts Supplier catalog</IntegrationBadge>
-        </div>
-      )}
 
       {/* Fault code results */}
       <div className={compact ? "space-y-3" : "grid gap-4 md:grid-cols-2"}>
@@ -159,15 +152,18 @@ export default function TroubleshootGuide({ compact = false }) {
         </div>
       </div>
 
-      {/* Add part to job modal */}
+      {/* Suggest a part on a job — recorded as a real note on its timeline */}
       <AddPartModal
         target={addTarget}
         jobs={assignable}
         onClose={() => setAddTarget(null)}
         onConfirm={(jobId, part) => {
-          addEstimateLineItem(jobId, part);
+          addNote(
+            jobId,
+            `Suggested part (troubleshooting): ${part.name} ×${part.qty} @ ${formatPKR(part.unitPrice)}`
+          );
           setAddTarget(null);
-          addToast(`Added ${part.name} to job`, "ready");
+          addToast(`Part suggestion noted on the job`, "ready");
         }}
       />
     </div>

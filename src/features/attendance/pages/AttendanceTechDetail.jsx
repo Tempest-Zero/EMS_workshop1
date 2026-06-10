@@ -5,7 +5,7 @@ import { Button, Card, EmptyState, Field, SectionHeader, inputClass } from "@sha
 import Avatar from "@shared/ui/Avatar";
 import { PresenceBadge } from "@shared/ui/StatusChip";
 import { fmtDate } from "@shared/lib/date";
-import { techById } from "@features/technicians/data/technicians";
+import { useApp } from "@app/providers/AppContext";
 import { createAdjustment } from "@features/attendance/data/attendanceApi";
 import { useTechDetail } from "@features/attendance/hooks/useTechDetail";
 import { fmtClock, fmtWorked } from "@features/attendance/lib/format";
@@ -194,7 +194,8 @@ function AdjustmentsCard({ adjustments }) {
 
 export default function AttendanceTechDetail() {
   const { techId } = useParams();
-  const tech = techById(techId);
+  const { technicians } = useApp();
+  const tech = technicians.find((t) => t.id === techId);
   const { days, adjustments, loading, error, reload } = useTechDetail(techId);
   const [showForm, setShowForm] = useState(false);
 
