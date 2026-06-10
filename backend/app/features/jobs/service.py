@@ -6,6 +6,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
+
 from app.core.config import settings
 from app.features.attendance.derive import haversine_m
 from app.features.jobs.models import Job as JobRow
@@ -85,6 +87,11 @@ class JobActionError(ValueError):
     abandon with no reason)."""
 
 
+class JobConflictError(Exception):
+    """Raised when an action loses to the job's current state (e.g. claiming a
+    job someone else already holds). Routers map it to 409."""
+
+
 class JobService:
     def __init__(self, repo: JobRepository) -> None:
         self._repo = repo
@@ -109,6 +116,28 @@ class JobService:
 
     # ── Commands ─────────────────────────────────────────────────────────
     async def create_job(self, body: JobCreate) -> Job:
+        """Create a job with the next human-facing token.
+
+        The token comes from ``max+1``, so two concurrent creates can collide on
+        ``uq_job_token`` — recompute and retry instead of surfacing a 500. (A DB
+        sequence was rejected: the test schema is also built via
+        ``metadata.create_all``, which wouldn't carry a migration-only sequence.)
+        """
+        last_error: IntegrityError | None = None
+        for _ in range(3):
+            try:
+                created = await self._create_with_next_token(body)
+            except IntegrityError as e:
+                await self._repo.rollback()
+                last_error = e
+                continue
+            await self._repo.add_event(
+                JobEvent(job_id=created.id, kind="create", text="Job created", actor=None)
+            )
+            return Job.model_validate(created)
+        raise last_error if last_error is not None else RuntimeError("unreachable")
+
+    async def _create_with_next_token(self, body: JobCreate) -> JobRow:
         token = await self._repo.next_token()
         is_visit = body.job_type == "home-visit"
         row = JobRow(
@@ -127,11 +156,7 @@ class JobService:
             preferred_date=body.preferred_date if is_visit else None,
             time_window=body.time_window if is_visit else None,
         )
-        created = await self._repo.create(row)
-        await self._repo.add_event(
-            JobEvent(job_id=created.id, kind="create", text="Job created", actor=None)
-        )
-        return Job.model_validate(created)
+        return await self._repo.create(row)
 
     async def add_note(
         self, *, job_id: UUID, shop_id: str, text: str, actor: str | None, kind: str = "note"
@@ -145,18 +170,46 @@ class JobService:
         return await self._detail(row)
 
     async def assign_job(
-        self, *, job_id: UUID, shop_id: str, tech_id: str, actor: str | None, claimed: bool = False
+        self, *, job_id: UUID, shop_id: str, tech_id: str, actor: str | None
     ) -> JobDetail:
-        """Assign a job to a technician. ``claimed`` distinguishes a tech
-        free-picking it from the work list (claim) from a manager assigning it."""
+        """Manager assignment — deliberately unconditional. Reassigning (or
+        overriding a tech's claim) is the manager's prerogative; only the
+        technician free-pick (``claim_job``) is guarded."""
         row = await self._load(job_id, shop_id)
         row.assigned_tech_id = tech_id
         row.updated_at = datetime.now(UTC)
-        kind = "claim" if claimed else "assign"
-        verb = "Claimed by" if claimed else "Assigned to"
         await self._repo.add_event(
-            JobEvent(job_id=row.id, kind=kind, text=f"{verb} {tech_id}", actor=actor)
+            JobEvent(job_id=row.id, kind="assign", text=f"Assigned to {tech_id}", actor=actor)
         )
+        return await self._detail(row)
+
+    async def claim_job(self, *, job_id: UUID, shop_id: str, tech_id: str) -> JobDetail:
+        """Technician free-pick, guarded: claiming a job someone else already
+        holds (or a closed one) is a 409, not a silent steal. Re-claiming your
+        OWN job is an idempotent success — offline retries must never error.
+
+        The actual set is an atomic conditional UPDATE (``try_claim``), so two
+        techs claiming simultaneously can't both win — the loser's rowcount is
+        0 regardless of interleaving.
+        """
+        row = await self._load(job_id, shop_id)
+        if row.status == "closed":
+            raise JobConflictError("job is closed")
+        already_mine = row.assigned_tech_id == tech_id
+
+        if not await self._repo.try_claim(row.id, tech_id):
+            # Lost the race (or it was taken before we looked). Re-read for an
+            # accurate holder in the message — `row` predates the UPDATE.
+            await self._repo.refresh(row)
+            holder = row.assigned_tech_id
+            detail = f"already assigned to {holder}" if holder else "job can no longer be claimed"
+            raise JobConflictError(detail)
+
+        await self._repo.refresh(row)
+        if not already_mine:  # don't append a duplicate event on a re-claim retry
+            await self._repo.add_event(
+                JobEvent(job_id=row.id, kind="claim", text=f"Claimed by {tech_id}", actor=tech_id)
+            )
         return await self._detail(row)
 
     async def transition(
@@ -283,19 +336,36 @@ class JobService:
         actor: str | None,
     ) -> JobDetail:
         """Append a payment. Idempotent on ``client_id`` — replaying the same
-        queued action (offline retry) does NOT double-charge."""
+        queued action (offline retry) does NOT double-charge.
+
+        Two layers of dedup: the fast-path lookup below, and IntegrityError
+        recovery for the race the lookup can't see (two concurrent sends pass
+        the check, ``uq_job_payment_client`` catches the second at flush — the
+        same pattern attendance uses for punches). Without the recovery, the
+        loser surfaces a 500 for what is actually a successful no-op.
+        """
         row = await self._load(job_id, shop_id)
         existing = await self._repo.get_payment_by_client(client_id)
         if existing is None:
-            await self._repo.add_payment(
-                JobPayment(
-                    job_id=row.id,
-                    client_id=client_id,
-                    amount_paisa=amount_paisa,
-                    method=method,
-                    recorded_by=actor,
+            try:
+                await self._repo.add_payment(
+                    JobPayment(
+                        job_id=row.id,
+                        client_id=client_id,
+                        amount_paisa=amount_paisa,
+                        method=method,
+                        recorded_by=actor,
+                    )
                 )
-            )
+            except IntegrityError:
+                await self._repo.rollback()
+                raced = await self._repo.get_payment_by_client(client_id)
+                if raced is None:  # some other constraint — not the dedup race
+                    raise
+                # The rollback expired the earlier load; re-read and return the
+                # job as-is. No event append: the winning request wrote it.
+                row = await self._load(job_id, shop_id)
+                return await self._detail(row)
             await self._repo.add_event(
                 JobEvent(
                     job_id=row.id,
