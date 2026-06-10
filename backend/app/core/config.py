@@ -7,8 +7,14 @@ that needs config — never read env vars directly.
 
 from __future__ import annotations
 
+import os
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The built-in JWT secret. Safe for local dev; production MUST override it. The
+# boot guard below refuses to start a production process still using this value.
+DEV_JWT_SECRET = "dev-insecure-secret-change-me-in-production-32b"  # noqa: S105
 
 
 class Settings(BaseSettings):
@@ -57,16 +63,41 @@ class Settings(BaseSettings):
     # ── Auth (Name + PIN → JWT) ──────────────────────────────────────────
     # HS256 signing secret. The default is for local dev only — production
     # MUST override it via FIXFLOW_JWT_SECRET (a long random string).
-    jwt_secret: str = "dev-insecure-secret-change-me-in-production-32b"  # noqa: S105 — dev default; prod overrides via env
+    jwt_secret: str = DEV_JWT_SECRET
     # Long-lived by design: a workshop device stays logged in. Refresh/logout
     # flows are deferred. 30 days.
     jwt_expire_minutes: int = 60 * 24 * 30
+
+    # ── Environment / observability ──────────────────────────────────────
+    # "dev" | "production". Drives the boot guard (below) and the Sentry env
+    # tag. Railway is also auto-detected via RAILWAY_ENVIRONMENT, so the guard
+    # is fail-closed even if this is left unset in prod.
+    environment: str = "dev"
+    # Sentry DSN — empty disables error reporting (boots fine without an account).
+    sentry_dsn: str = ""
 
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
         "http://localhost:5173",  # web (manager / Vite dev server)
         "http://localhost:8081",  # Expo dev server (Metro)
     ]
+
+    @property
+    def is_production(self) -> bool:
+        """True in a real deployment. Either we were told (``FIXFLOW_ENVIRONMENT
+        =production``) or Railway's own env var is present."""
+        return self.environment.lower() == "production" or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+
+    def assert_safe_for_production(self) -> None:
+        """Fail-closed boot guard: refuse to run a production process that is
+        still using the insecure dev JWT secret. Called from ``create_app()``;
+        raising here exits the container (Railway shows a crash-loop) rather
+        than silently serving forgeable tokens."""
+        if self.is_production and self.jwt_secret == DEV_JWT_SECRET:
+            raise RuntimeError(
+                "FIXFLOW_JWT_SECRET is still the insecure dev default in a "
+                "production environment. Set a long random secret and redeploy."
+            )
 
     @field_validator("database_url")
     @classmethod

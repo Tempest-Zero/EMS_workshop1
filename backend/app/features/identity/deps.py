@@ -3,6 +3,14 @@
 Any router that needs a logged-in caller depends on ``CurrentPrincipal``; the
 identity comes from a verified JWT, never from a request param the client could
 forge. This is the seam that replaces the old "trust the passed tech_id" model.
+
+Since migration 0013 the check is signature + a one-row DB read: the token's
+``ver`` claim must match the technician's ``token_version`` (bumping the row is
+the lost-phone kill switch), the row must exist, and the account must be
+active. FastAPI's per-request dependency cache means ``get_session`` here is
+the same session the router uses — one indexed PK read on a six-row table.
+A missing ``ver`` claim is treated as 0, so tokens issued before 0013 stay
+valid until a deliberate bump (nobody is logged out by the deploy itself).
 """
 
 from __future__ import annotations
@@ -12,7 +20,10 @@ from typing import Annotated
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import get_session
+from app.features.identity.repository import IdentityRepository
 from app.features.identity.schemas import Principal
 from app.features.identity.security import decode_access_token
 
@@ -23,6 +34,7 @@ _bearer = HTTPBearer(auto_error=False)
 
 async def get_current_principal(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Principal:
     if creds is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token")
@@ -30,10 +42,22 @@ async def get_current_principal(
         claims = decode_access_token(creds.credentials)
     except jwt.PyJWTError as e:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired token") from e
+
+    tech = await IdentityRepository(session).get(str(claims["sub"]))
+    # Deleted or deactivated accounts lose access immediately (previously their
+    # tokens kept working for the full 30 days), and a version mismatch means
+    # the sessions were revoked.
+    if tech is None or not tech.active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "account is not active")
+    if int(claims.get("ver", 0)) != tech.token_version:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session revoked — log in again")
+
     return Principal(
-        tech_id=str(claims["sub"]),
-        role=str(claims.get("role", "tech")),
-        name=str(claims.get("name", "")),
+        tech_id=tech.id,
+        # Role/name come from the live row, not the token — a role change (or a
+        # rename) applies on the next request instead of at token expiry.
+        role=tech.role,
+        name=tech.name,
     )
 
 
