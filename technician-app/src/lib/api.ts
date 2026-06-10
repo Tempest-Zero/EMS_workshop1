@@ -51,6 +51,22 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
   onUnauthorized = fn;
 }
 
+/**
+ * An HTTP-level failure with its status attached. The outbox classifies on
+ * `status` (definitive 4xx → visible failed list; 5xx/429 → retry), so this
+ * must stay the ONLY error shape `request()` throws for non-OK responses —
+ * string-matching on messages is what caused the v1 silent-drop bug.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(method: string, path: string, status: number, bodyText: string) {
+    super(`${method} ${path} failed (${status}): ${bodyText.slice(0, 300)}`);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 // JSON API calls are bounded so a hung request on flaky workshop wifi can't pin
 // the UI in a loading state forever. (Media/selfie BYTE uploads go through
 // FileSystem.uploadAsync, not this path, so big uploads aren't affected.)
@@ -87,7 +103,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     const method = init?.method ?? "GET";
-    throw new Error(`${method} ${path} failed (${response.status}): ${text.slice(0, 300)}`);
+    throw new ApiError(method, path, response.status, text);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

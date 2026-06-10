@@ -17,6 +17,8 @@ import {
 import { setUnauthorizedHandler } from "../../lib/api";
 import { loadToken, setToken } from "../../lib/auth";
 import { authApi, type Technician } from "../../lib/authApi";
+import { setOutboxPrincipal } from "../../lib/outbox";
+import { resumeOutbox } from "../../lib/outboxSync";
 
 const TECH_KEY = "fixflow_tech";
 
@@ -41,8 +43,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const t = await loadToken();
       const techJson = await AsyncStorage.getItem(TECH_KEY);
       if (!active) return;
+      const tech = techJson ? (JSON.parse(techJson) as Technician) : null;
       setTok(t);
-      setTechnician(techJson ? (JSON.parse(techJson) as Technician) : null);
+      setTechnician(tech);
+      // Restored session owns the outbox: tag new writes, adopt legacy v1
+      // items, and un-pause a queue parked by an expired token.
+      setOutboxPrincipal(tech?.id ?? null);
+      if (tech) void resumeOutbox(tech.id);
       setReady(true);
     })();
     return () => {
@@ -50,11 +57,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // A 401 anywhere drops us back to the login screen.
+  // A 401 anywhere drops us back to the login screen. The outbox is NOT
+  // cleared — queued writes (possibly cash) survive logout and resume when
+  // their owner signs back in.
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setTok(null);
       setTechnician(null);
+      setOutboxPrincipal(null);
       void AsyncStorage.removeItem(TECH_KEY);
     });
     return () => setUnauthorizedHandler(null);
@@ -66,6 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await AsyncStorage.setItem(TECH_KEY, JSON.stringify(res.technician));
     setTok(res.token);
     setTechnician(res.technician);
+    setOutboxPrincipal(res.technician.id);
+    await resumeOutbox(res.technician.id);
   }, []);
 
   const logout = useCallback(async () => {
@@ -73,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await AsyncStorage.removeItem(TECH_KEY);
     setTok(null);
     setTechnician(null);
+    setOutboxPrincipal(null);
   }, []);
 
   return (

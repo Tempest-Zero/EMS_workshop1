@@ -1,20 +1,36 @@
 /**
  * Drains the job outbox to the backend and provides `sendOrQueue` — the single
  * wrapper every offline-capable job write goes through:
- *   online  → send now, return the authoritative JobDetail.
- *   offline / network failure → queue it, return null (UI shows "saved offline").
- *   server (4xx) error → rethrow (a real validation error, not a connectivity one).
+ *   online           → send now, return the authoritative JobDetail.
+ *   offline / network / transient server error (5xx, 429, timeout)
+ *                    → queue it, return null (UI shows "saved offline").
+ *   definitive 4xx on a live tap → rethrow (a real validation error the
+ *                      technician is looking at — not a queueing matter).
  *
- * Replays are idempotent (client_id dedup / upsert), so a queued write that
- * actually reached the server before the response was lost won't double-apply.
+ * Flush classification (the v1 silent-drop fix — every branch is deliberate):
+ *   success          → remove from queue.
+ *   401              → PAUSE the whole queue; items survive logout and resume
+ *                      after re-login. (The token expired, not the writes.)
+ *   400/403/404/409/422 → definitive rejection: move to the visible FAILED
+ *                      list. Never silently deleted — these can be cash records.
+ *   everything else (5xx, 429, network, timeout, unknown) → keep queued, retry
+ *                      later, preserve order.
+ *
+ * Replays are idempotent for money kinds (client_id dedup / upsert). `ready`
+ * and `note` replays are state-idempotent; a replay after a lost response can
+ * at worst duplicate a timeline entry, never money.
  */
 
 import NetInfo from "@react-native-community/netinfo";
 
+import { ApiError } from "./api";
 import {
+  adoptLegacyItems,
   bumpAttempts,
   enqueue,
+  getOutboxPrincipal,
   loadOutbox,
+  markFailed,
   removeItem,
   type OutboxItem,
   type OutboxKind,
@@ -40,6 +56,9 @@ interface NegotiatePayload {
 interface LocationPayload {
   body: LocationInput;
 }
+interface NotePayload {
+  text: string;
+}
 
 /** Replay one queued item via the matching jobs API call. */
 async function send(item: OutboxItem): Promise<JobDetail> {
@@ -60,34 +79,78 @@ async function send(item: OutboxItem): Promise<JobDetail> {
     }
     case "location":
       return jobsApi.recordLocation(item.jobId, (item.payload as LocationPayload).body);
+    case "ready":
+      return jobsApi.transition(item.jobId, "ready");
+    case "note":
+      return jobsApi.addNote(item.jobId, (item.payload as NotePayload).text);
   }
 }
 
-function isNetworkError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e);
-  return /Network request failed|timed out|Failed to fetch|Network Error/i.test(msg);
+/** Statuses that will never succeed on replay. 401 is NOT here — that's the
+ * session, not the write. Unknown/5xx/429 default to retry: with a visible
+ * failed list the cost of a wrong "fail" is technician attention, but the cost
+ * of a wrong "drop" was silent cash loss — bias every ambiguity toward keeping
+ * the record. */
+const DEFINITIVE_4XX = new Set([400, 403, 404, 409, 422]);
+
+function isDefinitiveRejection(e: unknown): e is ApiError {
+  return e instanceof ApiError && DEFINITIVE_4XX.has(e.status);
+}
+
+function isAuthFailure(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 401;
+}
+
+/** Trim the server's error body down to something a human can read in a list. */
+function failureReason(e: ApiError): string {
+  const detail = /"detail"\s*:\s*"([^"]+)"/.exec(e.message)?.[1];
+  return detail ?? `rejected (${e.status})`;
 }
 
 let syncing = false;
+// 401 during a flush parks the queue until someone signs back in — flushing
+// with a dead token would just 401 every item one by one.
+let pausedForAuth = false;
+
+/** Re-arm the queue after a successful (re-)login; adopts any legacy v1 items
+ * into the new session. Called by AuthContext. */
+export async function resumeOutbox(techId: string): Promise<void> {
+  pausedForAuth = false;
+  await adoptLegacyItems(techId);
+}
+
+export function isOutboxPaused(): boolean {
+  return pausedForAuth;
+}
 
 /** Drain the queue in order. Stops at the first connectivity failure (keeps
- * order, retries later); drops a poison 4xx item so it can't block the queue. */
+ * order, retries later); definitive rejections go to the visible failed list. */
 export async function flushOutbox(): Promise<void> {
-  if (syncing) return;
+  if (syncing || pausedForAuth) return;
+  const me = getOutboxPrincipal();
+  if (!me) return; // not signed in — nothing may send
   syncing = true;
   try {
     for (const item of await loadOutbox()) {
+      if (item.status !== "queued") continue; // failed items wait for the user
+      // Shared-device protection: never flush another technician's writes
+      // under this session. (Legacy null-tagged items are adopted on login.)
+      if (item.techId !== null && item.techId !== me) continue;
       try {
         await send(item);
         await removeItem(item.id);
       } catch (e) {
-        if (isNetworkError(e)) {
-          await bumpAttempts(item.id);
-          break; // still offline — leave the rest queued, retry on next trigger
+        if (isAuthFailure(e)) {
+          pausedForAuth = true;
+          break; // token is dead; the queue survives logout → re-login
         }
-        // Non-connectivity (server) error: this item will never succeed on
-        // replay — drop it so it can't wedge the queue.
-        await removeItem(item.id);
+        if (isDefinitiveRejection(e)) {
+          await markFailed(item.id, failureReason(e));
+          continue; // a parked item must not block the ones behind it
+        }
+        // Transient (network, timeout, 5xx, 429, unknown): keep, retry later.
+        await bumpAttempts(item.id);
+        break;
       }
     }
   } finally {
@@ -107,11 +170,14 @@ export async function sendOrQueue(
   try {
     return await call();
   } catch (e) {
-    if (isNetworkError(e)) {
-      await enqueue(item);
-      return null;
-    }
-    throw e; // real server error → surface it
+    // A definitive 4xx on a live tap is a validation error the technician is
+    // looking at right now — surface it. A 401 means the session just ended —
+    // surface that too (the auth handler is already routing to login).
+    if (isDefinitiveRejection(e) || isAuthFailure(e)) throw e;
+    // Anything transient — offline, timeout, 502 mid-deploy — queues. The tap
+    // succeeded as far as the technician is concerned.
+    await enqueue(item);
+    return null;
   }
 }
 
@@ -121,5 +187,6 @@ export type {
   VoidPayload,
   NegotiatePayload,
   LocationPayload,
+  NotePayload,
   OutboxKind,
 };

@@ -20,6 +20,7 @@ import {
 
 import { jobsApi, type Material } from "../../lib/jobsApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
+import { makeItem } from "../../lib/outbox";
 import { sendOrQueue } from "../../lib/outboxSync";
 import { uploadMedia } from "../media/uploadMedia";
 import { VoiceNote } from "./VoiceNote";
@@ -98,14 +99,12 @@ export function CompleteJobScreen({ route, navigation }: Props) {
       // Offline-capable: online submits now, offline queues (idempotent upsert)
       // and syncs on reconnect — the "form submission must work offline" rule.
       const detail = await sendOrQueue(
-        {
+        makeItem({
           id: `completion:${id}`,
           kind: "completion",
           jobId: id,
           payload: { body },
-          createdAt: new Date().toISOString(),
-          attempts: 0,
-        },
+        }),
         () => jobsApi.submitCompletion(id, body),
       );
       if (!detail) {
