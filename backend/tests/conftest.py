@@ -29,11 +29,16 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.db import get_session
 from app.core.storage import SignedUpload, get_storage
-from app.features.identity.security import create_access_token
+from app.features.identity.models import Technician
+from app.features.identity.security import create_access_token, hash_pin
 from app.main import app
 from app.registry import Base
 
 TEST_DB_URL = os.getenv("FIXFLOW_TEST_DATABASE_URL")
+
+# Hashed once for the whole run (PBKDF2 is deliberately slow); the seeded row
+# below needs a syntactically valid hash even though most tests never log in.
+_TEST_PIN_HASH = hash_pin("1234")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -44,6 +49,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_login_ip_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset the login per-IP limiter for every test. It is module-level state
+    and every ASGI test shares the same client IP — without this, login calls
+    accumulated across test files would trip the cap and flake the suite."""
+    from app.features.identity import router as identity_router
+    from app.features.identity.throttle import IpRateLimiter
+
+    monkeypatch.setattr(identity_router, "_ip_limiter", IpRateLimiter())
 
 
 class _FakeStorage:
@@ -92,7 +108,29 @@ async def session(_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 @pytest_asyncio.fixture
 async def app_client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
-    """ASGI client whose requests hit the real test DB (and a fake R2)."""
+    """ASGI client whose requests hit the real test DB (and a fake R2).
+
+    Seeds the ``t1`` manager row the ``auth_headers`` token names: since 0013
+    the auth dependency verifies the caller against the live technician row
+    (active + ``token_version``), and the per-test TRUNCATE wipes the rows the
+    *migration* seeded — so each test re-seeds its own.
+    """
+    # merge (not add): in CI the very first test still sees the row the
+    # migration seeded (the TRUNCATE only runs at teardown) — upsert semantics
+    # cover both that case and the post-truncate/create_all-only case.
+    await session.merge(
+        Technician(
+            id="t1",
+            name="Test Manager",
+            role="manager",
+            pin_hash=_TEST_PIN_HASH,
+            active=True,
+            failed_attempts=0,
+            locked_until=None,
+            token_version=0,
+        )
+    )
+    await session.commit()
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_storage] = _FakeStorage
     transport = ASGITransport(app=app)

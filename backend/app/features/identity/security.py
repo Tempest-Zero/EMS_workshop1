@@ -44,13 +44,18 @@ def verify_pin(pin: str, stored: str) -> bool:
     return hmac.compare_digest(digest.hex(), hash_hex)
 
 
-def create_access_token(*, tech_id: str, role: str, name: str) -> str:
-    """Sign a JWT whose ``sub`` is the tech id (server-authoritative identity)."""
+def create_access_token(*, tech_id: str, role: str, name: str, token_version: int = 0) -> str:
+    """Sign a JWT whose ``sub`` is the tech id (server-authoritative identity).
+
+    ``token_version`` is embedded as the ``ver`` claim and checked on every
+    authed request; bumping the tech's row invalidates all their live tokens.
+    """
     now = datetime.now(UTC)
     payload = {
         "sub": tech_id,
         "role": role,
         "name": name,
+        "ver": token_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.jwt_expire_minutes),
     }

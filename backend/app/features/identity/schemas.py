@@ -26,6 +26,13 @@ class LoginRequest(BaseModel):
     pin: str = Field(..., min_length=3, max_length=12)
 
 
+class SetPinRequest(BaseModel):
+    """New PIN for an account. The digit/length policy lives in the service —
+    the minimum depends on the *target's* role (managers need 6+)."""
+
+    pin: str = Field(..., min_length=4, max_length=12)
+
+
 class LoginResponse(BaseModel):
     token: str
     technician: TechnicianPublic

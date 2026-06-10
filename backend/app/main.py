@@ -20,6 +20,10 @@ from app.features.notifications.router import router as notifications_router
 
 
 def create_app() -> FastAPI:
+    # Fail-closed before anything else: a production process must not boot with
+    # the insecure dev JWT secret (forgeable tokens). No-op in dev.
+    settings.assert_safe_for_production()
+
     app = FastAPI(
         title="FixFlow API",
         version="0.1.0",
