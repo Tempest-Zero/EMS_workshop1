@@ -333,3 +333,27 @@ async def test_evidence_gaps_is_manager_only_and_not_swallowed_by_job_route(
     resp = await client.get("/api/jobs/evidence-gaps")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+async def test_money_guard_conflicts_map_to_409(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    # The Phase-4 guards raise JobConflictError from transition / completion /
+    # negotiate — each endpoint must answer 409 (the unit gap that let CI's
+    # integration suite catch a leaked exception).
+    fake_service.transition = AsyncMock(side_effect=JobConflictError("close requires the form"))
+    fake_service.submit_completion = AsyncMock(side_effect=JobConflictError("job is closed"))
+    fake_service.negotiate_bill = AsyncMock(side_effect=JobConflictError("job is closed"))
+    job_id = uuid4()
+
+    resp = await client.post(f"/api/jobs/{job_id}/transition", json={"action": "close"})
+    assert resp.status_code == 409
+
+    resp = await client.post(
+        f"/api/jobs/{job_id}/completion",
+        json={"materials": [], "time_spent_mins": 0, "fuel_paisa": 0},
+    )
+    assert resp.status_code == 409
+
+    resp = await client.post(f"/api/jobs/{job_id}/bill/negotiate", json={"amount_paisa": 1000})
+    assert resp.status_code == 409
