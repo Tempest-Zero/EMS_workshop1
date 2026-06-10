@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   fetchJobs,
+  fetchEvidenceGaps,
   createJob,
   assignJob,
   addJobNote,
@@ -119,5 +120,13 @@ describe("jobsApi", () => {
     expect(url).toContain("/api/jobs/job-1/payments/pay-9/void");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ reason: "duplicate entry" });
+  });
+});
+
+describe("evidence gaps", () => {
+  it("fetchEvidenceGaps hits the reconciliation endpoint", async () => {
+    await fetchEvidenceGaps();
+    const url = globalThis.fetch.mock.calls[0][0];
+    expect(url).toContain("/api/jobs/evidence-gaps");
   });
 });

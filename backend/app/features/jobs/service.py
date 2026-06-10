@@ -3,7 +3,7 @@ for other slices (never reach past this from another feature)."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -21,6 +21,7 @@ from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     CompletionOut,
     CompletionRequest,
+    EvidenceGap,
     Job,
     JobCreate,
     JobDetail,
@@ -427,6 +428,31 @@ class JobService:
             )
             row.updated_at = datetime.now(UTC)
         return await self._detail(row)
+
+    # ── Evidence reconciliation (Phase 5) ────────────────────────────────
+    async def evidence_gaps(
+        self, *, shop_id: str, media: MediaService, today: date, grace_days: int = 2
+    ) -> list[EvidenceGap]:
+        """Closed jobs whose closing video never actually uploaded. The close
+        gate accepts a *pending* media row so an offline tech can close — this
+        is the back half of that bargain: after ``grace_days`` the bytes must
+        exist, or the job surfaces on the manager dashboard."""
+        cutoff = today - timedelta(days=grace_days)
+        rows = await self._repo.list_closed_unabandoned(shop_id=shop_id, closed_before=cutoff)
+        if not rows:
+            return []
+        uploaded = await media.uploaded_closing_counts(job_ids=[str(r.token) for r in rows])
+        return [
+            EvidenceGap(
+                id=r.id,
+                token=r.token,
+                customer_name=r.customer_name,
+                closed_at=r.closed_at,
+                closing_uploaded=uploaded.get(str(r.token), 0),
+            )
+            for r in rows
+            if uploaded.get(str(r.token), 0) == 0
+        ]
 
     # ── Internals ────────────────────────────────────────────────────────
     async def _load(self, job_id: UUID, shop_id: str) -> JobRow:

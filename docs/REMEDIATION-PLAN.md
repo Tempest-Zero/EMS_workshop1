@@ -193,7 +193,14 @@ visible failed list, and Phase 5's reconciliation catches the remainder.
 
 ---
 
-## Phase 5 — Time, evidence, operability (~2–3 days)
+## Phase 5 — Time, evidence, operability (~2–3 days) — BUILT 2026-06-10
+
+> Status: scheduler + Sunday payroll auto-export (R2 + manager list/download) +
+> evidence-gaps endpoint/Dashboard alert shipped. **Deferred with reasons:**
+> `openapi-typescript` in CI (the TS/JS clients must first adopt generated
+> types or the step is theater — pair it with the next client refactor) and a
+> periodic device-token prune sweep (Phase 1c already prunes reactively on
+> FCM 404/410; a sweep adds nothing until token volume grows).
 
 - **Scheduler seam**: in-process APScheduler (document the single-replica
   assumption — duplicate runs if ever scaled) or Railway cron. Pick one; then:

@@ -51,6 +51,7 @@ class StorageClient(Protocol):
     def mint_playback_url(self, path: str, expires_in: int = DEFAULT_PLAYBACK_TTL) -> str: ...
     def head_size(self, path: str) -> int | None: ...
     def delete(self, path: str) -> None: ...
+    def put_bytes(self, path: str, data: bytes, content_type: str) -> None: ...
 
 
 class R2Storage:
@@ -97,6 +98,12 @@ class R2Storage:
 
     def delete(self, path: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=path)
+
+    def put_bytes(self, path: str, data: bytes, content_type: str) -> None:
+        """Server-side upload for SMALL server-generated artifacts (payroll
+        CSVs). Big client media stays on the signed-URL data plane — this
+        method must never carry phone uploads."""
+        self._client.put_object(Bucket=self._bucket, Key=path, Body=data, ContentType=content_type)
 
 
 @lru_cache(maxsize=1)

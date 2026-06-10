@@ -27,6 +27,9 @@ dependencies = [
   # Error tracking (off unless FIXFLOW_SENTRY_DSN is set). PII stays out:
   # send_default_pii=False and request bodies are never attached.
   "sentry-sdk[fastapi]>=2.0,<3.0",
+  # In-process scheduler (the time seam: Sunday payroll export). Single-replica
+  # assumption documented on settings.enable_scheduler.
+  "apscheduler>=3.10,<4.0",
 ]
 
 [project.optional-dependencies]
@@ -85,7 +88,7 @@ warn_unused_ignores = true
 warn_return_any = true
 # Third-party stubs we don't control yet:
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "alembic.*"]
+module = ["boto3.*", "botocore.*", "alembic.*", "apscheduler.*"]
 ignore_missing_imports = true
 
 # ── Import Linter (slice-dependency contract) ────────────────────────────────

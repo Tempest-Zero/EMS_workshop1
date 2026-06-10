@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Users,
@@ -7,6 +7,7 @@ import {
   Wallet,
   Clock3,
   UserX,
+  VideoOff,
   ChevronRight,
 } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
@@ -15,6 +16,7 @@ import { Card, SectionHeader } from "@shared/ui/primitives";
 import { formatPKR } from "@shared/lib/currency";
 import { amountPaid } from "@shared/lib/job";
 import { daysSince, parseISO } from "@shared/lib/date";
+import { fetchEvidenceGaps } from "@features/jobs/data/jobsApi";
 import { weekDays } from "@features/schedule/data/schedule";
 
 const ON_DUTY = ["present", "field", "half"];
@@ -39,6 +41,22 @@ function kindDot(kind) {
 export default function Dashboard() {
   const { jobs, technicians, attendanceToday, globalActivity } = useApp();
   const nav = useNavigate();
+
+  // Evidence reconciliation: closed jobs whose closing video never uploaded.
+  // The close gate tolerates pending uploads (offline techs) — this is where
+  // the ones that never arrived become visible.
+  const [evidenceGaps, setEvidenceGaps] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchEvidenceGaps()
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows)) setEvidenceGaps(rows);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const stats = useMemo(() => {
     const present = technicians.filter((t) =>
@@ -86,8 +104,20 @@ export default function Dashboard() {
         to: "/attendance",
       });
     }
+    if (evidenceGaps.length) {
+      out.push({
+        id: "evidence",
+        icon: VideoOff,
+        tone: "red",
+        title: `${evidenceGaps.length} closed ${
+          evidenceGaps.length === 1 ? "job" : "jobs"
+        } missing the closing video`,
+        sub: evidenceGaps.map((g) => `#${g.token} · ${g.customer_name}`).join("   "),
+        to: "/jobs?status=closed",
+      });
+    }
     return out;
-  }, [jobs, technicians, attendanceToday]);
+  }, [jobs, technicians, attendanceToday, evidenceGaps]);
 
   const recent = globalActivity.slice(0, 10);
 

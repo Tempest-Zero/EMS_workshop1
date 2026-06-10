@@ -162,6 +162,17 @@ class RouteOut(BaseModel):
     fuel_paisa: int
 
 
+class EvidenceGap(BaseModel):
+    """A closed job whose closing video was promised (the close-gate counts
+    pending rows) but whose bytes never reached storage."""
+
+    id: UUID
+    token: int
+    customer_name: str
+    closed_at: date | None = None
+    closing_uploaded: int
+
+
 TransitionAction = Literal["ready", "close", "abandon", "reschedule", "haul"]
 
 

@@ -4,6 +4,7 @@ import {
   fetchAdjustments,
   fetchBoard,
   fetchGeofence,
+  fetchPayrollExports,
   fetchGrid,
   fetchShift,
   fetchTechDays,
@@ -114,6 +115,12 @@ describe("attendanceApi", () => {
     const body = JSON.parse(init.body);
     expect(body.working_days).toBe("1111110");
     expect(body.grace_minutes).toBe(10);
+  });
+
+  it("fetchPayrollExports passes shop_id", async () => {
+    await fetchPayrollExports();
+    const url = globalThis.fetch.mock.calls[0][0];
+    expect(url).toContain("/api/attendance/payroll/exports?shop_id=default");
   });
 
   it("throws on a non-ok response", async () => {

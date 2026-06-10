@@ -4,7 +4,7 @@ the request boundary."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -99,6 +99,21 @@ class JobRepository:
         return job
 
     # ── Timeline ─────────────────────────────────────────────────────────
+    async def list_closed_unabandoned(self, *, shop_id: str, closed_before: date) -> list[Job]:
+        """Closed (not abandoned) jobs whose closure is old enough that their
+        closing-video bytes should long since have synced."""
+        result = await self._session.execute(
+            select(Job)
+            .where(
+                Job.shop_id == shop_id,
+                Job.status == "closed",
+                Job.abandoned.is_(False),
+                Job.closed_at <= closed_before,
+            )
+            .order_by(Job.closed_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def list_events(self, job_id: UUID) -> list[JobEvent]:
         stmt = select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.created_at.asc())
         result = await self._session.execute(stmt)
