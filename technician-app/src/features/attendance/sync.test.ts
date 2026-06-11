@@ -76,7 +76,7 @@ describe("syncNow", () => {
   it("records the punch, uploads the selfie, and marks it done", async () => {
     mockedPending.mockResolvedValue([withSelfie]);
 
-    await syncNow();
+    await syncNow("t1");
 
     expect(mockedApi.recordPunch).toHaveBeenCalledWith(
       expect.objectContaining({ client_id: "c1", wifi_bssid: "AA:BB" }),
@@ -97,7 +97,7 @@ describe("syncNow", () => {
       { ...withSelfie, selfie_uri: null, selfie_filename: null, selfie_content_type: null },
     ]);
 
-    await syncNow();
+    await syncNow("t1");
 
     expect(mockedFs.uploadAsync).not.toHaveBeenCalled();
     expect(mockedUpdate).toHaveBeenCalledWith("c1", { done: true });
@@ -107,8 +107,50 @@ describe("syncNow", () => {
     mockedPending.mockResolvedValue([withSelfie]);
     mockedApi.recordPunch.mockRejectedValueOnce(new Error("offline"));
 
-    await syncNow();
+    await syncNow("t1");
 
     expect(mockedUpdate).not.toHaveBeenCalledWith("c1", { done: true });
+  });
+
+  it("skips another technician's queued punches (shared-device protection)", async () => {
+    // The backend would 403 them under this session; they wait for their owner.
+    mockedPending.mockResolvedValue([{ ...withSelfie, tech_id: "t9" }]);
+
+    await syncNow("t1");
+
+    expect(mockedApi.recordPunch).not.toHaveBeenCalled();
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when no one is signed in", async () => {
+    mockedPending.mockResolvedValue([withSelfie]);
+
+    await syncNow(null);
+
+    expect(mockedApi.recordPunch).not.toHaveBeenCalled();
+  });
+
+  it("settles a punch whose selfie the server already considers closed", async () => {
+    // A re-synced punch whose selfie was rejected (e.g. oversized): the server
+    // returns no upload URL. The punch must settle, not retry forever.
+    mockedPending.mockResolvedValue([withSelfie]);
+    mockedApi.recordPunch.mockResolvedValueOnce({
+      event_id: "evt-1",
+      client_id: "c1",
+      server_time: "2026-06-03T04:00:01Z",
+      inside_geofence: true,
+      distance_m: 5,
+      is_mock_location: false,
+      drift_seconds: 1,
+      drift_flagged: false,
+      wifi_match: true,
+      selfie: null,
+      deduped: true,
+    });
+
+    await syncNow("t1");
+
+    expect(mockedFs.uploadAsync).not.toHaveBeenCalled();
+    expect(mockedUpdate).toHaveBeenCalledWith("c1", { done: true });
   });
 });

@@ -48,6 +48,6 @@ export async function punch(input: PunchInput): Promise<QueuedPunch> {
   };
 
   await enqueue(item); // local write = instant success
-  void syncNow(); // fire-and-forget background sync
+  void syncNow(input.techId); // fire-and-forget background sync
   return item;
 }

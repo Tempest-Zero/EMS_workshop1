@@ -64,22 +64,34 @@ export function useAttendance() {
     }
   }, [techId]);
 
+  // Sync (the signed-in tech's punches only), then re-read queue + server.
+  const syncAndRefresh = useCallback(async () => {
+    await syncNow(techId);
+    await refresh();
+  }, [techId, refresh]);
+
   // Sync on mount, reconnect, and app-foreground.
   useEffect(() => {
     void refresh();
     const net = NetInfo.addEventListener((s) => {
-      if (s.isConnected) void syncNow().then(refresh);
+      if (s.isConnected) void syncAndRefresh();
     });
     const app = AppState.addEventListener("change", (st) => {
-      if (st === "active") void syncNow().then(refresh);
+      if (st === "active") void syncAndRefresh();
     });
     return () => {
       net();
       app.remove();
     };
-  }, [refresh]);
+  }, [refresh, syncAndRefresh]);
 
-  const pendingCount = useMemo(() => all.filter((p) => !p.done).length, [all]);
+  // Pending = MY unsynced punches. Another tech's queued punch on this shared
+  // phone is their session's business — counting it here would show a
+  // "pending sync" this login can never clear.
+  const pendingCount = useMemo(
+    () => all.filter((p) => p.tech_id === techId && !p.done).length,
+    [all, techId],
+  );
 
   // My local punches that haven't reached the server yet (shown optimistically).
   const localPending = useMemo(() => {
@@ -130,7 +142,7 @@ export function useAttendance() {
     const tick = () => {
       handle = setTimeout(() => {
         if (cancelled) return;
-        void syncNow().then(refresh);
+        void syncAndRefresh();
         delayRef.current = Math.min(delayRef.current * 2, SYNC_MAX_MS);
         tick();
       }, delayRef.current);
@@ -140,7 +152,7 @@ export function useAttendance() {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [pendingCount, refresh]);
+  }, [pendingCount, syncAndRefresh]);
 
   const doPunch = useCallback(
     async (kind: QueuedPunch["kind"]) => {
