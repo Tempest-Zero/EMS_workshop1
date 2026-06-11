@@ -18,6 +18,7 @@ import {
 
 import { ApiError } from "../../lib/api";
 import { jobsApi, type Job } from "../../lib/jobsApi";
+import { cacheStamp, loadJobsList, saveJobsList } from "../../lib/jobsCache";
 import { useAuth } from "../auth/AuthContext";
 import type { JobsStackParamList } from "./types";
 
@@ -76,14 +77,27 @@ export function JobsListScreen({ navigation }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [claiming, setClaiming] = useState<string | null>(null);
+  // Set when the list on screen is the offline cache, not server truth.
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const all = await jobsApi.list();
       setJobs(all);
       setError(null);
+      setCachedAt(null);
+      void saveJobsList(all); // refresh the offline copy (best-effort)
     } catch {
-      setError("Couldn't load jobs — check your connection.");
+      // Offline (or server unreachable): fall back to the last synced list so
+      // the tech can still see and open their work — clearly labelled stale.
+      const cached = await loadJobsList();
+      if (cached) {
+        setJobs(cached.data);
+        setCachedAt(cached.savedAt);
+        setError(null);
+      } else {
+        setError("Couldn't load jobs — check your connection.");
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -142,6 +156,13 @@ export function JobsListScreen({ navigation }: Props) {
       }
     >
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      {cachedAt ? (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineText}>
+            Offline — showing your last synced jobs ({cacheStamp(cachedAt)}). Pull to retry.
+          </Text>
+        </View>
+      ) : null}
 
       <Text style={styles.section}>MY JOBS</Text>
       {mine.length === 0 ? (
@@ -175,6 +196,15 @@ const styles = StyleSheet.create({
   section: { fontSize: 11, fontWeight: "800", color: "#64748b", letterSpacing: 0.5, marginBottom: 8 },
   empty: { fontSize: 13, color: "#94a3b8", fontStyle: "italic" },
   error: { color: "#b91c1c", fontSize: 13, fontWeight: "600", marginBottom: 10 },
+  offlineBanner: {
+    backgroundColor: "#fef3c7",
+    borderColor: "#fde68a",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12,
+  },
+  offlineText: { color: "#92400e", fontSize: 12, fontWeight: "700" },
   card: {
     backgroundColor: "white",
     borderRadius: 12,
