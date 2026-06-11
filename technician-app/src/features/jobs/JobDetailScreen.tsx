@@ -14,7 +14,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
 import * as ImagePicker from "expo-image-picker";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -31,6 +31,7 @@ import { JobMediaCapture } from "../media/JobMediaCapture";
 import { uploadMedia } from "../media/uploadMedia";
 import { ApiError } from "../../lib/api";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
+import { cacheStamp, loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
 import {
   discardItem,
@@ -113,11 +114,35 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const [abandoning, setAbandoning] = useState(false);
   const [abandonReason, setAbandonReason] = useState("");
 
+  // Set when the detail on screen is the offline cache, not server truth.
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
+  // Mirrors `job` for the load callback: reading state there would change the
+  // callback's identity on every load and re-trigger the focus effect.
+  const jobRef = useRef<JobDetail | null>(null);
+  useEffect(() => {
+    jobRef.current = job;
+  }, [job]);
+
   const load = useCallback(async () => {
     try {
-      setJob(await jobsApi.get(id));
+      const fresh = await jobsApi.get(id);
+      setJob(fresh);
       setError(null);
+      setCachedAt(null);
+      void saveJobDetail(fresh); // refresh the offline copy (best-effort)
     } catch {
+      // Cold start with no signal: fall back to the last synced copy so the
+      // tech still has the customer's address/phone — clearly labelled stale.
+      // If a live copy is already on screen, keep it (don't downgrade).
+      if (jobRef.current === null) {
+        const cached = await loadJobDetail(id);
+        if (cached) {
+          setJob(cached.data);
+          setCachedAt(cached.savedAt);
+          setError(null);
+          return;
+        }
+      }
       setError("Couldn't load this job — check your connection.");
     }
   }, [id]);
@@ -466,6 +491,15 @@ export function JobDetailScreen({ route, navigation }: Props) {
         {job.appliance_type}
         {job.appliance_brand ? ` · ${job.appliance_brand}` : ""}
       </Text>
+
+      {cachedAt ? (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineText}>
+            Offline — showing the last synced copy ({cacheStamp(cachedAt)}). Anything you record
+            here will sync when you reconnect.
+          </Text>
+        </View>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.label}>CUSTOMER</Text>
@@ -993,6 +1027,15 @@ const styles = StyleSheet.create({
   voidBox: { marginTop: 10, backgroundColor: "#fef2f2", borderRadius: 8, padding: 10 },
   abandonLink: { marginTop: 10, alignItems: "center", paddingVertical: 6 },
   abandonLinkText: { color: "#b91c1c", fontWeight: "700", fontSize: 13 },
+  offlineBanner: {
+    backgroundColor: "#fef3c7",
+    borderColor: "#fde68a",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12,
+  },
+  offlineText: { color: "#92400e", fontSize: 12, fontWeight: "700" },
   methodRow: { flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 2 },
   methodChip: {
     flex: 1,
