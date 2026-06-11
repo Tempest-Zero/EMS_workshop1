@@ -10,8 +10,20 @@ from httpx import AsyncClient
 pytestmark = pytest.mark.integration
 
 
+async def _create_job(app_client: AsyncClient, headers: dict[str, str]) -> str:
+    """Media rows must hang off a real job (keyed by its token) since the
+    upload endpoint validates existence."""
+    resp = await app_client.post(
+        "/api/jobs",
+        json={"customer_name": "Media Test", "appliance_type": "Fridge", "problem": "no cooling"},
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["token"])
+
+
 async def test_media_lifecycle(app_client: AsyncClient, auth_headers: dict[str, str]) -> None:
-    job = "job-int-1"
+    job = await _create_job(app_client, auth_headers)
 
     # Reserve a row + mint a (fake) signed upload URL — real INSERT.
     created = await app_client.post(
@@ -51,8 +63,9 @@ async def test_media_accepts_audio_remark(
 ) -> None:
     # The completion voice note is a media row: type=audio, phase=remark.
     # A 201 proves the DB CHECK constraints now allow them (migration 0009).
+    job = await _create_job(app_client, auth_headers)
     created = await app_client.post(
-        "/api/jobs/job-audio-1/media",
+        f"/api/jobs/{job}/media",
         json={
             "phase": "remark",
             "type": "audio",
@@ -62,6 +75,18 @@ async def test_media_accepts_audio_remark(
         headers=auth_headers,
     )
     assert created.status_code == 201, created.text
+
+
+async def test_media_upload_rejects_unknown_job(
+    app_client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    # No matching job token → no media row, no signed URL (storage-abuse guard).
+    created = await app_client.post(
+        "/api/jobs/999999/media",
+        json={"phase": "before", "type": "photo", "filename": "x.jpg"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 404, created.text
 
 
 async def test_media_requires_auth(app_client: AsyncClient) -> None:

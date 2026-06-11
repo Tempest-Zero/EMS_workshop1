@@ -47,7 +47,7 @@ class SignedUpload:
 class StorageClient(Protocol):
     """The narrow surface feature services depend on. Easy to fake in tests."""
 
-    def mint_upload_url(self, path: str) -> SignedUpload: ...
+    def mint_upload_url(self, path: str, content_type: str | None = None) -> SignedUpload: ...
     def mint_playback_url(self, path: str, expires_in: int = DEFAULT_PLAYBACK_TTL) -> str: ...
     def head_size(self, path: str) -> int | None: ...
     def delete(self, path: str) -> None: ...
@@ -61,11 +61,18 @@ class R2Storage:
         self._client = client
         self._bucket = bucket
 
-    def mint_upload_url(self, path: str) -> SignedUpload:
+    def mint_upload_url(self, path: str, content_type: str | None = None) -> SignedUpload:
+        """Pre-signed PUT for one object. When ``content_type`` is given it is
+        part of the signature, so the uploader's ``Content-Type`` header must
+        match exactly — the URL can only park bytes of the declared kind, not
+        arbitrary files served back later under our signed GET URLs."""
+        params: dict[str, str] = {"Bucket": self._bucket, "Key": path}
+        if content_type is not None:
+            params["ContentType"] = content_type
         url = str(
             self._client.generate_presigned_url(
                 "put_object",
-                Params={"Bucket": self._bucket, "Key": path},
+                Params=params,
                 ExpiresIn=DEFAULT_UPLOAD_TTL,
             )
         )
