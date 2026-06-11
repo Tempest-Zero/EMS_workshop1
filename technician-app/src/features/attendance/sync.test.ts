@@ -3,8 +3,8 @@
 import * as FileSystem from "expo-file-system";
 
 import { attendanceApi } from "../../lib/attendanceApi";
-import { pendingPunches, updatePunch, type QueuedPunch } from "./queue";
-import { syncNow } from "./sync";
+import { loadQueue, pendingPunches, removePunches, updatePunch, type QueuedPunch } from "./queue";
+import { pruneSettled, syncNow } from "./sync";
 
 jest.mock("../../lib/attendanceApi", () => ({
   attendanceApi: { recordPunch: jest.fn(), completeSelfie: jest.fn() },
@@ -12,15 +12,20 @@ jest.mock("../../lib/attendanceApi", () => ({
 jest.mock("./queue", () => ({
   pendingPunches: jest.fn(),
   updatePunch: jest.fn(),
+  loadQueue: jest.fn(),
+  removePunches: jest.fn(),
 }));
 jest.mock("expo-file-system", () => ({
   uploadAsync: jest.fn(),
   getInfoAsync: jest.fn(),
+  deleteAsync: jest.fn(),
 }));
 
 const mockedApi = attendanceApi as jest.Mocked<typeof attendanceApi>;
 const mockedPending = pendingPunches as jest.MockedFunction<typeof pendingPunches>;
 const mockedUpdate = updatePunch as jest.MockedFunction<typeof updatePunch>;
+const mockedLoad = loadQueue as jest.MockedFunction<typeof loadQueue>;
+const mockedRemove = removePunches as jest.MockedFunction<typeof removePunches>;
 const mockedFs = FileSystem as jest.Mocked<typeof FileSystem>;
 
 const withSelfie: QueuedPunch = {
@@ -70,6 +75,9 @@ beforeEach(() => {
     size: 4321,
     uri: "file://doc/selfie.jpg",
   });
+  (mockedFs.deleteAsync as unknown as jest.Mock).mockResolvedValue(undefined);
+  mockedLoad.mockResolvedValue([]);
+  mockedRemove.mockResolvedValue(undefined);
 });
 
 describe("syncNow", () => {
@@ -128,6 +136,37 @@ describe("syncNow", () => {
     await syncNow(null);
 
     expect(mockedApi.recordPunch).not.toHaveBeenCalled();
+  });
+
+  it("prunes settled punches and deletes their selfie files", async () => {
+    mockedPending.mockResolvedValue([]);
+    mockedLoad.mockResolvedValue([
+      { ...withSelfie, done: true, selfie_done: true },
+      { ...withSelfie, client_id: "c2", tech_id: "t9", done: true, selfie_uri: null },
+      { ...withSelfie, client_id: "c3" }, // still pending — must stay
+    ]);
+
+    await syncNow("t1");
+
+    // The settled selfie's local file is deleted; settled entries (any tech's)
+    // are removed; the pending one is untouched.
+    expect(mockedFs.deleteAsync).toHaveBeenCalledWith("file://doc/selfie.jpg", {
+      idempotent: true,
+    });
+    expect(mockedRemove).toHaveBeenCalledWith(["c1", "c2"]);
+  });
+
+  it("keeps a settled entry whose selfie file could not be deleted", async () => {
+    mockedLoad.mockResolvedValue([
+      { ...withSelfie, done: true },
+      { ...withSelfie, client_id: "c2", done: true, selfie_uri: null },
+    ]);
+    (mockedFs.deleteAsync as unknown as jest.Mock).mockRejectedValueOnce(new Error("io"));
+
+    await pruneSettled();
+
+    // c1's file delete failed → its entry survives for the next sweep.
+    expect(mockedRemove).toHaveBeenCalledWith(["c2"]);
   });
 
   it("settles a punch whose selfie the server already considers closed", async () => {

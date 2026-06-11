@@ -18,6 +18,8 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { createMutex } from "./mutex";
+
 export type OutboxKind =
   | "completion"
   | "payment"
@@ -89,7 +91,11 @@ function notify(): void {
 // ── Load (with the v1 → v2 migration) ────────────────────────────────────────
 type V1Item = Omit<OutboxItem, "techId" | "status">;
 
-export async function loadOutbox(): Promise<OutboxItem[]> {
+// Serialises every load-modify-save below. Two of them interleaving across
+// their awaits is a lost update — and a lost outbox item can be queued cash.
+const locked = createMutex();
+
+async function loadUnlocked(): Promise<OutboxItem[]> {
   const raw = await AsyncStorage.getItem(KEY_V2);
   let items: OutboxItem[] = [];
   if (raw) {
@@ -122,20 +128,34 @@ export async function loadOutbox(): Promise<OutboxItem[]> {
   return items;
 }
 
+/** Read the outbox. Locked too: the first load can WRITE (the v1→v2
+ * migration), and a snapshot mid-mutation could double-send an item. */
+export async function loadOutbox(): Promise<OutboxItem[]> {
+  return locked(loadUnlocked);
+}
+
 async function save(items: OutboxItem[]): Promise<void> {
   await AsyncStorage.setItem(KEY_V2, JSON.stringify(items));
   notify();
+}
+
+/** Atomically load-modify-save under the mutex. */
+async function mutate(fn: (items: OutboxItem[]) => OutboxItem[]): Promise<void> {
+  await locked(async () => {
+    await save(fn(await loadUnlocked()));
+  });
 }
 
 /** Add (or replace, by id) a queued write. Replacing gives last-write-wins for
  * stable-id kinds (completion/negotiate/location/ready); payments and notes use
  * unique ids so each appends. */
 export async function enqueue(item: OutboxItem): Promise<void> {
-  const items = await loadOutbox();
-  const idx = items.findIndex((i) => i.id === item.id);
-  if (idx === -1) items.push(item);
-  else items[idx] = item;
-  await save(items);
+  await mutate((items) => {
+    const idx = items.findIndex((i) => i.id === item.id);
+    if (idx === -1) items.push(item);
+    else items[idx] = item;
+    return items;
+  });
 }
 
 /** Build a new item with the session's tech stamped on. */
@@ -152,12 +172,12 @@ export function makeItem(
 }
 
 export async function removeItem(id: string): Promise<void> {
-  await save((await loadOutbox()).filter((i) => i.id !== id));
+  await mutate((items) => items.filter((i) => i.id !== id));
 }
 
 export async function bumpAttempts(id: string): Promise<void> {
-  await save(
-    (await loadOutbox()).map((i) => (i.id === id ? { ...i, attempts: i.attempts + 1 } : i)),
+  await mutate((items) =>
+    items.map((i) => (i.id === id ? { ...i, attempts: i.attempts + 1 } : i)),
   );
 }
 
@@ -165,8 +185,8 @@ export async function bumpAttempts(id: string): Promise<void> {
  * The technician decides what happens next (Retry / Discard) — the app never
  * deletes a record on its own. */
 export async function markFailed(id: string, reason: string): Promise<void> {
-  await save(
-    (await loadOutbox()).map((i) =>
+  await mutate((items) =>
+    items.map((i) =>
       i.id === id
         ? { ...i, status: "failed" as const, failedReason: reason, failedAt: new Date().toISOString() }
         : i,
@@ -176,8 +196,8 @@ export async function markFailed(id: string, reason: string): Promise<void> {
 
 /** Put a failed item back in the queue (fresh attempt count). */
 export async function retryItem(id: string): Promise<void> {
-  await save(
-    (await loadOutbox()).map((i) =>
+  await mutate((items) =>
+    items.map((i) =>
       i.id === id
         ? { ...i, status: "queued" as const, attempts: 0, failedReason: undefined, failedAt: undefined }
         : i,
@@ -192,9 +212,7 @@ export async function discardItem(id: string): Promise<void> {
 
 /** Adopt legacy (v1, untagged) items into the given session. */
 export async function adoptLegacyItems(techId: string): Promise<void> {
-  const items = await loadOutbox();
-  if (!items.some((i) => i.techId === null)) return;
-  await save(items.map((i) => (i.techId === null ? { ...i, techId } : i)));
+  await mutate((items) => items.map((i) => (i.techId === null ? { ...i, techId } : i)));
 }
 
 export async function outboxCounts(): Promise<OutboxCounts> {

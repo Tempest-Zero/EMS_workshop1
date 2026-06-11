@@ -19,7 +19,7 @@
 import * as FileSystem from "expo-file-system";
 
 import { attendanceApi } from "../../lib/attendanceApi";
-import { pendingPunches, updatePunch, type QueuedPunch } from "./queue";
+import { loadQueue, pendingPunches, removePunches, updatePunch, type QueuedPunch } from "./queue";
 
 let syncing = false;
 
@@ -35,9 +35,36 @@ export async function syncNow(techId: string | null): Promise<void> {
         // Leave it queued; the next trigger retries.
       }
     }
+    await pruneSettled();
   } finally {
     syncing = false;
   }
+}
+
+/**
+ * Drop fully-settled (done) punches and delete their local selfie files.
+ * Without this the queue and the `documentDirectory/attendance` folder grow
+ * forever (~2 punches + selfies a day, per phone, for the life of the
+ * install). Done = the server has the punch AND the selfie has settled, so
+ * nothing here is evidence — the UI renders settled punches from the server
+ * log, never from these entries. Any tech's settled items qualify (cleanup
+ * is owner-agnostic; only UNSYNCED punches wait for their owner's session).
+ * Exported for tests.
+ */
+export async function pruneSettled(): Promise<void> {
+  const settled = (await loadQueue()).filter((i) => i.done);
+  const removable: string[] = [];
+  for (const item of settled) {
+    try {
+      if (item.selfie_uri) {
+        await FileSystem.deleteAsync(item.selfie_uri, { idempotent: true });
+      }
+      removable.push(item.client_id);
+    } catch {
+      // File delete failed — keep the entry so the next sweep retries it.
+    }
+  }
+  await removePunches(removable);
 }
 
 async function syncOne(item: QueuedPunch): Promise<void> {
