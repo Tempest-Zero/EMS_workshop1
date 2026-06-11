@@ -173,7 +173,9 @@ class AttendanceService:
         existing = await self._repo.get_event_by_client_id(body.client_id)
         if existing is not None:
             return self._punch_response(
-                existing, selfie=self._resume_selfie(existing), deduped=True
+                existing,
+                selfie=self._resume_selfie(existing, content_type=body.selfie_content_type),
+                deduped=True,
             )
 
         server_now = datetime.now(UTC)
@@ -241,11 +243,17 @@ class AttendanceService:
             raced = await self._repo.get_event_by_client_id(body.client_id)
             if raced is None:
                 raise
-            return self._punch_response(raced, selfie=self._resume_selfie(raced), deduped=True)
+            return self._punch_response(
+                raced,
+                selfie=self._resume_selfie(raced, content_type=body.selfie_content_type),
+                deduped=True,
+            )
 
         signed: SignedSelfie | None = None
         if selfie_path is not None:
-            minted = self._storage.mint_upload_url(selfie_path)
+            minted = self._storage.mint_upload_url(
+                selfie_path, content_type=body.selfie_content_type or "image/jpeg"
+            )
             signed = SignedSelfie(
                 signed_url=minted.signed_url,
                 storage_path=selfie_path,
@@ -583,10 +591,17 @@ class AttendanceService:
             raise AttendanceNotFoundError(f"event {event_id} not found for tech {tech_id}")
         return event
 
-    def _resume_selfie(self, event: AttendanceEvent) -> SignedSelfie | None:
+    def _resume_selfie(
+        self, event: AttendanceEvent, *, content_type: str | None = None
+    ) -> SignedSelfie | None:
+        """Re-mint the upload URL for a still-pending selfie on a deduped
+        retry. ``content_type`` comes from the re-sent punch body (the event
+        row doesn't store it); the default matches the app's PUT fallback."""
         if event.selfie_path is None or event.selfie_status != "pending":
             return None
-        minted = self._storage.mint_upload_url(event.selfie_path)
+        minted = self._storage.mint_upload_url(
+            event.selfie_path, content_type=content_type or "image/jpeg"
+        )
         return SignedSelfie(
             signed_url=minted.signed_url,
             storage_path=event.selfie_path,

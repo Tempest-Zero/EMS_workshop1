@@ -56,10 +56,14 @@ class MediaService:
     async def request_upload(
         self, *, job_id: str, body: MediaUploadRequest, created_by: str | None = None
     ) -> MediaUploadResponse:
-        """Reserve a media row and mint a signed R2 upload URL."""
+        """Reserve a media row and mint a signed R2 upload URL. The URL is
+        bound to the declared content type (defaulted from the media type when
+        the client sent none), so the PUT can only carry bytes of that kind —
+        the client's upload header must match exactly."""
         media_uuid = uuid4()
         ext = PurePosixPath(body.filename).suffix.lstrip(".").lower() or _default_ext(body.type)
         storage_path = f"{job_id}/{body.phase}/{media_uuid}.{ext}"
+        effective_type = body.content_type or _default_content_type(body.type)
 
         media = await self._repo.create(
             job_id=job_id,
@@ -67,11 +71,11 @@ class MediaService:
             type=body.type,
             filename=body.filename,
             storage_path=storage_path,
-            content_type=body.content_type,
+            content_type=effective_type,
             created_by=created_by,
         )
 
-        signed = self._storage.mint_upload_url(storage_path)
+        signed = self._storage.mint_upload_url(storage_path, content_type=effective_type)
         return MediaUploadResponse(
             media_id=media.id,
             signed_url=signed.signed_url,
@@ -206,3 +210,13 @@ class MediaService:
 
 def _default_ext(media_type: str) -> str:
     return "mp4" if media_type == "video" else "jpg"
+
+
+def _default_content_type(media_type: str) -> str:
+    """Fallback MIME when the client declared none — mirrors what the mobile
+    app sends for each kind, so its PUT header still matches the signature."""
+    if media_type == "video":
+        return "video/mp4"
+    if media_type == "audio":
+        return "audio/mp4"
+    return "image/jpeg"

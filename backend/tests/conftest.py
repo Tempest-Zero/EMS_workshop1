@@ -65,7 +65,7 @@ def _fresh_login_ip_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
 class _FakeStorage:
     """In-memory StorageClient so integration tests exercise the DB, not R2."""
 
-    def mint_upload_url(self, path: str) -> SignedUpload:
+    def mint_upload_url(self, path: str, content_type: str | None = None) -> SignedUpload:
         return SignedUpload(signed_url=f"https://fake/upload/{path}", token="", expires_in=600)
 
     def mint_playback_url(self, path: str, expires_in: int = 3600) -> str:

@@ -66,7 +66,19 @@ async def request_upload(
     service: ServiceDep,
     session: SessionDep,
     principal: CurrentPrincipal,
+    jobs: JobsServiceDep,
 ) -> MediaUploadResponse:
+    # Evidence must hang off a REAL job: without this check any authenticated
+    # caller could reserve unlimited rows under arbitrary keys (the storage
+    # path is prefixed with this id) and mint signed PUT URLs into the bucket —
+    # and the closing-video gate counts rows by exactly this key.
+    job_status = await jobs.status_by_token(token=job_id, shop_id=DEFAULT_SHOP_ID)
+    if job_status is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"job {job_id} not found")
+    # Evidence freezes at close (mirrors the delete policy below): adding
+    # "evidence" to an already-closed job is a manager-only correction.
+    if job_status == "closed" and principal.role != "manager":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "the job is closed — its evidence is frozen")
     response = await service.request_upload(job_id=job_id, body=body, created_by=principal.tech_id)
     await session.commit()
     return response

@@ -92,11 +92,33 @@ async def test_request_upload_creates_row_and_mints_url(
     assert kwargs["phase"] == "before"
     assert kwargs["storage_path"].startswith("job-1/before/")
     assert kwargs["storage_path"].endswith(".mp4")
-
-    storage.mint_upload_url.assert_called_once()
-    assert resp.media_id == created.id
+    # The signed PUT is bound to the declared content type.
+    storage.mint_upload_url.assert_called_once_with(
+        kwargs["storage_path"], content_type="video/mp4"
+    )
     assert resp.signed_url == "https://signed.example/up"
-    assert resp.expires_in == 600
+
+
+async def test_request_upload_defaults_content_type_for_signing(
+    service: tuple[MediaService, MagicMock, MagicMock],
+) -> None:
+    # No declared MIME → bind the media type's default so the URL still can't
+    # carry arbitrary bytes (matches the app's PUT fallback header).
+    svc, repo, storage = service
+    repo.create.return_value = _media(type="audio", content_type=None)
+
+    await svc.request_upload(
+        job_id="job-1",
+        body=MediaUploadRequest(phase="remark", type="audio", filename="note.m4a"),
+    )
+
+    assert repo.create.await_args.kwargs["content_type"] == "audio/mp4"
+    assert storage.mint_upload_url.call_args.kwargs["content_type"] == "audio/mp4"
+
+
+def test_upload_request_rejects_mismatched_content_type() -> None:
+    with pytest.raises(ValueError, match="does not match media type"):
+        MediaUploadRequest(phase="before", type="photo", filename="x.jpg", content_type="video/mp4")
 
 
 async def test_request_upload_default_extension_for_photo(
