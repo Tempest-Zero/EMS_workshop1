@@ -130,6 +130,19 @@ async def app_client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
             token_version=0,
         )
     )
+    # A plain technician row for authz-boundary tests (tech vs manager).
+    await session.merge(
+        Technician(
+            id="t2",
+            name="Test Tech",
+            role="tech",
+            pin_hash=_TEST_PIN_HASH,
+            active=True,
+            failed_attempts=0,
+            locked_until=None,
+            token_version=0,
+        )
+    )
     await session.commit()
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_storage] = _FakeStorage
@@ -143,4 +156,11 @@ async def app_client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
 def auth_headers() -> dict[str, str]:
     """Bearer header for the auth-guarded manager endpoints (real signed token)."""
     token = create_access_token(tech_id="t1", role="manager", name="Test Manager")
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def tech_headers() -> dict[str, str]:
+    """Bearer header for a plain technician (``t2``) — authz boundary tests."""
+    token = create_access_token(tech_id="t2", role="tech", name="Test Tech")
     return {"Authorization": f"Bearer {token}"}

@@ -46,10 +46,33 @@ def test_payroll_csv_shape() -> None:
         ],
     )
     lines = payroll_csv(export).strip().split("\n")
-    assert lines[0] == "tech_id,date,status,first_in,last_out,worked_minutes"
+    assert lines[0] == (
+        "tech_id,date,status,first_in,last_out,worked_minutes,"
+        "flag_mock_gps,flag_outside_geofence,flag_clock_drift,"
+        "flag_no_location,flag_no_selfie"
+    )
     assert lines[1].startswith("t1,2026-06-01,present,")
-    assert lines[1].endswith(",540")
-    assert lines[2] == "t2,2026-06-01,absent,,,"
+    assert lines[1].endswith(",540,0,0,0,0,0")
+    assert lines[2] == "t2,2026-06-01,absent,,,,0,0,0,0,0"
+
+
+def test_payroll_csv_carries_evidence_flags() -> None:
+    export = PayrollExport(
+        shop_id="default",
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 7),
+        rows=[
+            PayrollDay(
+                tech_id="t1",
+                date=date(2026, 6, 1),
+                status="present",
+                flagged_mock=True,
+                flagged_no_selfie=True,
+            ),
+        ],
+    )
+    lines = payroll_csv(export).strip().split("\n")
+    assert lines[1] == "t1,2026-06-01,present,,,,1,0,0,0,1"
 
 
 def _record() -> PayrollExportRecord:

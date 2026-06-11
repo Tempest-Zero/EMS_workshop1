@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     attendance_selfie_max_bytes: int = 5 * 1024 * 1024
     # Device-clock drift beyond this (seconds) is flagged for manager review.
     attendance_drift_flag_seconds: int = 120
+    # A GPS fix whose reported accuracy is worse than this (metres) — or that
+    # reports no accuracy at all — is too coarse to judge the geofence:
+    # inside_geofence stays NULL (uncertain) and the punch gets the
+    # "no reliable location" flag instead of a false inside/outside verdict.
+    attendance_location_accuracy_ceiling_m: float = 200.0
+    # A mobile punch whose selfie hasn't reached storage after this many hours
+    # surfaces on the manager's selfie-gaps reconciliation list (the punch
+    # itself stays valid — evidence is flagged, never blocking).
+    attendance_selfie_grace_hours: int = 24
 
     # ── Jobs / billing ───────────────────────────────────────────────────
     # Labour rate used to auto-generate the bill from time on-site. Integer

@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Clock, Download, FileSpreadsheet, MapPinOff, ShieldAlert, Wifi } from "lucide-react";
+import {
+  CameraOff,
+  Clock,
+  Download,
+  FileSpreadsheet,
+  LocateOff,
+  MapPinOff,
+  ShieldAlert,
+  Wifi,
+} from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import { fetchPayroll, fetchPayrollExports } from "@features/attendance/data/attendanceApi";
 import { Button, Card, EmptyState, SectionHeader } from "@shared/ui/primitives";
@@ -36,11 +45,28 @@ function Flags({ row }) {
         <MapPinOff className="h-4 w-4 text-amber-500" aria-label="Outside geofence" />
       )}
       {row.flagged_drift && <Clock className="h-4 w-4 text-amber-500" aria-label="Clock drift" />}
+      {row.flagged_no_location && (
+        <LocateOff className="h-4 w-4 text-red-500" aria-label="No usable location" />
+      )}
+      {row.flagged_no_selfie && (
+        <CameraOff className="h-4 w-4 text-amber-500" aria-label="No selfie" />
+      )}
       {row.wifi_match === true && (
         <Wifi className="h-4 w-4 text-emerald-500" aria-label="On workshop WiFi" />
       )}
     </span>
   );
+}
+
+/** Human labels for a day-cell's evidence flags (tooltip + the red corner dot). */
+function cellFlags(c) {
+  const out = [];
+  if (c.flagged_mock) out.push("mock GPS");
+  if (c.flagged_outside) out.push("outside geofence");
+  if (c.flagged_drift) out.push("clock drift");
+  if (c.flagged_no_location) out.push("no location");
+  if (c.flagged_no_selfie) out.push("no selfie");
+  return out;
 }
 
 export default function Attendance() {
@@ -83,7 +109,21 @@ export default function Attendance() {
       const t = (iso) =>
         iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
       const hrs = (m) => (m == null ? "" : (m / 60).toFixed(1));
-      const header = ["Technician", "Tech ID", "Date", "Status", "Clock In", "Clock Out", "Hours"];
+      const flag = (v) => (v ? "1" : "0");
+      const header = [
+        "Technician",
+        "Tech ID",
+        "Date",
+        "Status",
+        "Clock In",
+        "Clock Out",
+        "Hours",
+        "Mock GPS",
+        "Outside Geofence",
+        "Clock Drift",
+        "No Location",
+        "No Selfie",
+      ];
       const body = (data.rows || []).map((r) => [
         techById[r.tech_id]?.name ?? r.tech_id,
         r.tech_id,
@@ -92,6 +132,11 @@ export default function Attendance() {
         t(r.first_in),
         t(r.last_out),
         hrs(r.worked_minutes),
+        flag(r.flagged_mock),
+        flag(r.flagged_outside),
+        flag(r.flagged_drift),
+        flag(r.flagged_no_location),
+        flag(r.flagged_no_selfie),
       ]);
       const csv = [header, ...body]
         .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -257,13 +302,22 @@ export default function Attendance() {
                           </div>
                         </div>
                       </div>
-                      {row.cells.map((c) => (
-                        <div
-                          key={c.day}
-                          title={`${c.day} · ${c.status}${c.late ? " · late" : ""}`}
-                          className={`h-5 w-5 shrink-0 rounded ${ATT_CELL[c.status]}`}
-                        />
-                      ))}
+                      {row.cells.map((c) => {
+                        const flags = cellFlags(c);
+                        return (
+                          <div
+                            key={c.day}
+                            title={`${c.day} · ${c.status}${c.late ? " · late" : ""}${
+                              flags.length ? ` · ⚑ ${flags.join(", ")}` : ""
+                            }`}
+                            className={`relative h-5 w-5 shrink-0 rounded ${ATT_CELL[c.status]}`}
+                          >
+                            {flags.length > 0 && (
+                              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-600 ring-1 ring-white" />
+                            )}
+                          </div>
+                        );
+                      })}
                     </Link>
                   );
                 })}
@@ -286,6 +340,10 @@ export default function Attendance() {
               {label}
             </span>
           ))}
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+            <span className="h-2 w-2 rounded-full bg-red-600" />
+            Evidence flag (hover the day)
+          </span>
         </div>
       </Card>
     </div>

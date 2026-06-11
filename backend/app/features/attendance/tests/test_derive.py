@@ -47,6 +47,24 @@ def test_geofence_inside_and_outside() -> None:
     assert outside is False and dist_out > 150
 
 
+def test_geofence_accuracy_buffer_rescues_a_fuzzy_inside_fix() -> None:
+    # ~111 m from center, 80 m radius: a raw fix reads "outside", but with a
+    # 50 m confidence circle it overlaps the fence → inside (the tech standing
+    # in the workshop with a fuzzy indoor fix must not be flagged off-site).
+    center = {"center_lat": 24.8600, "center_lng": 67.0000, "radius_m": 80.0}
+    raw, dist = geofence_flags(24.8610, 67.0000, **center)
+    assert raw is False and 100 < dist < 120
+    buffered, _ = geofence_flags(24.8610, 67.0000, **center, accuracy_m=50.0)
+    assert buffered is True
+
+
+def test_geofence_accuracy_buffer_does_not_rescue_a_clearly_outside_fix() -> None:
+    # ~1.4 km out with a 50 m confidence circle stays outside.
+    center = {"center_lat": 24.8600, "center_lng": 67.0000, "radius_m": 80.0}
+    inside, _ = geofence_flags(24.8700, 67.0100, **center, accuracy_m=50.0)
+    assert inside is False
+
+
 # ── classify_day ─────────────────────────────────────────────────────────────
 def test_non_working_day_is_holiday() -> None:
     roll = classify_day(day=SUNDAY, punches=[], shift=DEFAULT_SHIFT)

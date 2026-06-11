@@ -47,6 +47,13 @@ export function fetchPayroll(techIds, start, end) {
   return apiGet(`/api/attendance/payroll?${params.toString()}${ids ? `&${ids}` : ""}`);
 }
 
+/** Punches past the grace window whose selfie never uploaded (manager-only).
+ * The flag-side of "selfie is required evidence": capture never blocks, but a
+ * gap must surface here instead of passing silently. */
+export function fetchSelfieGaps() {
+  return apiGet(`/api/attendance/selfie-gaps?shop_id=${encodeURIComponent(SHOP_ID)}`);
+}
+
 export function fetchAdjustments(techId) {
   const params = new URLSearchParams({ shop_id: SHOP_ID, tech_id: techId });
   return apiGet(`/api/attendance/adjustments?${params.toString()}`);

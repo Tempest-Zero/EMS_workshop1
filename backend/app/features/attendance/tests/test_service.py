@@ -95,6 +95,7 @@ async def test_record_punch_computes_geofence_and_mints_selfie(
             kind="clock_in",
             lat=24.8601,
             lng=67.0001,
+            accuracy_m=12.0,  # a usable fix — without one the verdict is "uncertain"
             is_mock_location=False,
             selfie_filename="selfie.jpg",
         )
@@ -108,6 +109,70 @@ async def test_record_punch_computes_geofence_and_mints_selfie(
     assert resp.inside_geofence is True
     assert resp.deduped is False
     assert resp.selfie is not None and resp.selfie.signed_url == "https://s/up"
+
+
+async def test_record_punch_accuracy_buffer_keeps_fuzzy_inside_fix(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # ~111 m out on an 80 m fence, but a 50 m confidence circle overlaps it.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=80
+    )
+    resp = await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            lat=24.8610,
+            lng=67.0000,
+            accuracy_m=50.0,
+        )
+    )
+    assert resp.inside_geofence is True
+
+
+async def test_record_punch_coarse_fix_is_uncertain_not_outside(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Accuracy over the ceiling: too coarse to judge — inside_geofence stays
+    # None (the no-location flag surfaces it), never a false outside/inside.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=80
+    )
+    resp = await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            lat=24.8610,
+            lng=67.0000,
+            accuracy_m=500.0,
+        )
+    )
+    assert resp.inside_geofence is None
+    assert resp.distance_m is not None  # distance still recorded for forensics
+
+
+async def test_record_punch_missing_accuracy_is_uncertain(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=80
+    )
+    resp = await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            lat=24.8601,
+            lng=67.0001,
+            accuracy_m=None,
+        )
+    )
+    assert resp.inside_geofence is None
 
 
 async def test_record_punch_flags_mock_and_drift(
@@ -234,6 +299,106 @@ async def test_board_classifies_present_day(
     assert row.tech_id == "t1"
     assert row.status == "present"
     assert row.late is False
+
+
+async def test_board_flags_missing_location_and_selfie(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The _event defaults are exactly the evasion case: a mobile punch with no
+    # GPS fix and a selfie that never uploaded. Both must flag — silence is
+    # what made "deny location permission" a free pass.
+    service, repo, _ = svc
+    repo.list_events.return_value = [_event(kind="clock_in", server_time=NINE_AM_PKT)]
+
+    board = await service.board(shop_id="default", day=date(2026, 6, 3), tech_ids=["t1"])
+
+    row = board.rows[0]
+    assert row.flagged_no_location is True
+    assert row.flagged_no_selfie is True
+
+
+async def test_board_does_not_flag_manual_adjustments(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # A manager correction never carries GPS/selfie — it must not trip the
+    # evidence flags.
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT, source="manual")
+    ]
+
+    board = await service.board(shop_id="default", day=date(2026, 6, 3), tech_ids=["t1"])
+
+    row = board.rows[0]
+    assert row.flagged_no_location is False
+    assert row.flagged_no_selfie is False
+
+
+async def test_board_clean_punch_has_no_evidence_flags(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(
+            kind="clock_in",
+            server_time=NINE_AM_PKT,
+            lat=24.8601,
+            lng=67.0001,
+            accuracy_m=12.0,
+            inside_geofence=True,
+            selfie_status="uploaded",
+            selfie_path="attendance/default/t1/x.jpg",
+        )
+    ]
+
+    board = await service.board(shop_id="default", day=date(2026, 6, 3), tech_ids=["t1"])
+
+    row = board.rows[0]
+    assert row.flagged_no_location is False
+    assert row.flagged_no_selfie is False
+
+
+async def test_grid_and_payroll_carry_evidence_flags(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The flags must reach the artifacts pay is decided from, not just the
+    # today-board.
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT, is_mock_location=True)
+    ]
+    day = date(2026, 6, 3)
+
+    grid = await service.grid(shop_id="default", month="2026-06", tech_ids=["t1"])
+    cell = next(c for c in grid.rows[0].cells if c.day == day)
+    assert cell.flagged_mock is True
+    assert cell.flagged_no_location is True
+    assert cell.flagged_no_selfie is True
+
+    payroll = await service.payroll(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+    row = next(r for r in payroll.rows if r.date == day)
+    assert row.flagged_mock is True
+    assert row.flagged_no_location is True
+    assert row.flagged_no_selfie is True
+
+
+async def test_selfie_gaps_maps_events_and_applies_grace_window(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    promised = _event(selfie_path="attendance/default/t1/x.jpg", selfie_status="pending")
+    never_attached = _event(selfie_path=None, selfie_status="pending")
+    repo.list_punches_missing_selfie = AsyncMock(return_value=[promised, never_attached])
+
+    gaps = await service.selfie_gaps(shop_id="default")
+
+    assert [g.selfie_attached for g in gaps] == [True, False]
+    assert gaps[0].event_id == promised.id
+    kwargs = repo.list_punches_missing_selfie.call_args.kwargs
+    # The grace window: only punches older than ~24h qualify, looking back 14d.
+    age = datetime.now(UTC) - kwargs["before"]
+    assert timedelta(hours=23) < age < timedelta(hours=25)
+    assert kwargs["since"] < kwargs["before"]
 
 
 async def test_record_punch_matches_workshop_wifi(

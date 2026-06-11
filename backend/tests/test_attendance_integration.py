@@ -114,6 +114,23 @@ async def test_board_requires_auth(app_client: AsyncClient) -> None:
     assert resp.status_code == 401, resp.text
 
 
+async def test_tech_cannot_read_anothers_punches(
+    app_client: AsyncClient, tech_headers: Headers
+) -> None:
+    # A technician token (t2) reading a colleague's punch log → 403; the log
+    # carries GPS + selfie URLs. Reading their own stays fine.
+    start = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    end = datetime.now(UTC).isoformat()
+    other = await app_client.get(
+        f"/api/attendance/punches?tech_id=t1&start={start}&end={end}", headers=tech_headers
+    )
+    assert other.status_code == 403, other.text
+    own = await app_client.get(
+        f"/api/attendance/punches?tech_id=t2&start={start}&end={end}", headers=tech_headers
+    )
+    assert own.status_code == 200, own.text
+
+
 async def test_punch_is_idempotent_on_client_id(
     app_client: AsyncClient, auth_headers: Headers
 ) -> None:
@@ -152,7 +169,9 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
     )
     assert g.status_code == 200, g.text
 
-    # ~1.4 km away → outside the fence; BSSID matches case-insensitively.
+    # ~1.4 km away with a usable fix → outside the fence (a fix with no
+    # reported accuracy would be "uncertain", not outside); BSSID matches
+    # case-insensitively.
     r = await app_client.post(
         "/api/attendance/punches",
         json={
@@ -161,6 +180,7 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
             "kind": "clock_in",
             "lat": 24.8700,
             "lng": 67.0100,
+            "accuracy_m": 10.0,
             "is_mock_location": False,
             "wifi_bssid": "aa:bb:cc:dd:ee:ff",
         },

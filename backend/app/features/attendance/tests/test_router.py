@@ -15,7 +15,13 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.db import get_session
 from app.features.attendance.router import get_service
-from app.features.attendance.schemas import Board, PayrollDay, PayrollExport, PunchResponse
+from app.features.attendance.schemas import (
+    Board,
+    PayrollDay,
+    PayrollExport,
+    PunchResponse,
+    TodayStatus,
+)
 from app.features.attendance.service import (
     AttendanceNotFoundError,
     AttendanceService,
@@ -122,6 +128,57 @@ async def test_tech_can_punch_as_self(
     fake_session.commit.assert_awaited()
 
 
+async def test_tech_cannot_read_another_techs_punches(client: AsyncClient) -> None:
+    # The punch log carries GPS + selfie URLs — one tech must not be able to
+    # read a colleague's by passing their tech_id.
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    resp = await client.get(
+        "/api/attendance/punches?tech_id=t9&start=2026-06-01T00:00:00Z&end=2026-06-08T00:00:00Z"
+    )
+    assert resp.status_code == 403
+
+
+async def test_tech_can_read_own_punches(client: AsyncClient, fake_service: AsyncMock) -> None:
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    fake_service.list_punches.return_value = []
+    resp = await client.get(
+        "/api/attendance/punches?tech_id=t5&start=2026-06-01T00:00:00Z&end=2026-06-08T00:00:00Z"
+    )
+    assert resp.status_code == 200
+
+
+async def test_tech_cannot_read_another_techs_today(client: AsyncClient) -> None:
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    resp = await client.get("/api/attendance/today?tech_id=t9")
+    assert resp.status_code == 403
+
+
+async def test_manager_can_read_any_techs_today(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    # The fixture principal is a manager; reading another tech's state is allowed.
+    fake_service.today_status.return_value = TodayStatus(tech_id="t9", clocked_in=False)
+    resp = await client.get("/api/attendance/today?tech_id=t9")
+    assert resp.status_code == 200
+
+
+async def test_tech_cannot_complete_another_techs_selfie(client: AsyncClient) -> None:
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    resp = await client.post(
+        f"/api/attendance/punches/{uuid4()}/selfie/complete?tech_id=t9",
+        json={"size_bytes": 1000},
+    )
+    assert resp.status_code == 403
+
+
 async def test_complete_selfie_unknown_returns_404(
     client: AsyncClient, fake_service: AsyncMock
 ) -> None:
@@ -194,9 +251,19 @@ async def test_manager_endpoint_rejects_technician(client: AsyncClient) -> None:
         "/api/attendance/payroll?start=2026-06-02&end=2026-06-09",
         "/api/attendance/payroll/exports",
         "/api/attendance/grid?month=2026-06",
+        "/api/attendance/selfie-gaps",
     ):
         resp = await client.get(path)
         assert resp.status_code == 403, path
+
+
+async def test_selfie_gaps_returns_200_for_manager(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.selfie_gaps.return_value = []
+    resp = await client.get("/api/attendance/selfie-gaps")
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 async def test_punch_requires_auth(client: AsyncClient) -> None:
