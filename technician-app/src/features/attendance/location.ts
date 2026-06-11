@@ -25,8 +25,11 @@ export async function getLocation(): Promise<LocationReading> {
   try {
     const { granted } = await Location.requestForegroundPermissionsAsync();
     if (!granted) return EMPTY;
+    // High accuracy: the workshop fence is ~80 m, and the backend treats a
+    // fix coarser than its accuracy ceiling as "unknown" — a Balanced fix
+    // (often 20–65 m, worse indoors) wastes the punch's evidence value.
     const pos = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
+      accuracy: Location.Accuracy.High,
     });
     return {
       lat: pos.coords.latitude,

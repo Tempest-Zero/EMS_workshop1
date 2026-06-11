@@ -29,6 +29,7 @@ import {
 import { getLocation } from "../attendance/location";
 import { JobMediaCapture } from "../media/JobMediaCapture";
 import { uploadMedia } from "../media/uploadMedia";
+import { ApiError } from "../../lib/api";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
 import {
@@ -43,6 +44,11 @@ import { useJobOutbox } from "../../lib/useJobOutbox";
 import type { JobsStackParamList } from "./types";
 
 const OFFLINE_MSG = "Saved offline — will sync when reconnected.";
+
+/** The server's human-readable rejection (FastAPI `detail`), if present. */
+function apiDetail(e: ApiError): string | null {
+  return /"detail"\s*:\s*"([^"]+)"/.exec(e.message)?.[1] ?? null;
+}
 
 /** Human label for a queued/failed outbox entry in the overlay lists. */
 function itemLabel(item: OutboxItem): string {
@@ -72,6 +78,7 @@ type Busy =
   | "note"
   | "ready"
   | "close"
+  | "abandon"
   | "negotiate"
   | "payment"
   | "void"
@@ -101,6 +108,10 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const [payMethod, setPayMethod] = useState<PayMethod>("cash");
   const [voidingId, setVoidingId] = useState<string | null>(null);
   const [voidReason, setVoidReason] = useState("");
+
+  // Abandon (the no-completion exit the close guard assumes exists).
+  const [abandoning, setAbandoning] = useState(false);
+  const [abandonReason, setAbandonReason] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -183,6 +194,30 @@ export function JobDetailScreen({ route, navigation }: Props) {
   // clip reserves a media row, so even a slow upload satisfies the gate.
   const closeWithVideo = useCallback(async () => {
     if (busy) return;
+    // Mirror the server's Phase-4 close guard BEFORE recording: a normal close
+    // needs the completion form. Checking first means the tech is never sent
+    // through a video capture whose close is doomed to 409 — and no orphan
+    // closing clip gets uploaded. A completion still syncing counts (the
+    // server sees it before the close lands, or the 409 below says so).
+    if (!job?.completion && !pendingCompletion) {
+      Alert.alert(
+        "Completion form required",
+        "Fill the work-completion form before closing. If there is nothing to bill, abandon the job instead.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Abandon job…",
+            style: "destructive",
+            onPress: () => setAbandoning(true),
+          },
+          {
+            text: "Complete form",
+            onPress: () => navigation.navigate("CompleteJob", { id, token }),
+          },
+        ],
+      );
+      return;
+    }
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
       setError("Camera permission is needed to record the closing video.");
@@ -208,12 +243,40 @@ export function JobDetailScreen({ route, navigation }: Props) {
         contentType: asset.mimeType ?? "video/mp4",
       });
       setJob(await jobsApi.transition(id, "close"));
-    } catch {
-      setError("Couldn't close — the closing video didn't upload. Try again.");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // The video DID upload; the close itself was refused (e.g. the
+        // completion hasn't synced). Say so — "video didn't upload" here
+        // would send the tech into a re-record loop of orphan clips.
+        setError(apiDetail(e) ?? "The job can't be closed yet — try again after syncing.");
+      } else {
+        setError("Couldn't close — the closing video didn't upload. Try again.");
+      }
     } finally {
       setBusy(null);
     }
-  }, [id, token, busy]);
+  }, [id, token, busy, job?.completion, pendingCompletion, navigation]);
+
+  const abandonJob = useCallback(async () => {
+    const reason = abandonReason.trim();
+    if (!reason || busy) return;
+    setBusy("abandon");
+    setError(null);
+    setInfo(null);
+    try {
+      setJob(await jobsApi.transition(id, "abandon", reason));
+      setAbandoning(false);
+      setAbandonReason("");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setError(apiDetail(e) ?? "The job can no longer be abandoned.");
+      } else {
+        setError("Couldn't abandon the job — check your connection and try again.");
+      }
+    } finally {
+      setBusy(null);
+    }
+  }, [id, abandonReason, busy]);
 
   const negotiateBill = useCallback(async () => {
     const paisa = rupeesToPaisa(negotiate);
@@ -471,6 +534,49 @@ export function JobDetailScreen({ route, navigation }: Props) {
             </Pressable>
           ) : null}
         </View>
+
+        {open ? (
+          abandoning ? (
+            <View style={styles.voidBox}>
+              <TextInput
+                style={[styles.input, styles.inlineInput, { marginBottom: 8 }]}
+                value={abandonReason}
+                onChangeText={setAbandonReason}
+                placeholder="Why is this job being abandoned?"
+                editable={busy !== "abandon"}
+              />
+              <View style={styles.statusRow}>
+                <Pressable
+                  style={[styles.btn, styles.btnOutline, styles.grow]}
+                  onPress={() => {
+                    setAbandoning(false);
+                    setAbandonReason("");
+                  }}
+                >
+                  <Text style={styles.btnOutlineText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.btn,
+                    styles.btnDanger,
+                    styles.grow,
+                    (busy === "abandon" || !abandonReason.trim()) && styles.btnBusy,
+                  ]}
+                  onPress={() => void abandonJob()}
+                  disabled={busy === "abandon" || !abandonReason.trim()}
+                >
+                  <Text style={styles.btnDarkText}>
+                    {busy === "abandon" ? "…" : "Abandon job"}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable style={styles.abandonLink} onPress={() => setAbandoning(true)}>
+              <Text style={styles.abandonLinkText}>Abandon job (nothing to bill)…</Text>
+            </Pressable>
+          )
+        ) : null}
       </View>
 
       {outboxView.failed.length > 0 ? (
@@ -885,6 +991,8 @@ const styles = StyleSheet.create({
   voided: { textDecorationLine: "line-through", color: "#94a3b8" },
   correctText: { color: "#b91c1c", fontWeight: "800", fontSize: 13 },
   voidBox: { marginTop: 10, backgroundColor: "#fef2f2", borderRadius: 8, padding: 10 },
+  abandonLink: { marginTop: 10, alignItems: "center", paddingVertical: 6 },
+  abandonLinkText: { color: "#b91c1c", fontWeight: "700", fontSize: 13 },
   methodRow: { flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 2 },
   methodChip: {
     flex: 1,

@@ -5,8 +5,15 @@
  *      still-pending selfie gets a fresh signed upload URL.
  *   2. PUT the selfie bytes to R2 (decoupled — the punch is already valid),
  *      then POST /selfie/complete.
- *   3. Mark done once recorded and the selfie has settled (uploaded or absent).
+ *   3. Mark done once recorded and the selfie has settled (uploaded, rejected,
+ *      or absent).
  * A failure on any item leaves it queued for the next pass.
+ *
+ * Only the signed-in technician's punches are flushed: the backend attributes
+ * punches to the JWT and 403s anyone else's, so on a shared phone another
+ * tech's queued punch must WAIT for its owner to sign back in — not burn
+ * retries (and confuse the pending counter) under the wrong session. Mirrors
+ * the jobs outbox's per-tech skip.
  */
 
 import * as FileSystem from "expo-file-system";
@@ -16,11 +23,12 @@ import { pendingPunches, updatePunch, type QueuedPunch } from "./queue";
 
 let syncing = false;
 
-export async function syncNow(): Promise<void> {
-  if (syncing) return;
+export async function syncNow(techId: string | null): Promise<void> {
+  if (syncing || !techId) return;
   syncing = true;
   try {
     for (const item of await pendingPunches()) {
+      if (item.tech_id !== techId) continue; // another tech's — wait for their session
       try {
         await syncOne(item);
       } catch {
@@ -54,8 +62,11 @@ async function syncOne(item: QueuedPunch): Promise<void> {
     await updatePunch(item.client_id, { server_event_id: resp.event_id });
   }
 
-  // 2. Selfie upload (best-effort, decoupled from the punch).
-  let selfieDone = !item.selfie_uri || item.selfie_done;
+  // 2. Selfie upload (best-effort, decoupled from the punch). The punch is
+  // recorded at this point, so a null `resp.selfie` means the server considers
+  // the selfie settled (uploaded — or rejected, e.g. oversized): nothing left
+  // to send. Without that, a rejected selfie would re-queue forever.
+  let selfieDone = !item.selfie_uri || item.selfie_done || !resp.selfie;
   if (!selfieDone && item.selfie_uri && resp.selfie) {
     const put = await FileSystem.uploadAsync(resp.selfie.signed_url, item.selfie_uri, {
       httpMethod: "PUT",
