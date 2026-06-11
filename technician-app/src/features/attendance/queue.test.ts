@@ -2,7 +2,14 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { enqueue, loadQueue, pendingPunches, updatePunch, type QueuedPunch } from "./queue";
+import {
+  enqueue,
+  loadQueue,
+  pendingPunches,
+  removePunches,
+  updatePunch,
+  type QueuedPunch,
+} from "./queue";
 
 jest.mock("@react-native-async-storage/async-storage", () => {
   let store: Record<string, string> = {};
@@ -76,5 +83,27 @@ describe("queue", () => {
     const pending = await pendingPunches();
     expect(pending).toHaveLength(1);
     expect(pending[0]?.client_id).toBe("c2");
+  });
+
+  it("removePunches drops the listed entries and keeps the rest", async () => {
+    await enqueue(base);
+    await enqueue({ ...base, client_id: "c2" });
+    await enqueue({ ...base, client_id: "c3" });
+    await removePunches(["c1", "c3"]);
+    const items = await loadQueue();
+    expect(items.map((i) => i.client_id)).toEqual(["c2"]);
+  });
+
+  it("does not lose a punch when two mutations race (lost-update lock)", async () => {
+    // Unserialised, both read the same snapshot and the second write clobbers
+    // the first — a punch silently vanishes.
+    await Promise.all([enqueue(base), enqueue({ ...base, client_id: "c2" })]);
+    expect((await loadQueue()).map((i) => i.client_id).sort()).toEqual(["c1", "c2"]);
+  });
+
+  it("keeps a concurrent enqueue while the sync prunes a settled punch", async () => {
+    await enqueue({ ...base, client_id: "old", done: true });
+    await Promise.all([removePunches(["old"]), enqueue({ ...base, client_id: "fresh" })]);
+    expect((await loadQueue()).map((i) => i.client_id)).toEqual(["fresh"]);
   });
 });

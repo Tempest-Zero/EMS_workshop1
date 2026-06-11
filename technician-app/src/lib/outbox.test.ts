@@ -55,6 +55,26 @@ describe("outbox queue", () => {
     expect(all[0]?.kind).toBe("completion");
   });
 
+  it("does not lose an item when two mutations race (lost-update lock)", async () => {
+    // Unserialised, both enqueues read the same snapshot and the second save
+    // clobbers the first — a queued write (possibly cash) silently vanishes.
+    await Promise.all([
+      enqueue(item({ id: "payment:a", kind: "payment" })),
+      enqueue(item({ id: "payment:b", kind: "payment" })),
+    ]);
+    const ids = (await loadOutbox()).map((i) => i.id).sort();
+    expect(ids).toEqual(["payment:a", "payment:b"]);
+  });
+
+  it("keeps a concurrent enqueue while the flush removes a synced item", async () => {
+    await enqueue(item({ id: "synced" }));
+    await Promise.all([
+      removeItem("synced"),
+      enqueue(item({ id: "payment:new", kind: "payment" })),
+    ]);
+    expect((await loadOutbox()).map((i) => i.id)).toEqual(["payment:new"]);
+  });
+
   it("upserts by id — last write wins for a stable-id kind", async () => {
     await enqueue(item({ payload: { body: { v: 1 } } }));
     await enqueue(item({ payload: { body: { v: 2 } } }));
