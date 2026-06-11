@@ -121,6 +121,9 @@ class BoardRow(BaseModel):
     flagged_mock: bool = False
     flagged_outside: bool = False
     flagged_drift: bool = False
+    # Evidence gaps: no usable GPS fix / selfie never uploaded (mobile punches).
+    flagged_no_location: bool = False
+    flagged_no_selfie: bool = False
 
 
 class Board(BaseModel):
@@ -133,6 +136,13 @@ class GridCell(BaseModel):
     day: date
     status: DayStatus
     late: bool = False
+    # Same evidence flags as the board — the grid is what a month's pay review
+    # actually looks at, so the signals must reach it too.
+    flagged_mock: bool = False
+    flagged_outside: bool = False
+    flagged_drift: bool = False
+    flagged_no_location: bool = False
+    flagged_no_selfie: bool = False
 
 
 class GridRow(BaseModel):
@@ -167,7 +177,9 @@ class TechDays(BaseModel):
 
 # ── Payroll export (ERP / Sunday cycle) ───────────────────────────────────────
 class PayrollDay(BaseModel):
-    """One tech's attendance for one day, flattened for a payroll/ERP export."""
+    """One tech's attendance for one day, flattened for a payroll/ERP export.
+    Carries the evidence flags: the export is the document pay is decided
+    from, so the anti-cheat signals must survive into it."""
 
     tech_id: str
     date: date
@@ -175,6 +187,11 @@ class PayrollDay(BaseModel):
     first_in: datetime | None = None
     last_out: datetime | None = None
     worked_minutes: int | None = None
+    flagged_mock: bool = False
+    flagged_outside: bool = False
+    flagged_drift: bool = False
+    flagged_no_location: bool = False
+    flagged_no_selfie: bool = False
 
 
 class PayrollExport(BaseModel):
@@ -193,6 +210,20 @@ class PayrollExportFile(BaseModel):
     row_count: int
     created_at: datetime
     download_url: str
+
+
+# ── Selfie evidence reconciliation ───────────────────────────────────────────
+class SelfieGap(BaseModel):
+    """A mobile punch whose selfie never reached storage after the grace
+    window — either no photo was attached (camera denied / cancelled) or the
+    upload never completed. The punch stays valid; the gap is the manager's
+    signal (mirrors the jobs closing-video evidence-gaps pattern)."""
+
+    event_id: UUID
+    tech_id: str
+    kind: PunchKind
+    server_time: datetime
+    selfie_attached: bool  # True = promised but bytes never arrived; False = no photo at all
 
 
 # ── Manager: config (shift / geofence) ───────────────────────────────────────

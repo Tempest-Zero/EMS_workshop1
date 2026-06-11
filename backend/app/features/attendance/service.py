@@ -13,6 +13,7 @@ import csv as csv_module
 import io as io_module
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
@@ -52,6 +53,7 @@ from app.features.attendance.schemas import (
     PunchItem,
     PunchRequest,
     PunchResponse,
+    SelfieGap,
     Shift,
     ShiftUpdate,
     SignedSelfie,
@@ -64,10 +66,30 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_SELFIE_BYTES = 5 * 1024 * 1024
 DEFAULT_DRIFT_FLAG_SECONDS = 120
+DEFAULT_ACCURACY_CEILING_M = 200.0
+DEFAULT_SELFIE_GRACE_HOURS = 24
+# How far back the selfie-gaps reconciliation looks. Bounds the list so punches
+# from before the selfie-evidence policy don't surface forever.
+SELFIE_GAP_LOOKBACK_DAYS = 14
 
 
 class AttendanceNotFoundError(LookupError):
     """Raised when an event/selfie is not found for the given owner."""
+
+
+@dataclass(frozen=True)
+class DayFlags:
+    """One tech-day's evidence flags. Computed in ONE place (``_day_flags``) so
+    the board, the monthly grid, and the payroll export all carry the same
+    anti-cheat signals — a flag that only the today-board shows is a flag the
+    payroll decision never sees."""
+
+    mock: bool
+    outside: bool
+    drift: bool
+    no_location: bool
+    no_selfie: bool
+    wifi_match: bool | None
 
 
 class SelfieTooLargeError(ValueError):
@@ -86,10 +108,26 @@ def payroll_week_window(today: date) -> tuple[date, date]:
 
 def payroll_csv(export: PayrollExport) -> str:
     """The same flat shape the manager web builds for its on-demand download —
-    one row per tech per day, ERP-friendly."""
+    one row per tech per day, ERP-friendly. The evidence flags ride along so
+    the document a pay decision is made from carries the anti-cheat signals,
+    not just the today-board."""
     buf = io_module.StringIO()
     writer = csv_module.writer(buf, lineterminator="\n")
-    writer.writerow(["tech_id", "date", "status", "first_in", "last_out", "worked_minutes"])
+    writer.writerow(
+        [
+            "tech_id",
+            "date",
+            "status",
+            "first_in",
+            "last_out",
+            "worked_minutes",
+            "flag_mock_gps",
+            "flag_outside_geofence",
+            "flag_clock_drift",
+            "flag_no_location",
+            "flag_no_selfie",
+        ]
+    )
     for row in export.rows:
         writer.writerow(
             [
@@ -99,6 +137,11 @@ def payroll_csv(export: PayrollExport) -> str:
                 row.first_in.isoformat() if row.first_in else "",
                 row.last_out.isoformat() if row.last_out else "",
                 row.worked_minutes if row.worked_minutes is not None else "",
+                int(row.flagged_mock),
+                int(row.flagged_outside),
+                int(row.flagged_drift),
+                int(row.flagged_no_location),
+                int(row.flagged_no_selfie),
             ]
         )
     return buf.getvalue()
@@ -112,11 +155,15 @@ class AttendanceService:
         *,
         selfie_max_bytes: int = DEFAULT_MAX_SELFIE_BYTES,
         drift_flag_seconds: int = DEFAULT_DRIFT_FLAG_SECONDS,
+        location_accuracy_ceiling_m: float = DEFAULT_ACCURACY_CEILING_M,
+        selfie_grace_hours: int = DEFAULT_SELFIE_GRACE_HOURS,
     ) -> None:
         self._repo = repo
         self._storage = storage
         self._selfie_max_bytes = selfie_max_bytes
         self._drift_flag_seconds = drift_flag_seconds
+        self._accuracy_ceiling_m = location_accuracy_ceiling_m
+        self._selfie_grace_hours = selfie_grace_hours
 
     # ── Commands ─────────────────────────────────────────────────────────
     async def record_punch(self, body: PunchRequest) -> PunchResponse:
@@ -145,7 +192,15 @@ class AttendanceService:
                         center_lat=geofence.center_lat,
                         center_lng=geofence.center_lng,
                         radius_m=geofence.radius_m,
+                        accuracy_m=body.accuracy_m or 0.0,
                     )
+                    if body.accuracy_m is None or body.accuracy_m > self._accuracy_ceiling_m:
+                        # The fix is too coarse (or reports no accuracy) to
+                        # judge the fence. Keep the distance for forensics but
+                        # stay agnostic — a false inside/outside verdict is
+                        # worse than "unknown" (which the no-location flag
+                        # surfaces to the manager).
+                        inside = None
                 if body.wifi_bssid is not None and geofence.wifi_bssids:
                     wifi_match = _wifi_match(body.wifi_bssid, geofence.wifi_bssids)
 
@@ -333,6 +388,7 @@ class AttendanceService:
             roll = classify_day(
                 day=day, punches=_local_punches(events, tz), shift=_shift_for(tech_id, shifts)
             )
+            flags = self._day_flags(events)
             rows.append(
                 BoardRow(
                     tech_id=tech_id,
@@ -341,10 +397,12 @@ class AttendanceService:
                     first_in=roll.first_in,
                     last_out=roll.last_out,
                     worked_minutes=roll.worked_minutes,
-                    wifi_match=_aggregate_wifi(events),
-                    flagged_mock=any(e.is_mock_location for e in events),
-                    flagged_outside=any(e.inside_geofence is False for e in events),
-                    flagged_drift=any(self._drift_flagged(e.drift_seconds) for e in events),
+                    wifi_match=flags.wifi_match,
+                    flagged_mock=flags.mock,
+                    flagged_outside=flags.outside,
+                    flagged_drift=flags.drift,
+                    flagged_no_location=flags.no_location,
+                    flagged_no_selfie=flags.no_selfie,
                 )
             )
         return Board(shop_id=shop_id, date=day, rows=rows)
@@ -362,7 +420,19 @@ class AttendanceService:
             for d in days:
                 events = bucket.get(tech_id, {}).get(d, [])
                 roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
-                cells.append(GridCell(day=d, status=roll.status, late=roll.late))  # type: ignore[arg-type]
+                flags = self._day_flags(events)
+                cells.append(
+                    GridCell(
+                        day=d,
+                        status=roll.status,  # type: ignore[arg-type]
+                        late=roll.late,
+                        flagged_mock=flags.mock,
+                        flagged_outside=flags.outside,
+                        flagged_drift=flags.drift,
+                        flagged_no_location=flags.no_location,
+                        flagged_no_selfie=flags.no_selfie,
+                    )
+                )
                 if roll.status != "holiday":
                     working += 1
                 if roll.status in ("present", "field", "half"):
@@ -419,6 +489,7 @@ class AttendanceService:
             for d in _date_range(from_date, to_date):
                 events = bucket.get(tech_id, {}).get(d, [])
                 roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
+                flags = self._day_flags(events)
                 rows.append(
                     PayrollDay(
                         tech_id=tech_id,
@@ -427,9 +498,40 @@ class AttendanceService:
                         first_in=roll.first_in,
                         last_out=roll.last_out,
                         worked_minutes=roll.worked_minutes,
+                        flagged_mock=flags.mock,
+                        flagged_outside=flags.outside,
+                        flagged_drift=flags.drift,
+                        flagged_no_location=flags.no_location,
+                        flagged_no_selfie=flags.no_selfie,
                     )
                 )
         return PayrollExport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)
+
+    # ── Selfie evidence reconciliation ───────────────────────────────────
+    async def selfie_gaps(self, *, shop_id: str) -> list[SelfieGap]:
+        """Mobile punches past the grace window whose selfie never reached
+        storage. The back half of "selfie is required evidence" without ever
+        blocking a punch: capture is best-effort and offline-tolerant, but a
+        gap must surface to the manager instead of passing silently (the same
+        bargain as the jobs closing-video evidence-gaps)."""
+        now = datetime.now(UTC)
+        events = await self._repo.list_punches_missing_selfie(
+            shop_id=shop_id,
+            since=now - timedelta(days=SELFIE_GAP_LOOKBACK_DAYS),
+            before=now - timedelta(hours=self._selfie_grace_hours),
+        )
+        return [
+            SelfieGap(
+                event_id=e.id,
+                tech_id=e.tech_id,
+                kind=e.kind,  # type: ignore[arg-type]
+                server_time=e.server_time,
+                # True = a photo was promised (path reserved) but bytes never
+                # landed; False = no photo was ever attached.
+                selfie_attached=e.selfie_path is not None,
+            )
+            for e in events
+        ]
 
     # ── Config: shift / geofence ─────────────────────────────────────────
     async def get_shift(self, *, shop_id: str, tech_id: str) -> Shift:
@@ -516,6 +618,31 @@ class AttendanceService:
 
     def _drift_flagged(self, drift_seconds: int | None) -> bool:
         return drift_seconds is not None and abs(drift_seconds) > self._drift_flag_seconds
+
+    def _location_unreliable(self, event: AttendanceEvent) -> bool:
+        """No usable fix: coords absent (GPS off / permission denied) or the
+        reported accuracy is over the ceiling (garbage fix). Either way the
+        geofence couldn't be judged — which must be visible, not silent."""
+        return (
+            event.lat is None
+            or event.lng is None
+            or event.accuracy_m is None
+            or event.accuracy_m > self._accuracy_ceiling_m
+        )
+
+    def _day_flags(self, events: list[AttendanceEvent]) -> DayFlags:
+        """Fold one tech-day's events into evidence flags. Only ``mobile``
+        punches owe location/selfie evidence — manager (``manual``)
+        corrections never carry it and must not trip the flags."""
+        mobile = [e for e in events if e.source == "mobile"]
+        return DayFlags(
+            mock=any(e.is_mock_location for e in events),
+            outside=any(e.inside_geofence is False for e in events),
+            drift=any(self._drift_flagged(e.drift_seconds) for e in events),
+            no_location=any(self._location_unreliable(e) for e in mobile),
+            no_selfie=any(e.selfie_status != "uploaded" for e in mobile),
+            wifi_match=_aggregate_wifi(events),
+        )
 
     async def _shop_tz(self, shop_id: str) -> ZoneInfo:
         shifts = await self._repo.list_shifts(shop_id=shop_id)

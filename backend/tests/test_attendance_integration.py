@@ -11,6 +11,10 @@ from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.features.identity.models import Technician
+from app.features.identity.security import create_access_token, hash_pin
 
 pytestmark = pytest.mark.integration
 
@@ -114,6 +118,37 @@ async def test_board_requires_auth(app_client: AsyncClient) -> None:
     assert resp.status_code == 401, resp.text
 
 
+async def test_tech_cannot_read_anothers_punches(
+    app_client: AsyncClient, session: AsyncSession
+) -> None:
+    # A technician token reading a colleague's punch log → 403; the log carries
+    # GPS + selfie URLs. Reading their own stays fine. The tech row is seeded
+    # here (the auth dependency verifies callers against the live table);
+    # "t8" is unused by the other integration suites, so it can't collide
+    # with their own seeds.
+    session.add(
+        Technician(
+            id="t8",
+            name="Authz Tech",
+            role="tech",
+            pin_hash=hash_pin("1234"),
+            active=True,
+        )
+    )
+    await session.commit()
+    tech_headers = {
+        "Authorization": f"Bearer {create_access_token(tech_id='t8', role='tech', name='Authz Tech')}"
+    }
+    # Fixed, URL-safe datetimes (a "+00:00" offset would decode as a space).
+    window = "start=2026-06-01T00:00:00Z&end=2026-06-08T00:00:00Z"
+    other = await app_client.get(
+        f"/api/attendance/punches?tech_id=t1&{window}", headers=tech_headers
+    )
+    assert other.status_code == 403, other.text
+    own = await app_client.get(f"/api/attendance/punches?tech_id=t8&{window}", headers=tech_headers)
+    assert own.status_code == 200, own.text
+
+
 async def test_punch_is_idempotent_on_client_id(
     app_client: AsyncClient, auth_headers: Headers
 ) -> None:
@@ -152,7 +187,9 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
     )
     assert g.status_code == 200, g.text
 
-    # ~1.4 km away → outside the fence; BSSID matches case-insensitively.
+    # ~1.4 km away with a usable fix → outside the fence (a fix with no
+    # reported accuracy would be "uncertain", not outside); BSSID matches
+    # case-insensitively.
     r = await app_client.post(
         "/api/attendance/punches",
         json={
@@ -161,6 +198,7 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
             "kind": "clock_in",
             "lat": 24.8700,
             "lng": 67.0100,
+            "accuracy_m": 10.0,
             "is_mock_location": False,
             "wifi_bssid": "aa:bb:cc:dd:ee:ff",
         },

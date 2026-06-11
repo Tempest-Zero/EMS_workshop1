@@ -69,11 +69,25 @@ class DayRollup:
 
 # ── Geofence ─────────────────────────────────────────────────────────────────
 def geofence_flags(
-    lat: float, lng: float, *, center_lat: float, center_lng: float, radius_m: float
+    lat: float,
+    lng: float,
+    *,
+    center_lat: float,
+    center_lng: float,
+    radius_m: float,
+    accuracy_m: float = 0.0,
 ) -> tuple[bool, float]:
-    """Return ``(inside, distance_m)`` for a punch against a workshop circle."""
+    """Return ``(inside, distance_m)`` for a punch against a workshop circle.
+
+    ``accuracy_m`` is the GPS fix's confidence radius: the punch counts as
+    inside when its confidence circle *overlaps* the fence
+    (``distance - accuracy <= radius``), so a fuzzy-but-honest fix taken inside
+    the workshop isn't mislabelled "outside". Whether a fix is too coarse to
+    judge at all is the caller's policy, not geometry — see the service's
+    accuracy ceiling.
+    """
     distance = haversine_m(lat, lng, center_lat, center_lng)
-    return distance <= radius_m, distance
+    return distance - accuracy_m <= radius_m, distance
 
 
 # ── Daily status ─────────────────────────────────────────────────────────────

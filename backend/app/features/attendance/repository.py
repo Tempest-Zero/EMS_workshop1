@@ -124,6 +124,28 @@ class AttendanceRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars())
 
+    async def list_punches_missing_selfie(
+        self, *, shop_id: str, since: datetime, before: datetime, limit: int = 200
+    ) -> list[AttendanceEvent]:
+        """Mobile punches in ``[since, before)`` whose selfie never reached
+        storage (status still ``pending``) — the selfie-gaps reconciliation
+        feed. ``since`` bounds the lookback so history from before the
+        selfie-evidence policy doesn't pile up forever; manual adjustments
+        never owe a selfie, so only ``mobile`` rows qualify. Newest first;
+        capped so the endpoint stays bounded."""
+        stmt = (
+            select(AttendanceEvent)
+            .where(AttendanceEvent.shop_id == shop_id)
+            .where(AttendanceEvent.source == "mobile")
+            .where(AttendanceEvent.selfie_status != "uploaded")
+            .where(AttendanceEvent.server_time >= since)
+            .where(AttendanceEvent.server_time < before)
+            .order_by(AttendanceEvent.server_time.desc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
     # ── Shifts ───────────────────────────────────────────────────────────
     async def get_shift(self, *, shop_id: str, tech_id: str) -> AttendanceShift | None:
         stmt = (

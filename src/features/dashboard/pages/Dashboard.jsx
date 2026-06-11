@@ -8,6 +8,7 @@ import {
   Clock3,
   UserX,
   VideoOff,
+  CameraOff,
   ChevronRight,
 } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
@@ -16,6 +17,7 @@ import { Card, SectionHeader } from "@shared/ui/primitives";
 import { formatPKR } from "@shared/lib/currency";
 import { amountPaid } from "@shared/lib/job";
 import { daysSince, parseISO } from "@shared/lib/date";
+import { fetchSelfieGaps } from "@features/attendance/data/attendanceApi";
 import { fetchEvidenceGaps } from "@features/jobs/data/jobsApi";
 import { weekDays } from "@features/schedule/data/schedule";
 
@@ -46,11 +48,19 @@ export default function Dashboard() {
   // The close gate tolerates pending uploads (offline techs) — this is where
   // the ones that never arrived become visible.
   const [evidenceGaps, setEvidenceGaps] = useState([]);
+  // Same bargain on attendance: the punch never blocks, but a clock-in whose
+  // selfie never arrived must surface, not pass silently.
+  const [selfieGaps, setSelfieGaps] = useState([]);
   useEffect(() => {
     let cancelled = false;
     fetchEvidenceGaps()
       .then((rows) => {
         if (!cancelled && Array.isArray(rows)) setEvidenceGaps(rows);
+      })
+      .catch(() => {});
+    fetchSelfieGaps()
+      .then((rows) => {
+        if (!cancelled && Array.isArray(rows)) setSelfieGaps(rows);
       })
       .catch(() => {});
     return () => {
@@ -116,8 +126,23 @@ export default function Dashboard() {
         to: "/jobs?status=closed",
       });
     }
+    if (selfieGaps.length) {
+      const name = (id) => technicians.find((t) => t.id === id)?.name || id;
+      out.push({
+        id: "selfie",
+        icon: CameraOff,
+        tone: "amber",
+        title: `${selfieGaps.length} ${
+          selfieGaps.length === 1 ? "punch" : "punches"
+        } missing the clock-in selfie`,
+        sub: selfieGaps
+          .map((g) => `${name(g.tech_id)} · ${g.server_time.slice(0, 16).replace("T", " ")}`)
+          .join("   "),
+        to: "/attendance",
+      });
+    }
     return out;
-  }, [jobs, technicians, attendanceToday, evidenceGaps]);
+  }, [jobs, technicians, attendanceToday, evidenceGaps, selfieGaps]);
 
   const recent = globalActivity.slice(0, 10);
 

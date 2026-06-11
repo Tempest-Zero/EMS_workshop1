@@ -39,6 +39,7 @@ from app.features.attendance.schemas import (
     PunchRequest,
     PunchResponse,
     SelfieCompleteRequest,
+    SelfieGap,
     Shift,
     ShiftUpdate,
     TechDays,
@@ -50,6 +51,7 @@ from app.features.attendance.service import (
     SelfieTooLargeError,
 )
 from app.features.identity.deps import CurrentPrincipal, get_current_principal, require_manager
+from app.features.identity.schemas import Principal
 
 router = APIRouter(
     prefix="/attendance",
@@ -67,6 +69,8 @@ def get_service(session: SessionDep, storage: StorageDep) -> AttendanceService:
         storage,
         selfie_max_bytes=settings.attendance_selfie_max_bytes,
         drift_flag_seconds=settings.attendance_drift_flag_seconds,
+        location_accuracy_ceiling_m=settings.attendance_location_accuracy_ceiling_m,
+        selfie_grace_hours=settings.attendance_selfie_grace_hours,
     )
 
 
@@ -74,6 +78,15 @@ ServiceDep = Annotated[AttendanceService, Depends(get_service)]
 
 ShopId = Annotated[str, Query(max_length=64)]
 TechIds = Annotated[list[str] | None, Query()]
+
+
+def _require_self_or_manager(principal: Principal, tech_id: str) -> None:
+    """A technician may only touch their OWN punches/status; a manager may act
+    for any tech. Guards the tech-facing endpoints that take an explicit
+    ``tech_id`` (punch evidence carries GPS + selfies — one tech must not be
+    able to read or finalize another's)."""
+    if principal.role != "manager" and tech_id != principal.tech_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "you can only access your own punches")
 
 
 # ── Mobile: punches ──────────────────────────────────────────────────────────
@@ -91,8 +104,7 @@ async def record_punch(
 ) -> PunchResponse:
     # A technician can only punch as themselves; a manager may record for any
     # tech. Stops a logged-in tech from clocking in/out as someone else.
-    if principal.role != "manager" and body.tech_id != principal.tech_id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "you can only record your own punches")
+    _require_self_or_manager(principal, body.tech_id)
     response = await service.record_punch(body)
     await session.commit()
     return response
@@ -108,8 +120,10 @@ async def complete_selfie(
     body: SelfieCompleteRequest,
     service: ServiceDep,
     session: SessionDep,
+    principal: CurrentPrincipal,
     tech_id: Annotated[str, Query(min_length=1, max_length=64)],
 ) -> PunchItem:
+    _require_self_or_manager(principal, tech_id)
     try:
         item = await service.complete_selfie(
             tech_id=tech_id, event_id=event_id, size_bytes=body.size_bytes
@@ -125,20 +139,24 @@ async def complete_selfie(
 @router.get("/today", response_model=TodayStatus, summary="A tech's live clock state")
 async def today_status(
     service: ServiceDep,
+    principal: CurrentPrincipal,
     tech_id: Annotated[str, Query(min_length=1, max_length=64)],
     shop_id: ShopId = DEFAULT_SHOP_ID,
 ) -> TodayStatus:
+    _require_self_or_manager(principal, tech_id)
     return await service.today_status(tech_id=tech_id, shop_id=shop_id)
 
 
 @router.get("/punches", response_model=list[PunchItem], summary="A tech's own punches")
 async def list_punches(
     service: ServiceDep,
+    principal: CurrentPrincipal,
     tech_id: Annotated[str, Query(min_length=1, max_length=64)],
     start: datetime,
     end: datetime,
     shop_id: ShopId = DEFAULT_SHOP_ID,
 ) -> list[PunchItem]:
+    _require_self_or_manager(principal, tech_id)
     return await service.list_punches(tech_id=tech_id, shop_id=shop_id, start=start, end=end)
 
 
@@ -207,6 +225,19 @@ async def payroll(
     return await service.payroll(
         shop_id=shop_id, from_date=start_date, to_date=end_date, tech_ids=tech_ids
     )
+
+
+@router.get(
+    "/selfie-gaps",
+    response_model=list[SelfieGap],
+    dependencies=[Depends(require_manager)],
+    summary="Punches past the grace window whose selfie never uploaded (manager oversight)",
+)
+async def selfie_gaps(
+    service: ServiceDep,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> list[SelfieGap]:
+    return await service.selfie_gaps(shop_id=shop_id)
 
 
 # ── Manager: audited adjustment ──────────────────────────────────────────────
