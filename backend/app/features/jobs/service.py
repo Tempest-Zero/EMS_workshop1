@@ -119,10 +119,11 @@ class JobService:
     async def create_job(self, body: JobCreate) -> Job:
         """Create a job with the next human-facing token.
 
-        The token comes from ``max+1``, so two concurrent creates can collide on
-        ``uq_job_token`` — recompute and retry instead of surfacing a 500. (A DB
-        sequence was rejected: the test schema is also built via
-        ``metadata.create_all``, which wouldn't carry a migration-only sequence.)
+        The token comes from the ``job_token_seq`` sequence, so concurrent
+        creates can't collide on ``uq_job_token``. The retry is kept as cheap
+        defense-in-depth for the rare ways a number could still pre-exist (a
+        hand-inserted row, or a restore that didn't bump the sequence): on the
+        unique-violation we just draw the next value and retry, never a 500.
         """
         last_error: IntegrityError | None = None
         for _ in range(3):
