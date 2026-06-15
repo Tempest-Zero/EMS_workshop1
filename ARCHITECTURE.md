@@ -87,8 +87,11 @@ app/
 
 Routing is role-by-URL-prefix: anything under `/tech/*` renders inside
 `TechLayout` (the technician/mobile experience); everything else renders inside
-`ManagerLayout` (the manager/desktop experience). There is no auth — the
-`RoleSwitcher` just navigates between the two.
+`ManagerLayout` (the manager/desktop experience). The web app authenticates
+against the backend (Name + PIN → JWT, kept in `localStorage`); `AuthContext`
+holds the session and **refuses non-manager logins** — the manager console is
+manager-only, technicians use the mobile app. The `RoleSwitcher` is a dev/demo
+affordance for previewing the technician layout, not an auth boundary.
 
 ### `src/shared/` — shared kernel
 
@@ -109,22 +112,26 @@ Each feature is self-contained:
 
 ```
 features/jobs/
-  data/         # mock data this feature owns (jobs.js)
+  data/         # the feature's API client + response mappers (jobsApi.js, mapJob.js)
   components/   # components used only by this feature (JobCard, NewJobForm)
   pages/        # route screens — manager and technician views live together
   index.js      # PUBLIC API barrel — what the router/other code may import
 ```
 
-Current features: `dashboard`, `jobs`, `technicians`, `attendance`,
-`schedule`, `troubleshooting`, `settings`. (A feature may also have a `lib/`
-for feature-local helpers — e.g. `attendance/lib/cells.js`.)
+Current features: `auth`, `dashboard`, `jobs`, `technicians`, `attendance`,
+`media`, `schedule`, `troubleshooting`, `settings`. (A feature may also have a
+`lib/` for feature-local helpers — e.g. `attendance/lib/cells.js`.) A feature's
+`data/` holds its backend API client and response mappers — the web app reads
+**live data from the FastAPI backend**, not bundled mock seeds.
 
 ---
 
 ## Dependency rules (the contract)
 
-This is what keeps the slices independent. CI does not enforce it yet, so it is
-on us in review:
+This is what keeps the slices independent. **CI enforces it**: ESLint
+`no-restricted-imports` rules (`eslint.config.js`) fail the build on a
+boundary violation — `shared/` importing anything internal, or `features/`
+reaching past `@app/providers` into the composition root:
 
 1. **`shared/` → nothing internal.** Pure and reusable.
 2. **`features/*` → `shared/*`** and the app store (`useApp()` from
@@ -151,10 +158,12 @@ app  ──▶ features (via index.js barrels)  ──▶ shared
 
 All mutable state currently lives in one provider, `app/providers/AppContext.jsx`,
 exposed through the `useApp()` hook: `jobs`, `technicians`, `attendanceToday`,
-toasts, plus every mutator (`addJob`, `setEstimate`, `markReady`, `logPayment`,
-`closeJob`, `clockIn`, …) and selector (`getJob`, `jobsByStatus`,
-`jobsForTech`, `globalActivity`). State resets on page refresh — it is seeded
-from each feature's `data/` module.
+toasts, plus mutators (`addJob`, `markReady`, `logPayment`, `closeJob`, …) and
+selectors (`getJob`, `jobsByStatus`, `jobsForTech`, `globalActivity`). On mount
+it **fetches live data from the backend** (`jobsApi`, `fetchTechnicians`,
+`fetchBoard`) — there is no bundled-seed fallback, so state is empty until the
+API answers and a refresh simply re-fetches. Mutators call the API and reconcile
+the returned truth into local state.
 
 This is intentionally simple for the current size. As a slice's state grows, it
 can be extracted into a feature-local provider/store and composed at the app
