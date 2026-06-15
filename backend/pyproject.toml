@@ -38,7 +38,7 @@ dev = [
   "pytest-asyncio>=0.24,<1.0",
   "httpx>=0.27,<1.0",
   "ruff>=0.7,<1.0",
-  "mypy>=1.13,<2.0",
+  "mypy>=1.13,<3.0",
   # Enforces the slice-dependency contract (ARCHITECTURE.md) in CI — the rules
   # were prose-only before, and review demonstrably missed violations.
   "import-linter>=2.0,<3.0",
