@@ -1,0 +1,56 @@
+# Dependency updates (ROADMAP Track D4). Three runtimes + the CI workflow.
+# Minor/patch bumps are grouped into one PR per ecosystem to keep the noise
+# down; majors come as their own PRs (they tend to need a human anyway).
+version: 2
+updates:
+  # ── Web manager app (npm, repo root) ──────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, web]
+    groups:
+      web-minor-and-patch:
+        update-types: [minor, patch]
+
+  # ── Technician mobile app (npm) ───────────────────────────────────────────
+  # Expo SDK upgrades (major) are deliberate, hand-driven migrations — keep
+  # them out of the auto group so they surface as their own reviewable PRs.
+  - package-ecosystem: npm
+    directory: /technician-app
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, mobile]
+    ignore:
+      - dependency-name: expo
+        update-types: [version-update:semver-major]
+    groups:
+      mobile-minor-and-patch:
+        update-types: [minor, patch]
+
+  # ── Backend (pip / pyproject.toml) ────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, backend]
+    groups:
+      backend-minor-and-patch:
+        update-types: [minor, patch]
+
+  # ── GitHub Actions (the CI workflow pins) ─────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, ci]
+    groups:
+      actions:
+        update-types: [minor, patch]
