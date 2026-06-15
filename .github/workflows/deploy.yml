@@ -1,0 +1,75 @@
+name: Deploy to Railway
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manual-trigger ONLY (workflow_dispatch) — deliberately not on push.
+#
+# `main` can carry changes that are merged but NOT yet cleared to deploy (the
+# Track A gate: the mobile fleet must run the new outbox APK before the backend
+# money guards / new migrations ship — see docs/REMEDIATION-PLAN.md). An
+# auto-deploy on merge would ship exactly that gated code. So a human chooses
+# when to run this. Once the gate lifts, add a `push: branches: [main]` trigger.
+#
+# What this buys today: deploys move off a personal laptop into a recorded,
+# auditable Action (who/when/which commit), with the Railway token living in an
+# encrypted GitHub secret instead of a developer machine. (ROADMAP Track D1.)
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Which Railway service to deploy
+        type: choice
+        options:
+          - backend
+          - web
+        default: backend
+
+concurrency:
+  # Never let two deploys of the same service overlap.
+  group: deploy-${{ inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }}
+    runs-on: ubuntu-latest
+    # Bind to a GitHub Environment so a required-reviewer rule can be added in
+    # repo settings later (a second pair of eyes before prod) without touching
+    # this file.
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      # Mirrors the documented manual commands (docs/HANDOFF.md):
+      #   backend → `railway up --service efficient-tenderness` from backend/
+      #   web     → `railway up --service web` from the repo root
+      # Railway auto-runs `alembic upgrade head` on the backend deploy.
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Deploying '${{ inputs.service }}' at commit ${GITHUB_SHA} …"
+          if [ "${{ inputs.service }}" = "backend" ]; then
+            ( cd backend && railway up --service efficient-tenderness --ci )
+          else
+            railway up --service web --ci
+          fi
+
+      - name: Record what shipped
+        if: always()
+        run: |
+          echo "### Railway deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- service: \`${{ inputs.service }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- by: @${GITHUB_ACTOR}" >> "$GITHUB_STEP_SUMMARY"
