@@ -52,6 +52,7 @@ class StorageClient(Protocol):
     def head_size(self, path: str) -> int | None: ...
     def delete(self, path: str) -> None: ...
     def put_bytes(self, path: str, data: bytes, content_type: str) -> None: ...
+    def list_keys(self, prefix: str) -> list[str]: ...
 
 
 class R2Storage:
@@ -108,9 +109,23 @@ class R2Storage:
 
     def put_bytes(self, path: str, data: bytes, content_type: str) -> None:
         """Server-side upload for SMALL server-generated artifacts (payroll
-        CSVs). Big client media stays on the signed-URL data plane — this
-        method must never carry phone uploads."""
+        CSVs, DB backups). Big client media stays on the signed-URL data
+        plane — this method must never carry phone uploads."""
         self._client.put_object(Bucket=self._bucket, Key=path, Body=data, ContentType=content_type)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """All object keys under ``prefix`` (paginated; used by backup pruning)."""
+        keys: list[str] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}
+            if token:
+                kwargs["ContinuationToken"] = token
+            resp = self._client.list_objects_v2(**kwargs)
+            keys.extend(obj["Key"] for obj in resp.get("Contents", []))
+            if not resp.get("IsTruncated"):
+                return keys
+            token = resp.get("NextContinuationToken")
 
 
 @lru_cache(maxsize=1)
