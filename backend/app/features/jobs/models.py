@@ -3,9 +3,9 @@
 Conventions mirror the other slices: UUID PK with a ``gen_random_uuid()``
 server default, enums stored as ``String`` + ``CheckConstraint``, tz-aware
 timestamps. ``token`` is a human-facing sequential number (the ``#1052`` the
-prototype shows); it's assigned by the service (max + 1) and kept unique.
-Customer/appliance fields are embedded — a customer isn't referenced by other
-slices, so it doesn't need normalizing yet.
+prototype shows); it's assigned from the ``job_token_seq`` Postgres sequence
+(below) and kept unique. Customer/appliance fields are embedded — a customer
+isn't referenced by other slices, so it doesn't need normalizing yet.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Sequence,
     String,
     UniqueConstraint,
 )
@@ -34,6 +35,15 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
+
+# The human-facing job number (#1052…). A Postgres sequence assigns it, so two
+# concurrent creates can never land on the same number and trip ``uq_job_token``.
+# Bound to ``Base.metadata`` so BOTH paths that build the schema create it: the
+# Alembic migration (0016) in real databases, and ``metadata.create_all`` in the
+# test schema. (An earlier max+1 scheme avoided a sequence precisely because a
+# migration-only object wouldn't reach create_all — binding it here removes that
+# objection.) ``start=1052`` matches the prototype's first number on an empty DB.
+job_token_seq = Sequence("job_token_seq", start=1052, metadata=Base.metadata)
 
 
 class JobEventKind(StrEnum):

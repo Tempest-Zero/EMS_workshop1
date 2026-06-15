@@ -71,6 +71,20 @@ async def test_create_get_list_flow(app_client: AsyncClient, auth_headers: Heade
     assert any(j["id"] == job_id for j in found.json())
 
 
+async def test_sequential_creates_get_distinct_increasing_tokens(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    """Job numbers come from the ``job_token_seq`` sequence: each create draws a
+    fresh, larger number — no two jobs share one (the max+1 race is gone)."""
+    tokens = []
+    for _ in range(3):
+        resp = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+        assert resp.status_code == 201, resp.text
+        tokens.append(resp.json()["token"])
+    assert len(set(tokens)) == 3  # all distinct
+    assert tokens == sorted(tokens)  # monotonically increasing
+
+
 async def test_carry_in_drops_visit_only_fields(
     app_client: AsyncClient, auth_headers: Headers
 ) -> None:

@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, delete, func, or_, select, update
+from sqlalchemy import CursorResult, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.jobs.models import (
@@ -18,6 +18,7 @@ from app.features.jobs.models import (
     JobLocation,
     JobMaterial,
     JobPayment,
+    job_token_seq,
 )
 
 
@@ -57,11 +58,12 @@ class JobRepository:
         return bool(cast(CursorResult[Any], result).rowcount)
 
     async def next_token(self) -> int:
-        """The next human-facing job number. Starts at 1052 (the prototype's
-        ``NEXT_TOKEN``) on an empty table; the unique constraint guards races."""
-        result = await self._session.execute(select(func.max(Job.token)))
-        current = result.scalar_one_or_none()
-        return (current or 1051) + 1
+        """The next human-facing job number, drawn from the ``job_token_seq``
+        Postgres sequence. ``nextval`` is atomic, so concurrent creates each get
+        a distinct number and never collide on ``uq_job_token``. Starts at 1052
+        (the prototype's ``NEXT_TOKEN``) on a fresh database."""
+        result = await self._session.execute(select(job_token_seq.next_value()))
+        return int(result.scalar_one())
 
     async def list_jobs(
         self,
