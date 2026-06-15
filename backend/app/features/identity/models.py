@@ -2,8 +2,10 @@
 
 The string PK is the stable ``tech_id`` slug (``t1`` … ``t5``) that the
 attendance and media slices already store, so existing data keeps referring to
-real rows. ``role`` is recorded for display and future authorization, but v1
-enforces no per-role gating (any logged-in user can do everything).
+real rows. ``role`` is **enforced**: ``identity.deps.CurrentManager`` gates the
+manager-only endpoints (attendance board/grid/payroll/adjustments, session
+revoke, …), so a technician token gets 403 there. Shared actions (job
+assign/claim — dual-assignment by design) stay open to any authenticated user.
 """
 
 from __future__ import annotations

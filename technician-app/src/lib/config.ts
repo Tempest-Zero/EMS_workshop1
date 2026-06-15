@@ -3,8 +3,10 @@
  * build time). Where EXPO_PUBLIC_API_URL comes from depends on the build:
  *
  *   - development : local `.env` (Metro reads it) → your dev machine's LAN IP
- *   - preview     : eas.json `build.preview.env`   → deployed staging API
- *   - production  : eas.json `build.production.env` → deployed prod API
+ *   - preview     : eas.json `build.preview.env`   → the prod backend (the
+ *                   demo/QA APKs point at prod; there is no separate staging
+ *                   environment yet)
+ *   - production  : eas.json `build.production.env` → the prod backend
  *
  * The fallback below is only used if nothing set it: 10.0.2.2 is the Android
  * emulator's host-loopback IP, handy for a quick emulator run with no .env.
