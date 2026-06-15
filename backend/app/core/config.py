@@ -94,6 +94,19 @@ class Settings(BaseSettings):
     # Default: every Sunday at 18:00 Asia/Karachi (the client's payroll cycle).
     scheduler_timezone: str = "Asia/Karachi"
 
+    # ── Backups (nightly pg_dump → R2) ───────────────────────────────────
+    # Dumps land in the media bucket under `backup_prefix` — on a DIFFERENT
+    # provider from the database (Cloudflare vs Supabase), so one provider
+    # incident can't take the data and its backups together. Runs on the
+    # in-process scheduler (same single-replica contract; a duplicate run is
+    # harmless). Restore procedure + drill log: docs/RUNBOOK-BACKUPS.md.
+    backup_enabled: bool = True
+    # 02:30 shop time: after the workday, clear of the Sunday 18:00 payroll job.
+    backup_hour: int = 2
+    backup_minute: int = 30
+    backup_retention_days: int = 30
+    backup_prefix: str = "backups/db/"
+
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
         "http://localhost:5173",  # web (manager / Vite dev server)

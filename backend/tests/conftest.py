@@ -79,6 +79,12 @@ class _FakeStorage:
     def delete(self, path: str) -> None:
         return None
 
+    def put_bytes(self, path: str, data: bytes, content_type: str) -> None:
+        return None
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return []
+
 
 @pytest_asyncio.fixture
 async def _engine() -> AsyncIterator[AsyncEngine]:

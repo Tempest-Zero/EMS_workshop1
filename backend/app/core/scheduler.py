@@ -29,11 +29,8 @@ def create_scheduler() -> AsyncIOScheduler:
     return AsyncIOScheduler(timezone=settings.scheduler_timezone)
 
 
-def add_weekly_sunday_job(
-    scheduler: AsyncIOScheduler, job: AsyncJob, *, hour: int = 18, name: str = "weekly-job"
-) -> None:
-    """Every Sunday at ``hour`` local (shop timezone). Wrapped so one failing
-    run logs + reports to Sentry instead of killing the scheduler."""
+def _wrap_safe(job: AsyncJob, name: str) -> AsyncJob:
+    """One failing run logs + reports to Sentry instead of killing the scheduler."""
 
     async def _safe_run() -> None:
         try:
@@ -41,10 +38,35 @@ def add_weekly_sunday_job(
         except Exception:
             logger.exception("scheduled job %s failed", name)
 
+    return _safe_run
+
+
+def add_weekly_sunday_job(
+    scheduler: AsyncIOScheduler, job: AsyncJob, *, hour: int = 18, name: str = "weekly-job"
+) -> None:
+    """Every Sunday at ``hour`` local (shop timezone)."""
     scheduler.add_job(
-        _safe_run,
+        _wrap_safe(job, name),
         CronTrigger(day_of_week="sun", hour=hour, minute=0),
         id=name,
         replace_existing=True,
         misfire_grace_time=3600,  # a restart within the hour still runs it
+    )
+
+
+def add_daily_job(
+    scheduler: AsyncIOScheduler,
+    job: AsyncJob,
+    *,
+    hour: int,
+    minute: int = 0,
+    name: str = "daily-job",
+) -> None:
+    """Every day at ``hour:minute`` local (shop timezone)."""
+    scheduler.add_job(
+        _wrap_safe(job, name),
+        CronTrigger(hour=hour, minute=minute),
+        id=name,
+        replace_existing=True,
+        misfire_grace_time=3600,
     )

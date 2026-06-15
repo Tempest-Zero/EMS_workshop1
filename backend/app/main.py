@@ -19,10 +19,11 @@ import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.backup import run_db_backup
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.request_id import RequestIdMiddleware, configure_logging
-from app.core.scheduler import add_weekly_sunday_job, create_scheduler
+from app.core.scheduler import add_daily_job, add_weekly_sunday_job, create_scheduler
 from app.core.storage import get_storage
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.router import router as attendance_router
@@ -57,9 +58,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.enable_scheduler:
         scheduler = create_scheduler()
         add_weekly_sunday_job(scheduler, _run_payroll_export, name="payroll-weekly-export")
+        if settings.backup_enabled:
+            add_daily_job(
+                scheduler,
+                run_db_backup,
+                hour=settings.backup_hour,
+                minute=settings.backup_minute,
+                name="db-backup-nightly",
+            )
         scheduler.start()
         logger.info(
-            "scheduler started (payroll export: Sundays 18:00 %s)", settings.scheduler_timezone
+            "scheduler started (payroll export: Sundays 18:00 %s; db backup: %s daily %02d:%02d)",
+            settings.scheduler_timezone,
+            "on" if settings.backup_enabled else "OFF",
+            settings.backup_hour,
+            settings.backup_minute,
         )
     try:
         yield
