@@ -18,16 +18,19 @@ RUN npm ci
 # wrongly reuse a stale `npm run build` even when the source changed (the bundle
 # then ships unchanged). Bumping REBUILD invalidates the layers below so the SPA
 # recompiles from current source. Bump on any deploy that serves stale assets.
-ARG REBUILD=2026-06-09b
+ARG REBUILD=2026-06-16a
 RUN echo "rebuild ${REBUILD}"
 
 # App source (.dockerignore keeps node_modules / dist / backend out of context).
 COPY . .
 
 # Vite inlines env at build time. Railway passes the service variable of the
-# same name into this ARG during the image build.
+# same name into each ARG during the image build. VITE_SENTRY_DSN is optional —
+# absent, the web app simply runs without error reporting (see shared/lib/sentry).
 ARG VITE_API_URL
+ARG VITE_SENTRY_DSN
 ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
 RUN npm run build
 
 # ── Serve stage ──────────────────────────────────────────────────────────────
