@@ -1,5 +1,7 @@
 # Phase 1 — Backend safety (implementation plan)
 
+> **ARCHIVED** — Phase 1 complete. For current work see [`../ROADMAP.md`](../ROADMAP.md).
+
 > Detailed plan for Phase 1 of [`REMEDIATION-PLAN.md`](./REMEDIATION-PLAN.md).
 > Everything here is **backward compatible with the installed clients** (current
 > web bundle + current APK) — that is the phase's contract; every design decision

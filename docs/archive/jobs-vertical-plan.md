@@ -1,5 +1,8 @@
 # FixFlow — the Jobs vertical (plan)
 
+> **ARCHIVED** — historical build plan. J0–J3 shipped; for current work see
+> [`../ROADMAP.md`](../ROADMAP.md).
+
 Status: **in progress.** J0 (this slice) is the auth + roster foundation. The
 rest of the roadmap is below so each PR can be reviewed against the whole.
 
