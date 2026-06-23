@@ -17,9 +17,9 @@ import { Card, SectionHeader } from "@shared/ui/primitives";
 import { formatPKR } from "@shared/lib/currency";
 import { amountPaid } from "@shared/lib/job";
 import { daysSince, parseISO } from "@shared/lib/date";
+import { TODAY } from "@shared/config/constants";
 import { fetchSelfieGaps } from "@features/attendance/data/attendanceApi";
 import { fetchEvidenceGaps } from "@features/jobs/data/jobsApi";
-import { weekDays } from "@features/schedule/data/schedule";
 
 const ON_DUTY = ["present", "field", "half"];
 
@@ -77,7 +77,11 @@ export default function Dashboard() {
       (j) => j.status === "waiting" && /part/i.test(j.waitingReason || "")
     ).length;
 
-    const weekStart = parseISO(weekDays[0].date);
+    // Monday of the live current week (TODAY), so "revenue this week" tracks the
+    // real calendar week rather than the schedule fixture's frozen sample week.
+    const weekStart = parseISO(TODAY);
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+    weekStart.setHours(0, 0, 0, 0);
     let revenue = 0;
     jobs.forEach((j) => {
       const pay = (j.timeline || []).find((e) => e.kind === "payment");

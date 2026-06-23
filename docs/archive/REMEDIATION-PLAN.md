@@ -1,5 +1,8 @@
 # FixFlow — Remediation Plan (pre-handover)
 
+> **ARCHIVED** — superseded by [`../ROADMAP.md`](../ROADMAP.md), which owns and
+> re-orders this sequencing. Kept for the reasoning behind each phase ordering.
+
 > Output of the full-project review on 2026-06-10 (code, structure, architecture).
 > This is the **ordered** plan: each phase's position is load-bearing. Re-ordering
 > phases can convert a safety fix into a data-loss mechanism — the reasoning for

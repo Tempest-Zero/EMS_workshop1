@@ -1,30 +1,37 @@
 # Technician App (Expo, Android)
 
-Single-feature Expo app for technicians: capture **Before/After** photos and
-videos for a job, compress on-device, and upload via short-lived signed URLs
-minted by the FastAPI backend. Android-only for the demo.
+The technician's field app. **Sign in** (Name + PIN), see **My Jobs**, open a job and run the
+repair flow (diagnosis → before/after **media** + **voice notes** → completion), and **clock
+in/out** with a selfie + GPS. Writes go through an **offline outbox** so the app keeps working
+without signal and syncs on reconnect. Android-only for the demo. Each capability is the mobile
+half of a vertical slice whose other half lives in `backend/app/features/`.
 
 ## Layout
 
 ```
 technician-app/
-  App.tsx                       # root component (renders MediaScreen)
+  App.tsx                       # root: auth gate → tabs (My Jobs · Clock · Profile)
   index.ts                      # Expo entry — registerRootComponent
   app.json                      # Expo config (Android-only, permissions)
-  eas.json                      # EAS build profiles (development = APK)
+  eas.json                      # EAS build profiles (development = APK, preview = demo)
+  google-services.json          # Firebase config for FCM push (public; bundled in the APK)
   babel.config.js, tsconfig.json
   .env.example                  # EXPO_PUBLIC_API_URL (points at the backend)
   src/
+    features/
+      auth/                     # LoginScreen + AuthContext (Name + PIN → JWT)
+      jobs/                     # JobsList · JobDetail · CompleteJob · VoiceNote (the core flow)
+      attendance/               # ClockScreen — selfie + GPS clock-in/out, offline queue
+      media/                    # before/after capture (JobMediaCapture, MediaTile, useMedia)
+      profile/                  # ProfileScreen
     lib/
-      api.ts                    # typed FastAPI client (media endpoints)
-      config.ts                 # env-driven config + compression targets
-      compress.ts               # react-native-compressor wrapper
-    features/media/
-      MediaScreen.tsx           # the only screen — Before/After + capture
-      MediaTile.tsx             # thumbnail + expo-video playback
-      useMedia.ts               # state hook (list + upload + delete + refresh)
-      uploadMedia.ts            # capture → compress → signed URL → PUT → finalize
-      uploadMedia.test.ts       # unit tests for the pipeline (mocks)
+      api.ts, jobsApi.ts, attendanceApi.ts, authApi.ts, devicesApi.ts  # typed FastAPI clients
+      auth.ts                   # token storage
+      outbox.ts, outboxSync.ts, useOutboxSync.ts   # offline write queue (replays on reconnect)
+      jobsCache.ts              # offline read cache for jobs
+      push.ts, usePushRegistration.ts              # FCM device registration
+      sentry.ts                 # error tracking (DSN-gated)
+      compress.ts, money.ts, config.ts, mutex.ts   # compression, formatting, config, locking
 ```
 
 ## Stack
@@ -142,9 +149,17 @@ npx expo-doctor            # pre-flight check before eas build
 
 ## Architecture
 
-This app is the **mobile half** of the `media` vertical slice. The other half
-is `backend/app/features/media/`. The app never holds an R2 (or any storage)
-credential — it only ever sees short-lived signed URLs minted by FastAPI:
+This app is the **mobile half** of the `jobs`, `attendance`, `media`, and `identity` vertical
+slices — each has a matching `backend/app/features/<slice>/`. Two cross-cutting rules:
+
+- **No storage credentials on the phone.** The app only ever sees short-lived signed R2 URLs
+  minted by FastAPI (the media flow below).
+- **Offline-first writes.** Clock punches and job updates are enqueued in an **outbox**
+  (`src/lib/outbox.ts` → `outboxSync.ts`) and replayed on reconnect; jobs are also served from a
+  local cache (`src/lib/jobsCache.ts`).
+
+The media upload is the clearest example of the no-credentials rule — the app never holds an R2
+(or any storage) credential, only the short-lived signed URLs FastAPI mints:
 
 ```
 Expo (capture + compress)

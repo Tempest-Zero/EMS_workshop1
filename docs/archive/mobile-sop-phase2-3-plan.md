@@ -1,5 +1,8 @@
 # Technician SOP — Phase 2 & Phase 3 plan (hand-off spec)
 
+> **ARCHIVED** — Phase 2/3 shipped. For what's live see [`../HANDOFF.md`](../HANDOFF.md);
+> for current work see [`../ROADMAP.md`](../ROADMAP.md).
+
 Durable, self-contained plan so any agent can execute it cold. Phase 2 may
 start on the owner's go; **do NOT start Phase 3 until the owner says so** (it's
 fully specified here for reference).

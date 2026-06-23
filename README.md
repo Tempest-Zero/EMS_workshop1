@@ -5,22 +5,24 @@ A clickable **strawman prototype** for a small home-appliance repair workshop in
 scheduling, and the full carry-in repair lifecycle across a **manager desktop view** and a
 **technician mobile view** — all from a single app.
 
-> ⚠️ **Prototype data on the web side, real backend underneath.** The web manager app currently
-> runs on in-browser mock data — no login, and changes **reset on refresh**. Alongside it, a
-> FastAPI backend (Supabase Postgres + Cloudflare R2) is **live on Railway** and the **Expo
-> technician app** ships the `media` slice end-to-end (capture → compress → signed-URL upload).
-> The codebase is a **modular monolith with vertical slices spanning all three runtimes** (see
-> [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`docs/PLAYBOOK.md`](./docs/PLAYBOOK.md)) so a small
-> team can grow it into the real product one slice at a time.
+> ⚠️ **Live backend; the web app mixes live and demo data.** A FastAPI backend (Supabase
+> Postgres + Cloudflare R2) is **live on Railway** with **PIN login + JWT enforced** (manager-only
+> endpoints reject technician tokens). The **Expo technician app** is a full field app — jobs,
+> clock-in/out, before/after media, profile, with an offline outbox. The **web manager console**
+> requires a manager login and reads the live API for jobs and attendance; a few surfaces
+> (schedule, settings integrations) are still demo data and are **labeled as such** in the UI.
+> The codebase is a **modular monolith with vertical slices spanning all three runtimes** — see
+> [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the rules, [`docs/SOLUTION-ARCHITECT-GUIDE.md`](./docs/SOLUTION-ARCHITECT-GUIDE.md)
+> for the why, and [`docs/PLAYBOOK.md`](./docs/PLAYBOOK.md) before starting a slice.
 
 ## 📦 Repo layout (monorepo)
 
 ```
-EMS_workshop1/
-  src/                # web manager app (React + Vite)        — this README's "Getting Started"
+strawman/
+  src/                # web manager console (React + Vite)    — Getting Started below
   backend/            # FastAPI + Alembic + Supabase + R2     — backend/README.md
-  technician-app/     # Expo (Android, media slice live)      — technician-app/README.md
-  docs/PLAYBOOK.md    # build/handoff playbook (read before starting a slice)
+  technician-app/     # Expo (Android) field app              — technician-app/README.md
+  docs/               # architecture, roadmap, runbooks, playbook (archive/ = superseded)
   docker-compose.yml  # local Postgres + backend dev stack
 ```
 
@@ -28,10 +30,9 @@ EMS_workshop1/
 
 ## ✨ Features
 
-- **Two roles, one app** (no login — toggle in the header):
-  - **Manager** — desktop, left-sidebar shell, full shop overview.
-  - **Technician** — mobile, bottom-tab shell, shown inside a phone frame on desktop. Built for
-    quick taps with ≥44px touch targets.
+- **Manager web console** (PIN login + JWT) — desktop, left-sidebar shell, full shop overview.
+  Technicians don't use the web app; their field workflows (clock-in, my-jobs, capture,
+  completion) live in the separate **Expo mobile app** (`technician-app/`).
 - **Live Dashboard** — KPIs (present today, active jobs, awaiting parts, revenue this week), a
   _Needs Attention_ alert strip, and a recent-activity feed.
 - **Jobs module (the core)** — a status board (Open · Waiting · Ready · History), a New Job intake
@@ -70,10 +71,9 @@ npm install
 npm run dev
 ```
 
-Then open the URL Vite prints (default **http://localhost:5173**).
-
-- Manager view: `/`
-- Technician view: `/tech/jobs`
+Then open the URL Vite prints (default **http://localhost:5173**). The console requires a
+manager login — demo credentials are in [`docs/HANDOFF.md`](./docs/HANDOFF.md). Routes:
+`/` dashboard · `/jobs` · `/technicians` · `/attendance` · `/schedule` · `/settings`.
 
 ```bash
 # quality gates (the same checks CI runs)
@@ -85,6 +85,30 @@ npm test              # vitest
 npm run build
 npm run preview
 ```
+
+### Getting Started — Backend (FastAPI)
+
+```bash
+cd backend
+python -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; *nix: .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env                                     # fill DB URL + Cloudflare R2 keys
+uvicorn app.main:app --reload --port 8000               # → http://localhost:8000/api/health
+```
+
+Docker Compose, migrations, and quality gates: [`backend/README.md`](./backend/README.md).
+
+### Getting Started — Mobile (Expo technician app)
+
+```bash
+cd technician-app
+npm install
+cp .env.example .env                                     # EXPO_PUBLIC_API_URL → your backend
+npm start                                                # Metro; open the dev build
+```
+
+The `preview` build already points at the live backend — see
+[`technician-app/README.md`](./technician-app/README.md) for the dev-vs-demo build paths.
 
 ---
 
@@ -105,7 +129,7 @@ src/
       components/   #   feature-only components
       pages/        #   route screens (manager + technician views)
       index.js      #   public API barrel (what the router imports)
-docs/             # demo documentation (PDF + source HTML)
+docs/             # architecture, roadmap, runbooks, playbook · archive/ = superseded plans
 ```
 
 See **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** for the dependency rules and how to add a feature.
@@ -120,6 +144,8 @@ Before contributing, read:
 - **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — the layer map (`app` / `shared` / `features`),
   dependency rules, state management, and how to add a new feature.
 - **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** — branching model, commit conventions, and the PR checklist.
+- **[`docs/SOLUTION-ARCHITECT-GUIDE.md`](./docs/SOLUTION-ARCHITECT-GUIDE.md)** — the _why_: business
+  context, how capabilities are placed across the three runtimes, and decision frameworks.
 
 `main` stays green: every pull request runs lint, format check, tests, and build via
 GitHub Actions (`.github/workflows/ci.yml`).
@@ -128,17 +154,16 @@ GitHub Actions (`.github/workflows/ci.yml`).
 
 ## 🎯 Demo Walkthrough
 
-A full demo script and architecture/flow diagrams are in **`docs/FixFlow-Demo-Guide.pdf`**.
-The key flow to show: open the **Jobs** board → **New Job** → open it → **Set Estimate** →
-**Mark Approved** → **Mark Ready** (watch the SMS toast) → **Log Payment** → **Close**.
+The key manager flow to show: open the **Jobs** board → **New Job** → open it → **Set Estimate**
+→ **Mark Approved** → **Mark Ready** → **Log Payment** → **Close**. The technician side of the
+flow (clock-in, before/after capture, completion) is demoed from the **mobile app**.
 
 ---
 
 ## 📌 Out of Scope (currently)
 
-No authentication yet (endpoints are open; the next auth slice will wire Supabase GoTrue +
-JWT), no real SMS or payments, no supplier catalogue, no customer portal, no maps/GPS, and no
-drag-and-drop scheduling. The dashed "🔗 integration" badges in the web app mark where real
-services plug in. The web manager is being migrated off mock data onto the live API slice by
-slice — the **Attendance** board, monthly grid, and per-tech detail now read the live FastAPI
-backend (via `src/shared/lib/api.js`); other modules remain on mock for now.
+No real SMS or payments, no supplier catalogue, no customer portal, no maps/GPS, and no
+drag-and-drop scheduling. The **Settings → Integrations** rows are demonstration placeholders
+(labeled as such), marking where real services would plug in. The web console reads the live
+FastAPI backend (via `src/shared/lib/api.js`) for **auth, jobs, and attendance**; a few surfaces
+(**schedule**, the **workshop profile** form) remain demo data and are labeled in the UI.
