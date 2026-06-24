@@ -1,0 +1,28 @@
+1. Routing & Setup
+
+src/app/App.jsx
+Registered the new frontend route for the checkout sequence (/my-jobs/:id/checkout).
+
+2. Job Management & Billing (Module 3 & 4)
+src/features/jobs/pages/TechJobDetail.jsx
+Wired up the "Capture Media" button using the HTML5 capture="environment" API to natively open the rear-facing mobile camera.
+Built the interactive "Add Remark" modal for field notes.
+Linked the "Complete & Bill Job" button to route to the new checkout pipeline.
+src/features/jobs/pages/TechJobCheckout.jsx
+Created an entirely new dedicated billing interface.
+Built the financial math pipeline to convert floating-point Rupees into integer paisa to satisfy backend constraints.
+Wired the final Checkout button to fire the 4-step completion sequence: submitCompletion, negotiateBill, logPayment (with UUID generation), and transitionJob (temporarily set to "ready" to bypass the video evidence gate).
+
+3. Attendance & Hardware APIs (Module 1)
+
+src/features/attendance/pages/TechClock.jsx
+Built the Daily Attendance UI for field technicians.
+Integrated the HTML5 navigator.geolocation API to securely ping and verify the device's exact Latitude and Longitude.
+Integrated the HTML5 <input capture="user"> tag to bypass the file explorer and natively open the front-facing selfie camera.
+
+src/features/attendance/data/attendanceApi.js
+Added the clockIn function for field technicians, mapping it to the /api/attendance/punches endpoint.
+
+src/shared/lib/api.js
+Upgraded the core apiSend wrapper to automatically detect FormData payloads.
+Added logic to strip the default application/json header and bypass JSON.stringify() when a file is detected, allowing the browser to natively generate multipart/form-data boundaries for selfie uploads without breaking existing manager requests.
