@@ -95,3 +95,23 @@ export function saveShift(techId, body) {
     body
   );
 }
+
+// ── Technician Field Operations ──────────────────────────────────────────────
+
+/**
+ * Technician action: Clock in for the day.
+ * The backend verifies the GPS coordinates against the shop's geofence.
+ */
+export function clockIn(lat, lng, photoFile) {
+  const formData = new FormData();
+  formData.append("shop_id", SHOP_ID); // Appending the shop_id to match your existing file's logic
+  formData.append("lat", lat);
+  formData.append("lng", lng);
+  
+  if (photoFile) {
+    formData.append("photo", photoFile);
+  }
+
+  // We pass { isMultipart: true } so apiSend knows not to use application/json headers
+  return apiSend("/api/attendance/clock-in", "POST", formData, { isMultipart: true });
+}
