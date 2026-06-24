@@ -12,16 +12,15 @@ export default function Login() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  // The web is the manager console — technicians sign in on the mobile app.
-  // Show only manager accounts in the picker, and pre-select the first one so a
-  // single-manager shop only has to type the PIN (otherwise the Log in button
-  // stays disabled until the lone account is clicked, which reads as a bug).
+  // Unified login screen: Fetch the entire workforce deployment list 
+  // from the live production endpoint instead of limiting visibility to managers.
   useEffect(() => {
     fetchTechnicians()
       .then((rows) => {
-        const managers = rows.filter((t) => t.role === "manager");
-        setTechs(managers);
-        if (managers.length) setTechId((cur) => cur || managers[0].id);
+        setTechs(rows);
+        // Pre-select the first account in the roster list to make the layout
+        // immediately ready for rapid PIN inputs.
+        if (rows.length) setTechId((cur) => cur || rows[0].id);
       })
       .catch(() => setError("Couldn't reach the server. Please try again."));
   }, []);
@@ -69,9 +68,11 @@ export default function Login() {
                   <Avatar name={t.name} color={t.avatar} size="sm" />
                   <div className="leading-tight">
                     <div className="text-sm font-bold text-slate-800">{t.name}</div>
-                    {/* This picker only lists managers, so show the role — not the
-                        trade specialty, which reads as "this isn't the manager". */}
-                    <div className="text-[11px] text-slate-400">Manager</div>
+                    {/* Dynamically reflect whether the profile belongs to an admin manager 
+                        or a field technician, maintaining exact brand component styling */}
+                    <div className="text-[11px] capitalize text-slate-400">
+                      {t.role === "manager" ? "Manager" : (t.specialty || "Technician")}
+                    </div>
                   </div>
                 </button>
               ))}

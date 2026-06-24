@@ -6,8 +6,8 @@ const AuthContext = createContext(null);
 
 /**
  * Holds the logged-in user (derived from a verified JWT) and exposes
- * `login`/`logout`. On mount it rehydrates from a stored token by calling
- * `/auth/me` (which also validates the token); a 401 anywhere clears it.
+ * `login`/`logout`. Exposes full system routing capability for both
+ * managers and technicians across the web frame.
  */
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null); // { tech_id, role, name } | null
@@ -18,13 +18,8 @@ export function AuthProvider({ children }) {
     const check = getToken() ? me() : Promise.resolve(null);
     check
       .then((principal) => {
-        // The web is the manager console. A non-manager token (e.g. one carried
-        // over from the mobile app) must not unlock it.
-        if (principal && principal.role !== "manager") {
-          setToken(null);
-          setUser(null);
-          return;
-        }
+        // Unified web layer: Accept all valid authenticated principals 
+        // regardless of whether they are managers or field technicians.
         setUser(principal);
       })
       .catch(() => {
@@ -36,12 +31,8 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (techId, pin) => {
     const tech = await apiLogin(techId, pin);
-    // Manager-only console: refuse a valid but non-manager login (the picker
-    // already lists managers only — this is the enforcement behind it).
-    if (tech.role !== "manager") {
-      setToken(null);
-      throw new Error("not-a-manager");
-    }
+    
+    // Universal session handler: Accept both technician and manager profiles cleanly
     setUser({ tech_id: tech.id, role: tech.role, name: tech.name });
     return tech;
   }, []);

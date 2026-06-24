@@ -1,13 +1,13 @@
 # FixFlow — Product-Readiness Review (single-shop tool → sellable product + hardware)
 
 > Output of the scope-reframe review on 2026-06-11. Prior reviews judged FixFlow as
-> a production system for ONE workshop (`docs/archive/REMEDIATION-PLAN.md`). The owner has
+> a production system for ONE workshop (`docs/REMEDIATION-PLAN.md`). The owner has
 > now scoped it as a **future product** — multiple customer workshops, with
 > **hardware integration** (attendance terminals, scanners, printers, trackers)
 > later. This review asks a different question: *which assumptions are hardening
 > into the foundation that a second customer or a hardware device will break?*
 >
-> Companion docs: `archive/REMEDIATION-PLAN.md` (production blockers for customer #1 —
+> Companion docs: `REMEDIATION-PLAN.md` (production blockers for customer #1 —
 > still the prerequisite for everything here), `HANDOFF.md` (operational state).
 
 ---

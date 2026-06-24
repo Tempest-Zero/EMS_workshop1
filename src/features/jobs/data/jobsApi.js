@@ -35,6 +35,10 @@ export function assignJob(id, techId) {
   return apiSend(`/api/jobs/${encodeURIComponent(id)}/assign`, "POST", { tech_id: techId });
 }
 
+export function claimJob(id) {
+  return apiSend(`/api/jobs/${encodeURIComponent(id)}/claim`, "POST");
+}
+
 /** Append a note to a job. Returns the full job detail (with the fresh timeline). */
 export function addJobNote(id, text) {
   return apiSend(`/api/jobs/${encodeURIComponent(id)}/notes`, "POST", { text });

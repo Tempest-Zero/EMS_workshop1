@@ -7,10 +7,6 @@ live together in this monorepo:
 - **Technician mobile app** — Expo (React Native), Android target.
 - **Backend** — FastAPI (Python 3.12) + Supabase Postgres (data) + Cloudflare R2 (media).
 
-> For the **why** behind these boundaries — business context, how to decide _where_ a capability
-> belongs, and the decision frameworks — see
-> [`docs/SOLUTION-ARCHITECT-GUIDE.md`](./docs/SOLUTION-ARCHITECT-GUIDE.md).
-
 Code is grouped by **business capability** (jobs, technicians, attendance,
 media, invoices, …), **not** by technical layer. A slice is the same concept
 on every runtime: the `media` slice has a folder on the backend, a folder in

@@ -11,8 +11,6 @@
 > - [`README.md`](../README.md) tells a newcomer how to run it.
 > - [`ARCHITECTURE.md`](../ARCHITECTURE.md) tells a contributor the layer rules.
 > - [`docs/PLAYBOOK.md`](./PLAYBOOK.md) tells a builder the operational gotchas.
-> - [`docs/client-requirements-gap-analysis.md`](./client-requirements-gap-analysis.md) maps the
->   client's stated requirements to what's actually built.
 > - **This file teaches you to *think about the whole system* and make the next
 >   architectural calls yourself.**
 
@@ -711,7 +709,7 @@ milestones). When you scope work:
 - **J0–J6** = the **Jobs vertical** (the spine + money + mobile parity).
   J0 identity → J0.5 auth guards → J1 jobs core → J2 lifecycle → J3 media-on-web
   → **J4 money (NOT built)** → J5 mobile parity → J6 schedule. Plan in
-  [`docs/archive/jobs-vertical-plan.md`](./archive/jobs-vertical-plan.md).
+  [`docs/jobs-vertical-plan.md`](./jobs-vertical-plan.md).
 - **D1–D3** = the **demo** web-prototype additions (billing, completion,
   worklist) — the "Tier B" mocks. *These are the ones to relocate.*
 - **M1–M2** = the **mobile rebuild** (foundation, then My Jobs/claim). M3+ is the
@@ -810,10 +808,9 @@ EMS_workshop1/
     start.sh                       migrate-then-serve (prod entrypoint)
   docs/
     PLAYBOOK.md                    operational gotchas + infra map
-    ROADMAP.md                     the single ordered to-do list (current)
+    jobs-vertical-plan.md          the J-roadmap
     client-requirements-gap-analysis.md   the 4-module requirement map
     SOLUTION-ARCHITECT-GUIDE.md    (this file)
-    archive/                       superseded plans (jobs-vertical, phases 1–3, remediation)
   .github/workflows/ci.yml      3 parallel CI jobs
   docker-compose.yml            local Postgres + backend
 ```

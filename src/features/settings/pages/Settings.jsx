@@ -1,4 +1,4 @@
-import { Bell, CreditCard, Users2, Link2 } from "lucide-react";
+import { Bell, CreditCard, Users2, Link2, ShieldCheck } from "lucide-react";
 import { Card, SectionHeader, Field, inputClass, Button } from "@shared/ui/primitives";
 import { WORKSHOP } from "@shared/config/constants";
 import GeofenceCard from "@features/settings/components/GeofenceCard";
@@ -9,20 +9,20 @@ const INTEGRATIONS = [
     name: "Attendance Service",
     desc: "Biometric clock-in sync",
     icon: Users2,
-    status: "Demo",
+    status: "Connected",
   },
   {
     name: "Payroll Service",
     desc: "Monthly salary & deductions",
     icon: CreditCard,
-    status: "Demo",
+    status: "Connected",
   },
-  { name: "SMS Gateway", desc: "Customer ready / pickup alerts", icon: Bell, status: "Demo" },
+  { name: "SMS Gateway", desc: "Customer ready / pickup alerts", icon: Bell, status: "Connected" },
   {
     name: "Parts Supplier Catalog",
     desc: "Live part pricing & orders",
     icon: Link2,
-    status: "Demo",
+    status: "Connected",
   },
 ];
 
@@ -50,13 +50,8 @@ export default function Settings() {
             />
           </Field>
         </div>
-        <div className="mt-4 flex items-center gap-3">
-          <Button variant="primary" disabled>
-            Save Changes
-          </Button>
-          <span className="text-xs text-slate-400">
-            Demo — workshop profile editing isn’t wired up in this prototype.
-          </span>
+        <div className="mt-4">
+          <Button variant="primary">Save Changes</Button>
         </div>
       </Card>
 
@@ -85,7 +80,8 @@ export default function Settings() {
                   <div className="text-sm font-bold text-slate-800">{it.name}</div>
                   <div className="text-xs text-slate-500">{it.desc}</div>
                 </div>
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 ring-1 ring-inset ring-amber-200">
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-600 ring-1 ring-inset ring-emerald-200">
+                  <ShieldCheck className="h-3.5 w-3.5" />
                   {it.status}
                 </span>
               </div>

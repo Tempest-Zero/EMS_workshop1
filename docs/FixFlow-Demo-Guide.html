@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FixFlow — Demo Documentation</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+  :root{
+    --ink:#0f172a;        /* slate-900 */
+    --body:#334155;       /* slate-700 */
+    --muted:#64748b;      /* slate-500 */
+    --faint:#94a3b8;      /* slate-400 */
+    --line:#e2e8f0;       /* slate-200 */
+    --rail:#cbd5e1;       /* slate-300 */
+    --bg:#f8fafc;         /* slate-50 */
+    --blue:#3b82f6; --blue-bg:#eff6ff; --blue-tx:#1d4ed8; --blue-bd:#bfdbfe;
+    --amber:#f59e0b; --amber-bg:#fffbeb; --amber-tx:#b45309; --amber-bd:#fde68a;
+    --emerald:#10b981; --emerald-bg:#ecfdf5; --emerald-tx:#047857; --emerald-bd:#a7f3d0;
+    --slate:#64748b; --slate-bg:#f1f5f9; --slate-tx:#475569; --slate-bd:#cbd5e1;
+    --red:#ef4444; --red-bg:#fef2f2; --red-tx:#b91c1c; --red-bd:#fecaca;
+  }
+
+  *{ box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+
+  html,body{ margin:0; padding:0; }
+  body{
+    font-family:'Plus Jakarta Sans', system-ui, 'Segoe UI', sans-serif;
+    color:var(--body);
+    font-size:10.5pt;
+    line-height:1.5;
+    background:#fff;
+  }
+
+  @page{ size:A4; margin:15mm 15mm 16mm; }
+
+  /* ---------- Typography ---------- */
+  h1,h2,h3,h4{ color:var(--ink); font-weight:800; line-height:1.2; margin:0; }
+  h2{ font-size:17pt; letter-spacing:-.01em; }
+  h3{ font-size:12.5pt; letter-spacing:-.01em; }
+  h4{ font-size:10.5pt; }
+  p{ margin:0 0 8px; }
+  strong{ color:var(--ink); font-weight:700; }
+  em{ color:var(--muted); font-style:normal; font-weight:600; }
+  code{ font-family:'SFMono-Regular',Consolas,monospace; font-size:9pt; background:var(--slate-bg);
+        padding:1px 5px; border-radius:5px; color:#0f172a; }
+
+  .section{ page-break-inside:avoid; }
+  .page-break{ page-break-before:always; }
+
+  /* ---------- Section header ---------- */
+  .sec-head{ display:flex; align-items:baseline; gap:10px; margin:0 0 4px;
+             border-bottom:2px solid var(--ink); padding-bottom:8px; }
+  .sec-num{ font-size:11pt; font-weight:800; color:#fff; background:var(--ink);
+            width:24px; height:24px; border-radius:7px; display:inline-flex;
+            align-items:center; justify-content:center; flex:none; align-self:center; }
+  .sec-sub{ color:var(--muted); font-size:9.5pt; font-weight:600; margin:6px 0 14px; }
+
+  /* ---------- Cover ---------- */
+  .cover{ height:262mm; display:flex; flex-direction:column; }
+  .cover-top{ flex:none; }
+  .brand{ display:flex; align-items:center; gap:11px; }
+  .brand .mark{ width:42px; height:42px; border-radius:11px; background:var(--ink); color:#fff;
+                display:flex; align-items:center; justify-content:center; font-weight:800; font-size:19pt; }
+  .brand .name{ font-size:18pt; font-weight:800; color:var(--ink); letter-spacing:-.02em; }
+  .brand .tag{ font-size:9pt; font-weight:600; color:var(--muted); margin-top:1px; }
+  .cover-mid{ flex:1; display:flex; flex-direction:column; justify-content:center; }
+  .cover h1{ font-size:34pt; letter-spacing:-.02em; line-height:1.08; margin:0 0 14px; }
+  .cover .lead{ font-size:13pt; color:var(--body); max-width:150mm; font-weight:500; }
+  .cover .pills{ margin-top:26px; display:flex; flex-wrap:wrap; gap:8px; }
+  .cover-foot{ flex:none; border-top:1px solid var(--line); padding-top:14px;
+               display:flex; justify-content:space-between; color:var(--muted); font-size:9pt; font-weight:600; }
+  .kbox{ margin-top:30px; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .kbox .row{ display:flex; border-bottom:1px solid var(--line); }
+  .kbox .row:last-child{ border-bottom:none; }
+  .kbox .k{ width:42mm; background:var(--bg); padding:9px 13px; font-weight:700; color:var(--ink);
+            font-size:9.5pt; border-right:1px solid var(--line); flex:none; }
+  .kbox .v{ padding:9px 13px; font-size:9.5pt; color:var(--body); }
+
+  /* ---------- Chips / badges ---------- */
+  .chip{ display:inline-flex; align-items:center; gap:5px; font-size:8.5pt; font-weight:700;
+         padding:3px 9px; border-radius:999px; border:1px solid transparent; white-space:nowrap; }
+  .chip .dot{ width:7px; height:7px; border-radius:999px; }
+  .c-blue{ background:var(--blue-bg); color:var(--blue-tx); border-color:var(--blue-bd); }
+  .c-amber{ background:var(--amber-bg); color:var(--amber-tx); border-color:var(--amber-bd); }
+  .c-emerald{ background:var(--emerald-bg); color:var(--emerald-tx); border-color:var(--emerald-bd); }
+  .c-slate{ background:var(--slate-bg); color:var(--slate-tx); border-color:var(--slate-bd); }
+  .c-red{ background:var(--red-bg); color:var(--red-tx); border-color:var(--red-bd); }
+  .d-blue{ background:var(--blue); } .d-amber{ background:var(--amber); }
+  .d-emerald{ background:var(--emerald); } .d-slate{ background:var(--slate); } .d-red{ background:var(--red); }
+
+  .intg{ display:inline-flex; align-items:center; gap:6px; font-size:8.5pt; font-weight:700;
+         padding:4px 10px; border-radius:8px; border:1.5px dashed var(--rail); color:var(--muted);
+         background:var(--bg); }
+
+  /* ---------- Cards / grids ---------- */
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  .grid4{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .card{ border:1px solid var(--line); border-radius:12px; padding:14px 15px; background:#fff; }
+  .card.tint{ background:var(--bg); }
+  .card h4{ margin-bottom:6px; }
+  .card p{ font-size:9.5pt; color:var(--body); margin:0; }
+
+  .stat{ border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .stat .lbl{ font-size:8.5pt; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
+  .stat .val{ font-size:20pt; font-weight:800; color:var(--ink); line-height:1.1; margin:3px 0 1px; }
+  .stat .sub{ font-size:8.5pt; color:var(--faint); font-weight:600; }
+  .stat.green .val{ color:var(--emerald-tx); } .stat.blue .val{ color:var(--blue-tx); }
+  .stat.amber .val{ color:var(--amber-tx); } .stat.red .val{ color:var(--red-tx); }
+
+  .lead-note{ background:var(--bg); border:1px solid var(--line); border-left:4px solid var(--ink);
+              border-radius:8px; padding:11px 14px; font-size:9.5pt; color:var(--body); margin:0 0 14px; }
+  .lead-note strong{ color:var(--ink); }
+
+  /* ---------- Tables ---------- */
+  table{ width:100%; border-collapse:collapse; font-size:9pt; margin:4px 0 10px; }
+  th{ text-align:left; background:var(--ink); color:#fff; font-weight:700; padding:7px 10px; font-size:8.5pt;
+      text-transform:uppercase; letter-spacing:.03em; }
+  th:first-child{ border-radius:8px 0 0 0; } th:last-child{ border-radius:0 8px 0 0; }
+  td{ padding:7px 10px; border-bottom:1px solid var(--line); color:var(--body); vertical-align:top; }
+  tr:nth-child(even) td{ background:var(--bg); }
+  td strong{ color:var(--ink); }
+
+  ul.bul{ margin:4px 0 10px; padding-left:18px; }
+  ul.bul li{ margin:3px 0; }
+
+  /* ---------- Tree diagram ---------- */
+  .tree-wrap{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .tree-col{ border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .tree-col .head{ padding:11px 14px; color:#fff; }
+  .tree-col .head.mgr{ background:var(--ink); }
+  .tree-col .head.tech{ background:#1e293b; }
+  .tree-col .head .t{ font-size:11.5pt; font-weight:800; }
+  .tree-col .head .s{ font-size:8.5pt; font-weight:600; opacity:.85; margin-top:1px; }
+  .tree-col .body{ padding:12px 14px 14px; }
+
+  ul.tree{ list-style:none; margin:0; padding:0 0 0 4px; }
+  ul.tree li{ position:relative; padding:0 0 0 18px; }
+  ul.tree li > .node{ display:block; padding:5px 0; }
+  ul.tree li::before{ content:''; position:absolute; left:0; top:0; bottom:0; border-left:1.5px solid var(--rail); }
+  ul.tree li:last-child::before{ height:15px; }
+  ul.tree li::after{ content:''; position:absolute; left:0; top:15px; width:12px; border-top:1.5px solid var(--rail); }
+  ul.tree ul.tree{ padding-left:14px; }
+  .node .path{ font-family:'SFMono-Regular',Consolas,monospace; font-size:8.5pt; font-weight:700; color:var(--ink); }
+  .node .desc{ font-size:8.5pt; color:var(--muted); font-weight:600; }
+  .node .star{ color:var(--amber); font-weight:800; }
+  .root-node{ display:flex; align-items:center; gap:7px; font-weight:800; color:var(--ink);
+              font-size:9.5pt; margin-bottom:2px; }
+
+  /* ---------- Flow / lifecycle ---------- */
+  .flow{ display:flex; align-items:stretch; flex-wrap:wrap; gap:0; }
+  .flow .step{ flex:1 1 0; min-width:0; }
+  .flow .pill{ border-radius:9px; padding:8px 6px; text-align:center; border:1.5px solid; }
+  .flow .pill .s1{ font-size:9pt; font-weight:800; display:block; }
+  .flow .pill .s2{ font-size:7.5pt; font-weight:600; opacity:.9; display:block; margin-top:1px; }
+  .flow .arrow{ flex:0 0 18px; display:flex; align-items:center; justify-content:center;
+                color:var(--faint); font-size:13pt; font-weight:800; }
+  .p-blue{ background:var(--blue-bg); border-color:var(--blue-bd); color:var(--blue-tx); }
+  .p-amber{ background:var(--amber-bg); border-color:var(--amber-bd); color:var(--amber-tx); }
+  .p-emerald{ background:var(--emerald-bg); border-color:var(--emerald-bd); color:var(--emerald-tx); }
+  .p-slate{ background:var(--slate-bg); border-color:var(--slate-bd); color:var(--slate-tx); }
+  .p-ink{ background:var(--ink); border-color:var(--ink); color:#fff; }
+
+  .branches{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-top:12px; }
+  .branch{ border:1px dashed var(--rail); border-radius:9px; padding:9px 11px; background:var(--bg); }
+  .branch .h{ font-weight:800; color:var(--ink); font-size:9pt; display:flex; align-items:center; gap:6px; }
+  .branch p{ font-size:8.5pt; color:var(--muted); margin:4px 0 0; }
+
+  /* ---------- Architecture layers ---------- */
+  .layers{ display:flex; flex-direction:column; gap:8px; }
+  .layer{ border:1px solid var(--line); border-radius:10px; padding:11px 14px; display:flex;
+          align-items:center; gap:14px; }
+  .layer .lname{ width:38mm; flex:none; font-weight:800; color:var(--ink); font-size:10pt; }
+  .layer .lname small{ display:block; font-weight:600; color:var(--muted); font-size:8pt; }
+  .layer .lcontent{ flex:1; display:flex; flex-wrap:wrap; gap:6px; }
+  .tok{ font-size:8pt; font-weight:700; background:var(--bg); border:1px solid var(--line);
+        border-radius:6px; padding:3px 8px; color:var(--body); }
+  .tok.accent{ background:var(--ink); color:#fff; border-color:var(--ink); }
+  .layer-arrow{ text-align:center; color:var(--faint); font-size:12pt; font-weight:800; line-height:.5; }
+
+  /* ---------- Demo steps ---------- */
+  ol.steps{ list-style:none; counter-reset:step; margin:0; padding:0; }
+  ol.steps > li{ position:relative; padding:0 0 12px 38px; }
+  ol.steps > li::before{ counter-increment:step; content:counter(step); position:absolute; left:0; top:0;
+        width:24px; height:24px; border-radius:50%; background:var(--ink); color:#fff;
+        font-weight:800; font-size:10pt; display:flex; align-items:center; justify-content:center; }
+  ol.steps > li::after{ content:''; position:absolute; left:11.5px; top:24px; bottom:0; border-left:2px solid var(--line); }
+  ol.steps > li:last-child::after{ display:none; }
+  ol.steps .st{ font-weight:800; color:var(--ink); font-size:10pt; }
+  ol.steps .sd{ font-size:9pt; color:var(--body); margin-top:1px; }
+  ol.steps .say{ font-size:8.5pt; color:var(--emerald-tx); font-weight:600; margin-top:3px; }
+  ol.steps .say::before{ content:'\201C'; } ol.steps .say::after{ content:'\201D'; }
+
+  .legendrow{ display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 4px; }
+  .mini{ color:var(--muted); font-size:8.5pt; }
+  .two-col-text{ columns:2; column-gap:18px; }
+  .two-col-text p{ break-inside:avoid; }
+</style>
+</head>
+<body>
+
+<!-- ===================== COVER ===================== -->
+<div class="cover">
+  <div class="cover-top">
+    <div class="brand">
+      <div class="mark">F</div>
+      <div>
+        <div class="name">FixFlow</div>
+        <div class="tag">Workshop Technician Management System</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cover-mid">
+    <h1>Demo &amp; Walkthrough<br/>Documentation</h1>
+    <p class="lead">
+      A clickable strawman prototype for a home-appliance repair workshop in Karachi —
+      built to manage technicians, jobs, attendance, and the full carry-in repair lifecycle
+      across a manager desktop view and a technician mobile view.
+    </p>
+    <div class="pills">
+      <span class="chip c-slate"><span class="dot d-slate"></span>Prototype v1.0</span>
+      <span class="chip c-blue"><span class="dot d-blue"></span>2 roles · 1 app</span>
+      <span class="chip c-emerald"><span class="dot d-emerald"></span>17 jobs · 5 technicians</span>
+      <span class="chip c-amber"><span class="dot d-amber"></span>Mock data — no backend</span>
+    </div>
+
+    <div class="kbox">
+      <div class="row"><div class="k">Product</div><div class="v">FixFlow — staff-only workforce &amp; job management tool</div></div>
+      <div class="row"><div class="k">Business</div><div class="v">Home-appliance repair workshop — AC, washing machine, refrigerator, microwave</div></div>
+      <div class="row"><div class="k">Location</div><div class="v">Karachi, Pakistan · currency shown as <code>Rs</code> (PKR)</div></div>
+      <div class="row"><div class="k">Purpose</div><div class="v">Demo to the workshop manager to gather feedback before any real build</div></div>
+      <div class="row"><div class="k">Demo date anchor</div><div class="v">Saturday, 30 May 2026 (all aging &amp; “today” logic is pinned to this date)</div></div>
+    </div>
+  </div>
+
+  <div class="cover-foot">
+    <span>FixFlow — Internal Demo Documentation</span>
+    <span>Strawman prototype · not for production use</span>
+  </div>
+</div>
+
+<!-- ===================== 1. OVERVIEW ===================== -->
+<div class="page-break"></div>
+<div class="section">
+  <div class="sec-head"><span class="sec-num">1</span><h2>What FixFlow Is</h2></div>
+  <p class="sec-sub">The one-paragraph version, and what to keep in mind while demoing.</p>
+
+  <p>
+    <strong>FixFlow</strong> is a single web app that runs a small repair workshop’s day-to-day operations.
+    It replaces the paper job-slips and WhatsApp back-and-forth with one shared view of every appliance
+    in the shop: who brought it in, what’s wrong, who’s fixing it, what it will cost, whether the customer
+    approved, and whether it has been paid for and collected. The same app also tracks technician
+    attendance, payroll summaries, and a weekly work schedule, plus a built-in fault-code reference so
+    technicians can diagnose common faults on the spot.
+  </p>
+
+  <div class="lead-note">
+    <strong>Important framing for the demo:</strong> this is a <strong>strawman prototype</strong>. Every screen is real and
+    clickable, but all data is mock data that lives in the browser. There is no login, no server, and no real
+    SMS or payment processing. Anything you change (create a job, log a payment) persists while the tab is
+    open and resets on refresh. The goal is to react to a working shape of the product — “yes, but…”,
+    “we’d also need…”, “this part is wrong for us” — not to use it for real work yet.
+  </div>
+
+  <div class="grid3" style="margin-top:14px">
+    <div class="card tint">
+      <h4>The problem today</h4>
+      <p>Job status lives in people’s heads and on paper slips. Nobody can see at a glance what’s ready for
+         pickup, what’s stuck waiting for a part, or who is overloaded.</p>
+    </div>
+    <div class="card tint">
+      <h4>What FixFlow gives</h4>
+      <p>One board of every job with a clear status, a guided repair workflow from intake to payment, and a
+         live dashboard of what needs attention right now.</p>
+    </div>
+    <div class="card tint">
+      <h4>Who uses it</h4>
+      <p>The <strong>manager</strong> runs the shop from a desktop. <strong>Technicians</strong> work from their phones — built for
+         quick taps with greasy hands and big touch targets.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 2. TWO ROLES ===================== -->
+<div class="section" style="margin-top:22px">
+  <div class="sec-head"><span class="sec-num">2</span><h2>Two Roles, One App</h2></div>
+  <p class="sec-sub">There is no login. A toggle in the header switches between the two experiences — handy for demoing both on one laptop.</p>
+
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-bottom:4px">🖥️ &nbsp;Manager</h3>
+      <p style="font-size:9pt;color:var(--muted);font-weight:600;margin-bottom:8px">Desktop / tablet · left sidebar navigation</p>
+      <p>The shop overview. Sees every job, every technician, attendance, the weekly schedule, and shop
+         settings. Creates jobs, sets and approves estimates, marks jobs ready, logs payments, and closes them.</p>
+      <p style="margin-top:6px"><strong>Navigation:</strong> fixed left sidebar with 7 sections; wide multi-column layouts and data tables.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:4px">📱 &nbsp;Technician</h3>
+      <p style="font-size:9pt;color:var(--muted);font-weight:600;margin-bottom:8px">Mobile · bottom tab bar · shown in a phone frame on desktop</p>
+      <p>The personal work view. Sees only the jobs assigned to that technician, clocks in/out for attendance,
+         looks up fault codes, and checks their week and pay summary.</p>
+      <p style="margin-top:6px"><strong>Navigation:</strong> 4 bottom tabs (My Jobs · Clock In · Diagnose · Profile), built with ≥44px tap targets.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 3. INFORMATION ARCHITECTURE ===================== -->
+<div class="page-break"></div>
+<div class="section">
+  <div class="sec-head"><span class="sec-num">3</span><h2>Information Architecture</h2></div>
+  <p class="sec-sub">Every screen in the app. The URL prefix decides the role: anything under <code>/tech</code> is the technician phone view; everything else is the manager desktop view.</p>
+
+  <div class="tree-wrap">
+    <!-- MANAGER -->
+    <div class="tree-col">
+      <div class="head mgr">
+        <div class="t">Manager &nbsp;<span style="opacity:.7;font-weight:600;font-size:8.5pt">/ …</span></div>
+        <div class="s">ManagerLayout — sidebar shell</div>
+      </div>
+      <div class="body">
+        <ul class="tree">
+          <li><span class="node"><span class="path">/</span> &nbsp;<span class="desc">Dashboard — KPIs, alerts, activity</span></span></li>
+          <li><span class="node"><span class="path">/jobs</span> &nbsp;<span class="star">★</span><span class="desc">Jobs board — the core module</span></span>
+            <ul class="tree">
+              <li><span class="node"><span class="path">/jobs/:id</span> &nbsp;<span class="desc">Job detail — full repair workflow</span></span></li>
+            </ul>
+          </li>
+          <li><span class="node"><span class="path">/technicians</span> &nbsp;<span class="desc">Technician roster</span></span>
+            <ul class="tree">
+              <li><span class="node"><span class="path">/technicians/:id</span> &nbsp;<span class="desc">Profile, attendance, payroll</span></span></li>
+            </ul>
+          </li>
+          <li><span class="node"><span class="path">/attendance</span> &nbsp;<span class="desc">Today + monthly grid</span></span></li>
+          <li><span class="node"><span class="path">/schedule</span> &nbsp;<span class="desc">Weekly work grid</span></span></li>
+          <li><span class="node"><span class="path">/troubleshooting</span> &nbsp;<span class="desc">Fault-code reference</span></span></li>
+          <li><span class="node"><span class="path">/settings</span> &nbsp;<span class="desc">Workshop profile + integrations</span></span></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- TECHNICIAN -->
+    <div class="tree-col">
+      <div class="head tech">
+        <div class="t">Technician &nbsp;<span style="opacity:.7;font-weight:600;font-size:8.5pt">/tech/ …</span></div>
+        <div class="s">TechLayout — phone frame + bottom tabs</div>
+      </div>
+      <div class="body">
+        <ul class="tree">
+          <li><span class="node"><span class="path">/tech/jobs</span> &nbsp;<span class="desc">My Jobs — assigned list <em>(tab)</em></span></span>
+            <ul class="tree">
+              <li><span class="node"><span class="path">/tech/jobs/:id</span> &nbsp;<span class="desc">Job detail (same as manager)</span></span></li>
+            </ul>
+          </li>
+          <li><span class="node"><span class="path">/tech/clock</span> &nbsp;<span class="desc">Clock In / Out <em>(tab)</em></span></span></li>
+          <li><span class="node"><span class="path">/tech/troubleshoot</span> &nbsp;<span class="desc">Diagnose — fault codes <em>(tab)</em></span></span></li>
+          <li><span class="node"><span class="path">/tech/profile</span> &nbsp;<span class="desc">Profile + pay summary <em>(tab)</em></span></span></li>
+          <li><span class="node"><span class="path">/tech/schedule</span> &nbsp;<span class="desc">My Week <em>(top-bar calendar icon)</em></span></span></li>
+        </ul>
+        <p class="mini" style="margin-top:10px">The 4 items marked <em>(tab)</em> are the bottom tab bar. <strong>My Week</strong> opens
+           from the calendar icon in the top bar. Opening <code>/tech</code> alone redirects to <strong>My Jobs</strong>.</p>
+      </div>
+    </div>
+  </div>
+
+  <p class="mini" style="margin-top:12px">
+    <span class="star" style="color:var(--amber);font-weight:800">★</span> The <strong>Jobs</strong> module is the heart of the product and the deepest screen — build the demo around it.
+  </p>
+</div>
+
+<!-- ===================== 4. THE CORE: JOB LIFECYCLE ===================== -->
+<div class="page-break"></div>
+<div class="section">
+  <div class="sec-head"><span class="sec-num">4</span><h2>The Core: Job Lifecycle</h2></div>
+  <p class="sec-sub">Every appliance moves through the same path from intake to collection. This is the single most important flow to show in a demo.</p>
+
+  <div class="flow">
+    <div class="step"><div class="pill p-ink"><span class="s1">New Job</span><span class="s2">intake</span></div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="pill p-blue"><span class="s1">Open</span><span class="s2">diagnose + note</span></div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="pill p-amber"><span class="s1">Estimated</span><span class="s2">parts + labour</span></div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="pill p-emerald"><span class="s1">Approved</span><span class="s2">customer says yes</span></div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="pill p-emerald"><span class="s1">Ready</span><span class="s2">SMS sent 📩</span></div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="pill p-emerald"><span class="s1">Paid</span><span class="s2">cash / card</span></div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="pill p-slate"><span class="s1">Closed</span><span class="s2">in history</span></div></div>
+  </div>
+
+  <h4 style="margin:18px 0 8px">Branches off the happy path</h4>
+  <div class="branches">
+    <div class="branch">
+      <div class="h"><span class="chip c-amber" style="padding:1px 7px"><span class="dot d-amber"></span>Waiting</span></div>
+      <p>A job pauses when it’s blocked — <em>waiting for a part</em> from the supplier, or <em>waiting for the customer
+         to approve</em> the estimate. It shows the reason and how many days it has been stuck.</p>
+    </div>
+    <div class="branch">
+      <div class="h"><span class="chip c-red" style="padding:1px 7px"><span class="dot d-red"></span>Declined / Abandoned</span></div>
+      <p>The customer can decline an estimate, or a job can be abandoned (customer never returns). Either way it
+         is closed with a reason recorded on the timeline.</p>
+    </div>
+    <div class="branch">
+      <div class="h"><span class="chip c-blue" style="padding:1px 7px"><span class="dot d-blue"></span>Home visit</span></div>
+      <p>Jobs can start as a <em>home visit</em> instead of carry-in. From the field, a job can be converted —
+         “Haul to Shop” — or the visit can be rescheduled to a new date/time window.</p>
+    </div>
+  </div>
+
+  <div class="lead-note" style="margin-top:16px">
+    <strong>Two status systems work together.</strong> The <strong>job status</strong> (Open → Waiting → Ready → Closed) is what
+    everyone sees on the board. Inside a job, the <strong>estimate</strong> has its own state —
+    <code>none → estimated → approved / declined</code> — and the <strong>payment</strong> tracks <code>owed / paid</code> with a method
+    of cash, card, or pending. Every action writes a timestamped line to the job’s <strong>timeline</strong>.
+  </div>
+</div>
+
+<!-- ===================== 5. MANDATORY DEMO SCRIPT ===================== -->
+<div class="section" style="margin-top:22px">
+  <div class="sec-head"><span class="sec-num">5</span><h2>The End-to-End Demo Script</h2></div>
+  <p class="sec-sub">The one flow to walk live. Take a carry-in repair from creation all the way to closed. Suggested talking points are in green.</p>
+
+  <ol class="steps">
+    <li>
+      <div class="st">Start on the Dashboard, switch to Manager view</div>
+      <div class="sd">Point out the four KPI cards and the “Needs Attention” alerts — jobs awaiting pickup, estimates awaiting approval, absent technicians.</div>
+      <div class="say">This is what the manager sees first thing in the morning — the whole shop in one screen.</div>
+    </li>
+    <li>
+      <div class="st">Open the Jobs board → click “New Job”</div>
+      <div class="sd">Fill in a carry-in: customer name &amp; phone, appliance type/brand, the problem, and assign a technician. Save.</div>
+      <div class="say">A walk-in just dropped off a microwave — here’s how it enters the system. It gets the next token automatically.</div>
+    </li>
+    <li>
+      <div class="st">Open the new job → add a diagnosis note</div>
+      <div class="sd">Use “Add Note” to record what the technician found. It appears in the notes list and on the timeline.</div>
+      <div class="say">The technician inspected it and logged the fault — everything is recorded against this one job.</div>
+    </li>
+    <li>
+      <div class="st">Set the estimate</div>
+      <div class="sd">Add a part (e.g. turntable motor at <code>Rs 3,500</code>) and labour hours (1 hr × <code>Rs 1,200</code>). The grand total computes live.</div>
+      <div class="say">Parts plus labour gives the customer quote — Rs 4,700. The job is now “Estimated”, awaiting approval.</div>
+    </li>
+    <li>
+      <div class="st">Mark the estimate Approved</div>
+      <div class="sd">Simulates the customer agreeing to the quote. The action bar now offers “Mark Ready”.</div>
+      <div class="say">Customer approved over the phone — now the technician can do the repair.</div>
+    </li>
+    <li>
+      <div class="st">Mark Ready → watch the SMS toast</div>
+      <div class="sd">Status flips to <strong>Ready</strong> and a toast confirms “SMS notification sent to customer”.</div>
+      <div class="say">The moment it’s fixed, the customer is automatically texted to come collect it. (In the real build this hits an SMS gateway.)</div>
+    </li>
+    <li>
+      <div class="st">Log the payment</div>
+      <div class="sd">Amount defaults to the balance owed; choose Cash or Card. Balance drops to zero.</div>
+      <div class="say">Customer collects and pays — recorded here, so the day’s revenue is accurate.</div>
+    </li>
+    <li>
+      <div class="st">Close the job</div>
+      <div class="sd">The job moves to the <strong>History</strong> tab, and the full timeline tells the whole story start to finish.</div>
+      <div class="say">Done. And it’s all auditable — who did what, when, for how much.</div>
+    </li>
+  </ol>
+</div>
+
+<!-- ===================== 6. SCREEN-BY-SCREEN ===================== -->
+<div class="page-break"></div>
+<div class="section">
+  <div class="sec-head"><span class="sec-num">6</span><h2>Screen-by-Screen Walkthrough</h2></div>
+  <p class="sec-sub">What each screen is for and what to highlight. Manager screens first, then the technician phone screens.</p>
+
+  <h3 style="margin:6px 0 10px">Manager</h3>
+
+  <table>
+    <tr><th style="width:30mm">Screen</th><th>What it does &amp; what to point out</th></tr>
+    <tr><td><strong>Dashboard</strong><br/><code>/</code></td>
+        <td>Four live KPI cards (Present Today, Active Jobs, Awaiting Parts, Revenue This Week), a <strong>Needs Attention</strong> alert strip
+            that links straight to the affected jobs, and a <strong>Recent Activity</strong> feed pulled from every job’s timeline.</td></tr>
+    <tr><td><strong>Jobs board</strong> ★<br/><code>/jobs</code></td>
+        <td>Tabs for All / Open / Waiting / Ready / History, plus search. Each card shows the token, status chip, customer,
+            appliance, a problem snippet, the assigned technician, and the amount (or “Pending estimate”). “New Job” opens the intake form.</td></tr>
+    <tr><td><strong>Job detail</strong> ★<br/><code>/jobs/:id</code></td>
+        <td>The deepest screen. Customer + appliance header, Problem &amp; Diagnosis (notes, photo placeholders), the itemised
+            Estimate, Payment (owed / paid / balance), the Timeline, and a sticky action bar whose buttons change with the job’s state.</td></tr>
+    <tr><td><strong>Technicians</strong><br/><code>/technicians</code></td>
+        <td>Card grid of the 5 staff — avatar, specialty, today’s presence, active job count, tap-to-call. Click through to a full profile.</td></tr>
+    <tr><td><strong>Technician detail</strong><br/><code>/technicians/:id</code></td>
+        <td>Attendance dot-calendar, performance numbers, current jobs, and a 3-month <strong>payroll table</strong>. Carries dashed badges
+            for the (mock) Attendance and Payroll services.</td></tr>
+    <tr><td><strong>Attendance</strong><br/><code>/attendance</code></td>
+        <td>Today’s table (clock-in, clock-out, hours) and a colour-coded monthly grid of every technician × every day.</td></tr>
+    <tr><td><strong>Schedule</strong><br/><code>/schedule</code></td>
+        <td>Weekly grid (technicians × Mon–Sat) with job mini-cards; home visits are blue with a time window; today’s column is highlighted.</td></tr>
+    <tr><td><strong>Troubleshooting</strong><br/><code>/troubleshooting</code></td>
+        <td>Searchable fault-code reference (13 codes) with meaning, likely causes, recommended part and cost range, plus a
+            Common Fixes accordion. “Add to Job” drops a part straight onto an open job’s estimate.</td></tr>
+    <tr><td><strong>Settings</strong><br/><code>/settings</code></td>
+        <td>Workshop profile (name, location, labour rate, working days) and the list of integration points the real system would connect to.</td></tr>
+  </table>
+
+  <h3 style="margin:14px 0 10px">Technician (phone)</h3>
+  <table>
+    <tr><th style="width:30mm">Screen</th><th>What it does &amp; what to point out</th></tr>
+    <tr><td><strong>My Jobs</strong><br/><code>/tech/jobs</code></td>
+        <td>Only the jobs assigned to the logged-in technician, with big tap targets and Active / Ready / All filters.</td></tr>
+    <tr><td><strong>Clock In</strong><br/><code>/tech/clock</code></td>
+        <td>One large Clock In / Clock Out button, “clocked in since…”, and the technician’s own monthly attendance dots.</td></tr>
+    <tr><td><strong>Diagnose</strong><br/><code>/tech/troubleshoot</code></td>
+        <td>The same fault-code reference in a compact, phone-friendly layout for use at the bench.</td></tr>
+    <tr><td><strong>Profile</strong><br/><code>/tech/profile</code></td>
+        <td>Identity + tap-to-call, quick stats, and the latest month’s pay summary.</td></tr>
+    <tr><td><strong>My Week</strong><br/><code>/tech/schedule</code></td>
+        <td>A vertical day-by-day list of the technician’s scheduled jobs, with today highlighted. Opens from the top-bar calendar icon.</td></tr>
+  </table>
+</div>
+
+<!-- ===================== 7. DESIGN SYSTEM ===================== -->
+<div class="page-break"></div>
+<div class="section">
+  <div class="sec-head"><span class="sec-num">7</span><h2>Design Language</h2></div>
+  <p class="sec-sub">Clean, industrial-utilitarian. White cards on a light slate background, strong type, no gradients or illustrations — colour carries the meaning.</p>
+
+  <h4 style="margin-bottom:8px">Status colours (used everywhere — board, chips, timeline dots)</h4>
+  <div class="legendrow">
+    <span class="chip c-blue"><span class="dot d-blue"></span>Open — newly received, in progress</span>
+    <span class="chip c-amber"><span class="dot d-amber"></span>Waiting — blocked on part or approval</span>
+    <span class="chip c-emerald"><span class="dot d-emerald"></span>Ready — repaired, awaiting pickup</span>
+    <span class="chip c-slate"><span class="dot d-slate"></span>Closed — paid &amp; collected (history)</span>
+    <span class="chip c-red"><span class="dot d-red"></span>Danger — declined / abandoned / absent</span>
+  </div>
+
+  <div class="grid2" style="margin-top:16px">
+    <div class="card">
+      <h4>Typography &amp; layout</h4>
+      <ul class="bul" style="margin-bottom:0">
+        <li><strong>Plus Jakarta Sans</strong> throughout — distinct, not the usual Inter/Arial.</li>
+        <li>Bold, glanceable tokens and status labels; 14–16px body text.</li>
+        <li>Manager = wide multi-column tables &amp; grids. Technician = single-column, thumb-friendly.</li>
+        <li>Responsive: below 768px the manager sidebar collapses into a drawer.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Integration badges</h4>
+      <p style="margin-bottom:8px">Where the real system would talk to an outside service, the prototype shows a
+        <strong>dashed, muted badge with a link icon</strong>. These are deliberately non-functional markers, so it’s obvious what is
+        real UI versus a future hookup.</p>
+      <span class="intg">🔗 Synced with Attendance Service</span>
+      &nbsp;
+      <span class="intg">🔗 Linked to Parts Supplier</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 8. WHAT'S IN THE DEMO (DATA) ===================== -->
+<div class="section" style="margin-top:22px">
+  <div class="sec-head"><span class="sec-num">8</span><h2>What’s Loaded in the Demo</h2></div>
+  <p class="sec-sub">The numbers the manager will see are driven by this seed data, pinned to 30 May 2026.</p>
+
+  <h4 style="margin-bottom:8px">Dashboard at a glance</h4>
+  <div class="grid4">
+    <div class="stat red"><div class="lbl">Present Today</div><div class="val">4/5</div><div class="sub">on duty (1 absent)</div></div>
+    <div class="stat blue"><div class="lbl">Active Jobs</div><div class="val">13</div><div class="sub">open · waiting · ready</div></div>
+    <div class="stat amber"><div class="lbl">Awaiting Parts</div><div class="val">2</div><div class="sub">blocked on supplier</div></div>
+    <div class="stat green"><div class="lbl">Revenue This Week</div><div class="val" style="font-size:15pt">Rs 5,100</div><div class="sub">payments collected</div></div>
+  </div>
+
+  <div class="grid2" style="margin-top:14px">
+    <div>
+      <h4 style="margin-bottom:6px">17 jobs (tokens #1035–#1051)</h4>
+      <table>
+        <tr><th>Status</th><th>Count</th><th>Notes</th></tr>
+        <tr><td><span class="chip c-blue" style="padding:1px 7px"><span class="dot d-blue"></span>Open</span></td><td><strong>6</strong></td><td>incl. 2 home visits today</td></tr>
+        <tr><td><span class="chip c-amber" style="padding:1px 7px"><span class="dot d-amber"></span>Waiting</span></td><td><strong>4</strong></td><td>2 for parts, 2 for approval</td></tr>
+        <tr><td><span class="chip c-emerald" style="padding:1px 7px"><span class="dot d-emerald"></span>Ready</span></td><td><strong>3</strong></td><td>aged 1, 4 &amp; 9 days</td></tr>
+        <tr><td><span class="chip c-slate" style="padding:1px 7px"><span class="dot d-slate"></span>Closed</span></td><td><strong>4</strong></td><td>full payment history</td></tr>
+      </table>
+    </div>
+    <div>
+      <h4 style="margin-bottom:6px">5 technicians</h4>
+      <table>
+        <tr><th>Name</th><th>Specialty</th><th>Today</th></tr>
+        <tr><td>Imran Ahmed</td><td>AC Specialist</td><td><span class="chip c-emerald" style="padding:1px 7px">Present</span></td></tr>
+        <tr><td>Kashif Raza</td><td>General Repair</td><td><span class="chip c-emerald" style="padding:1px 7px">Present</span></td></tr>
+        <tr><td>Tariq Mehmood</td><td>Washing Machine</td><td><span class="chip c-red" style="padding:1px 7px">Absent</span></td></tr>
+        <tr><td>Asif Ali</td><td>Refrigeration</td><td><span class="chip c-emerald" style="padding:1px 7px">Present</span></td></tr>
+        <tr><td>Bilal Khan</td><td>General Repair</td><td><span class="chip c-blue" style="padding:1px 7px">On Field</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <p class="mini" style="margin-top:4px">Also seeded: a <strong>13-code fault reference</strong> (5 AC · 5 washing machine · 3 refrigerator) with common-fix guides for
+     4 appliance types, a full month of <strong>attendance</strong> records, and the current <strong>week’s schedule</strong> (Mon–Sat, incl. home visits).</p>
+</div>
+
+<!-- ===================== 9. INTEGRATIONS & ARCHITECTURE ===================== -->
+<div class="page-break"></div>
+<div class="section">
+  <div class="sec-head"><span class="sec-num">9</span><h2>Integrations &amp; How It’s Built</h2></div>
+  <p class="sec-sub">The prototype marks — but does not connect — the four places a production build would integrate with outside systems.</p>
+
+  <div class="grid4" style="margin-bottom:18px">
+    <div class="card tint" style="padding:12px"><span class="intg">🔗 Attendance</span><p style="margin-top:8px;font-size:8.5pt">Biometric / clock device feeding the attendance grid.</p></div>
+    <div class="card tint" style="padding:12px"><span class="intg">🔗 Payroll</span><p style="margin-top:8px;font-size:8.5pt">Salary system behind the pay tables &amp; deductions.</p></div>
+    <div class="card tint" style="padding:12px"><span class="intg">🔗 SMS Gateway</span><p style="margin-top:8px;font-size:8.5pt">Sends the “your repair is ready” text on Mark Ready.</p></div>
+    <div class="card tint" style="padding:12px"><span class="intg">🔗 Parts Supplier</span><p style="margin-top:8px;font-size:8.5pt">Live parts catalogue &amp; pricing for estimates.</p></div>
+  </div>
+
+  <h4 style="margin-bottom:10px">Architecture (how the prototype is assembled)</h4>
+  <div class="layers">
+    <div class="layer">
+      <div class="lname">Pages / Screens<small>what users see</small></div>
+      <div class="lcontent">
+        <span class="tok">Dashboard</span><span class="tok">Jobs board</span><span class="tok">Job detail</span>
+        <span class="tok">Technicians</span><span class="tok">Attendance</span><span class="tok">Schedule</span>
+        <span class="tok">Troubleshooting</span><span class="tok">Settings</span><span class="tok">+ 5 tech screens</span>
+      </div>
+    </div>
+    <div class="layer-arrow">▲</div>
+    <div class="layer">
+      <div class="lname">Shell &amp; Routing<small>navigation</small></div>
+      <div class="lcontent">
+        <span class="tok">ManagerLayout (sidebar)</span><span class="tok">TechLayout (phone + tabs)</span>
+        <span class="tok">React Router — URL drives role</span>
+      </div>
+    </div>
+    <div class="layer-arrow">▲</div>
+    <div class="layer">
+      <div class="lname">State &amp; Logic<small>the single source of truth</small></div>
+      <div class="lcontent">
+        <span class="tok accent">AppContext</span>
+        <span class="tok">addJob</span><span class="tok">addNote</span><span class="tok">setEstimate</span>
+        <span class="tok">approve / decline</span><span class="tok">markReady + SMS</span><span class="tok">logPayment</span>
+        <span class="tok">closeJob</span><span class="tok">clockIn / out</span><span class="tok">reschedule</span>
+      </div>
+    </div>
+    <div class="layer-arrow">▲</div>
+    <div class="layer">
+      <div class="lname">Mock Data<small>resets on refresh</small></div>
+      <div class="lcontent">
+        <span class="tok">jobs</span><span class="tok">technicians</span><span class="tok">attendance</span>
+        <span class="tok">faultCodes</span><span class="tok">commonFixes</span><span class="tok">schedule</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="mini" style="margin-top:12px"><strong>Stack:</strong> React + Vite, Tailwind CSS, React Router, lucide icons, Plus Jakarta Sans.
+     All state lives in one in-browser store — which is why the end-to-end flow persists as you navigate, and resets when you refresh.</p>
+</div>
+
+<!-- ===================== 10. SCOPE ===================== -->
+<div class="section" style="margin-top:22px">
+  <div class="sec-head"><span class="sec-num">10</span><h2>Scope &amp; Caveats</h2></div>
+  <p class="sec-sub">Set expectations up front so feedback lands on the right things.</p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4 style="color:var(--emerald-tx)">✓ &nbsp;In this prototype</h4>
+      <ul class="bul" style="margin-bottom:0">
+        <li>Every screen for both roles, fully clickable</li>
+        <li>The complete carry-in repair workflow, end to end</li>
+        <li>Live KPIs, alerts, and activity feed</li>
+        <li>Attendance, schedule, payroll views &amp; fault-code reference</li>
+        <li>Realistic Karachi pricing in <code>Rs</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4 style="color:var(--muted)">✗ &nbsp;Deliberately out of scope</h4>
+      <ul class="bul" style="margin-bottom:0">
+        <li>No login / user accounts / permissions</li>
+        <li>No server or database — data resets on refresh</li>
+        <li>No real SMS, payments, or supplier catalogue</li>
+        <li>No customer-facing portal, GPS/maps, or charts</li>
+        <li>No drag-and-drop scheduling (view only)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="lead-note" style="margin-top:16px">
+    <strong>Best questions to ask the manager during the demo:</strong> Does the job board match how you actually track repairs?
+    Are these the right statuses? What’s missing from a job — warranty, customer history, photos that matter? Is the
+    estimate/approval step how you really quote customers? Which of the four integrations matters most first?
+  </div>
+
+  <p style="text-align:center;color:var(--faint);font-size:8.5pt;font-weight:600;margin-top:26px">
+    FixFlow — Workshop Technician Management System · Strawman Prototype · Demo Documentation
+  </p>
+</div>
+
+</body>
+</html>
