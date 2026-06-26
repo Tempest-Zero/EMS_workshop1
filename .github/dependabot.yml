@@ -16,8 +16,13 @@ updates:
         update-types: [minor, patch]
 
   # ── Technician mobile app (npm) ───────────────────────────────────────────
-  # Expo SDK upgrades (major) are deliberate, hand-driven migrations — keep
-  # them out of the auto group so they surface as their own reviewable PRs.
+  # The Expo SDK pins exact compatible versions of its native modules
+  # (expo/bundledNativeModules.json) — they MUST be bumped via `expo install`
+  # during a deliberate SDK upgrade, never independently. Dependabot once bumped
+  # expo-asset/crypto/location to a far-future SDK's versions (~56.x on SDK 52);
+  # it passed CI (the mobile job runs `expo export`, a JS bundle, not a native
+  # build) and only broke at the EAS gradle build. So the whole Expo/RN native
+  # family is ignored here — let `expo install`/SDK upgrades own those versions.
   - package-ecosystem: npm
     directory: /technician-app
     schedule:
@@ -27,7 +32,15 @@ updates:
     labels: [dependencies, mobile]
     ignore:
       - dependency-name: expo
-        update-types: [version-update:semver-major]
+      - dependency-name: expo-*
+      - dependency-name: "@expo/*"
+      - dependency-name: react
+      - dependency-name: react-dom
+      - dependency-name: react-native
+      - dependency-name: react-native-*
+      - dependency-name: "@react-native/*"
+      - dependency-name: "@react-native-community/*"
+      - dependency-name: "@sentry/react-native"
     groups:
       mobile-minor-and-patch:
         update-types: [minor, patch]
