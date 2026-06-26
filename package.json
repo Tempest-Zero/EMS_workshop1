@@ -17,11 +17,11 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
-    "@sentry/react": "^10.58.0",
-    "lucide-react": "^1.18.0",
+    "@sentry/react": "^10.62.0",
+    "lucide-react": "^1.21.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-router-dom": "^7.17.0"
+    "react-router-dom": "^7.18.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -35,7 +35,7 @@
     "eslint": "^10.5.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.6.0",
+    "globals": "^17.7.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.8.4",
     "tailwindcss": "^4.3.0",
