@@ -47,13 +47,14 @@ def test_payroll_csv_shape() -> None:
     )
     lines = payroll_csv(export).strip().split("\n")
     assert lines[0] == (
-        "tech_id,date,status,first_in,last_out,worked_minutes,"
+        "technician,tech_id,date,status,first_in,last_out,worked_minutes,hours,"
         "flag_mock_gps,flag_outside_geofence,flag_clock_drift,"
         "flag_no_location,flag_no_selfie"
     )
-    assert lines[1].startswith("t1,2026-06-01,present,")
-    assert lines[1].endswith(",540,0,0,0,0,0")
-    assert lines[2] == "t2,2026-06-01,absent,,,,0,0,0,0,0"
+    # No tech_names passed → the technician column falls back to the id.
+    assert lines[1].startswith("t1,t1,2026-06-01,present,")
+    assert lines[1].endswith(",540,9.0,0,0,0,0,0")
+    assert lines[2] == "t2,t2,2026-06-01,absent,,,,,0,0,0,0,0"
 
 
 def test_payroll_csv_carries_evidence_flags() -> None:
@@ -72,7 +73,7 @@ def test_payroll_csv_carries_evidence_flags() -> None:
         ],
     )
     lines = payroll_csv(export).strip().split("\n")
-    assert lines[1] == "t1,2026-06-01,present,,,,1,0,0,0,1"
+    assert lines[1] == "t1,t1,2026-06-01,present,,,,,1,0,0,0,1"
 
 
 def _record() -> PayrollExportRecord:
@@ -97,6 +98,7 @@ def svc() -> tuple[AttendanceService, MagicMock, MagicMock]:
     # run_weekly_export reaches payroll() → shifts + events; give it an empty week.
     repo.list_shifts = AsyncMock(return_value=[])
     repo.list_events = AsyncMock(return_value=[])
+    repo.list_active_tech_names = AsyncMock(return_value={})
     service = AttendanceService(repo, storage)
     return service, repo, storage
 
@@ -112,7 +114,7 @@ async def test_run_weekly_export_writes_csv_and_records_it(
     path, data, content_type = storage.put_bytes.call_args.args
     assert path == "payroll/default/2026-06-01_2026-06-07.csv"
     assert content_type == "text/csv"
-    assert data.startswith(b"tech_id,date,status")
+    assert data.startswith(b"technician,tech_id,date,status")
 
     kwargs = repo.add_export.call_args.kwargs
     assert kwargs["from_date"] == date(2026, 6, 1)

@@ -18,6 +18,7 @@ from app.features.attendance.models import (
     AttendanceShift,
     PayrollExportRecord,
 )
+from app.features.identity.models import Technician
 
 
 class AttendanceRepository:
@@ -325,3 +326,14 @@ class AttendanceRepository:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    # ── Roster (read of the identity table for display names) ────────────────
+    async def list_active_tech_names(self) -> dict[str, str]:
+        """Map of ``tech_id -> display name`` for active technicians — the
+        human-readable column in the payroll CSV. Identity is the blessed
+        cross-cutting slice, so reading its table here is allowed; keeping the
+        query in the repository keeps raw SQL out of the service layer."""
+        result = await self._session.execute(
+            select(Technician.id, Technician.name).where(Technician.active.is_(True))
+        )
+        return {row.id: row.name for row in result}
