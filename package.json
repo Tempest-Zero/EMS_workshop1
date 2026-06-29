@@ -17,11 +17,11 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
-    "@sentry/react": "^10.58.0",
-    "lucide-react": "^1.18.0",
+    "@sentry/react": "^10.62.0",
+    "lucide-react": "^1.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-router-dom": "^7.17.0"
+    "react-router-dom": "^7.18.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -32,12 +32,12 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.0",
     "cross-env": "^10.1.0",
-    "eslint": "^10.5.0",
+    "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.6.0",
+    "globals": "^17.7.0",
     "jsdom": "^29.1.1",
-    "prettier": "^3.8.4",
+    "prettier": "^3.9.1",
     "tailwindcss": "^4.3.0",
     "vite": "^6.0.0",
     "vitest": "^4.1.9"
