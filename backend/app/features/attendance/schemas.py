@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 PunchKind = Literal["clock_in", "clock_out"]
+PresenceKind = Literal["arrive", "depart"]
 PunchSource = Literal["mobile", "kiosk", "manual"]
 SelfieStatus = Literal["pending", "uploaded"]
 DayStatus = Literal["present", "field", "half", "absent", "holiday", "leave"]
@@ -109,6 +110,77 @@ class TodayStatus(BaseModel):
     last_out: datetime | None = None
 
 
+# ── Mobile: geofence presence (passive arrive/depart crossings) ───────────────
+class PresenceRequest(BaseModel):
+    """Body for ``POST /api/attendance/presence``. A passive geofence boundary
+    crossing the phone logs on enter/leave, independent of any clock-in.
+    Idempotent on ``client_id`` (the phone queues these offline, like punches),
+    and carries the same GPS/wifi evidence so the fence verdict is identical."""
+
+    client_id: UUID
+    tech_id: str = Field(..., min_length=1, max_length=64)
+    kind: PresenceKind
+    shop_id: str = Field(default=DEFAULT_SHOP_ID, max_length=64)
+    device_time: datetime | None = None
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0)
+    is_mock_location: bool = False
+    wifi_bssid: str | None = Field(default=None, max_length=64)
+    wifi_ssid: str | None = Field(default=None, max_length=128)
+
+
+class PresenceResponse(BaseModel):
+    """Returned on a logged crossing. ``deduped`` is true when an offline retry
+    re-sent an already-recorded ``client_id`` (the call is a safe no-op)."""
+
+    event_id: UUID
+    client_id: UUID
+    server_time: datetime
+    kind: PresenceKind
+    inside_geofence: bool | None = None
+    distance_m: float | None = None
+    deduped: bool = False
+
+
+class PresenceItem(BaseModel):
+    """Public read model of one crossing (for the manager's tech-detail timeline)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    client_id: UUID
+    shop_id: str
+    tech_id: str
+    kind: PresenceKind
+    source: str
+    server_time: datetime
+    device_time: datetime | None = None
+    drift_seconds: int | None = None
+    lat: float | None = None
+    lng: float | None = None
+    accuracy_m: float | None = None
+    inside_geofence: bool | None = None
+    distance_m: float | None = None
+    is_mock_location: bool
+    wifi_bssid: str | None = None
+    wifi_ssid: str | None = None
+    wifi_match: bool | None = None
+    created_at: datetime
+
+
+class ActiveGeofence(BaseModel):
+    """The minimal geofence shape the technician app needs to register OS-level
+    geofencing. Readable by ANY authenticated principal (unlike the manager
+    config endpoint), but exposes only the circle — no wifi BSSID list."""
+
+    name: str
+    center_lat: float
+    center_lng: float
+    radius_m: int
+    is_active: bool
+
+
 # ── Manager: board / grid / detail ───────────────────────────────────────────
 class BoardRow(BaseModel):
     tech_id: str
@@ -124,6 +196,9 @@ class BoardRow(BaseModel):
     # Evidence gaps: no usable GPS fix / selfie never uploaded (mobile punches).
     flagged_no_location: bool = False
     flagged_no_selfie: bool = False
+    # The phone entered the workshop fence (a geofence `arrive` was logged) but
+    # the tech never clocked in — the "forgot vs absent" signal at a glance.
+    flagged_arrived_not_clocked_in: bool = False
 
 
 class Board(BaseModel):
@@ -166,6 +241,11 @@ class TechDay(BaseModel):
     last_out: datetime | None = None
     worked_minutes: int | None = None
     punches: list[PunchItem]
+    # Passive geofence crossings for the day + the "forgot vs absent" signal:
+    # the phone entered the fence (an `arrive` exists) but the tech never
+    # clocked in. The manager's evidence for adjudicating a missing punch.
+    presence: list[PresenceItem] = []
+    arrived_not_clocked_in: bool = False
 
 
 class TechDays(BaseModel):

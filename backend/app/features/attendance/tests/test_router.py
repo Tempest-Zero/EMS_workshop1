@@ -16,9 +16,11 @@ from httpx import ASGITransport, AsyncClient
 from app.core.db import get_session
 from app.features.attendance.router import get_service
 from app.features.attendance.schemas import (
+    ActiveGeofence,
     Board,
     PayrollDay,
     PayrollExport,
+    PresenceResponse,
     PunchResponse,
     TodayStatus,
 )
@@ -81,6 +83,64 @@ async def test_post_punch_returns_201_and_commits(
     assert resp.status_code == 201
     assert resp.json()["event_id"] == str(event_id)
     fake_session.commit.assert_awaited()
+
+
+async def test_post_presence_returns_201_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    event_id, client_id = uuid4(), uuid4()
+    fake_service.record_presence.return_value = PresenceResponse(
+        event_id=event_id,
+        client_id=client_id,
+        server_time=datetime(2026, 6, 3, 4, 0, tzinfo=UTC),
+        kind="arrive",
+        inside_geofence=True,
+        distance_m=8.0,
+    )
+
+    resp = await client.post(
+        "/api/attendance/presence",
+        json={"client_id": str(client_id), "tech_id": "t1", "kind": "arrive"},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["event_id"] == str(event_id)
+    assert resp.json()["kind"] == "arrive"
+    fake_session.commit.assert_awaited()
+
+
+async def test_post_presence_rejects_invalid_kind(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/api/attendance/presence",
+        json={"client_id": str(uuid4()), "tech_id": "t1", "kind": "clock_in"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_tech_cannot_log_presence_for_another_tech(client: AsyncClient) -> None:
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    resp = await client.post(
+        "/api/attendance/presence",
+        json={"client_id": str(uuid4()), "tech_id": "t9", "kind": "arrive"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_active_geofence_readable_by_tech(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    # NOT manager-gated: a plain tech must be able to read the fence to monitor.
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    fake_service.active_geofence.return_value = ActiveGeofence(
+        name="Workshop", center_lat=24.86, center_lng=67.0, radius_m=80, is_active=True
+    )
+    resp = await client.get("/api/attendance/geofence/active")
+    assert resp.status_code == 200
+    assert resp.json()["radius_m"] == 80
 
 
 async def test_post_punch_rejects_invalid_kind(client: AsyncClient) -> None:

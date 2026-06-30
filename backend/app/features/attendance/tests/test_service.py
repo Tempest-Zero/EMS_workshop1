@@ -13,8 +13,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.core.storage import SignedUpload
-from app.features.attendance.models import AttendanceEvent
-from app.features.attendance.schemas import AdjustmentRequest, PunchRequest
+from app.features.attendance.models import AttendanceEvent, AttendancePresenceEvent
+from app.features.attendance.schemas import AdjustmentRequest, PresenceRequest, PunchRequest
 from app.features.attendance.service import (
     AttendanceNotFoundError,
     AttendanceService,
@@ -55,6 +55,34 @@ def _event(**overrides: object) -> AttendanceEvent:
     return event
 
 
+def _presence(**overrides: object) -> AttendancePresenceEvent:
+    """Build an in-memory presence crossing without SQLAlchemy defaults."""
+    event = AttendancePresenceEvent(
+        id=uuid4(),
+        client_id=uuid4(),
+        shop_id="default",
+        tech_id="t1",
+        kind="arrive",
+        source="geofence",
+        server_time=NINE_AM_PKT,
+        device_time=None,
+        drift_seconds=None,
+        lat=None,
+        lng=None,
+        accuracy_m=None,
+        inside_geofence=None,
+        distance_m=None,
+        is_mock_location=False,
+        wifi_bssid=None,
+        wifi_ssid=None,
+        wifi_match=None,
+        created_at=NINE_AM_PKT,
+    )
+    for key, value in overrides.items():
+        setattr(event, key, value)
+    return event
+
+
 @pytest.fixture
 def svc() -> Iterator[tuple[AttendanceService, MagicMock, MagicMock]]:
     repo = MagicMock()
@@ -67,6 +95,9 @@ def svc() -> Iterator[tuple[AttendanceService, MagicMock, MagicMock]]:
     repo.list_events = AsyncMock(return_value=[])
     repo.list_shifts = AsyncMock(return_value=[])
     repo.create_adjustment = AsyncMock(return_value=MagicMock(id=uuid4()))
+    repo.get_presence_by_client_id = AsyncMock(return_value=None)
+    repo.create_presence = AsyncMock(side_effect=lambda **kw: _presence(**kw))
+    repo.list_presence = AsyncMock(return_value=[])
 
     storage = MagicMock()
     storage.mint_upload_url = MagicMock(
@@ -210,6 +241,114 @@ async def test_record_punch_is_idempotent_on_client_id(
     repo.create_event.assert_not_awaited()
     # A still-pending selfie gets a fresh upload URL so the retry can finish it.
     assert resp.selfie is not None
+
+
+# ── Presence (passive geofence crossings) ────────────────────────────────────
+async def test_record_presence_computes_geofence_inside(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=150, wifi_bssids=None
+    )
+
+    resp = await service.record_presence(
+        PresenceRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="arrive",
+            lat=24.8601,
+            lng=67.0001,
+            accuracy_m=12.0,
+        )
+    )
+
+    repo.create_presence.assert_awaited_once()
+    assert repo.create_presence.await_args.kwargs["inside_geofence"] is True
+    assert resp.kind == "arrive"
+    assert resp.inside_geofence is True
+    assert resp.deduped is False
+
+
+async def test_record_presence_is_idempotent_on_client_id(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    existing = _presence(kind="arrive", inside_geofence=True, distance_m=5.0)
+    repo.get_presence_by_client_id.return_value = existing
+
+    resp = await service.record_presence(
+        PresenceRequest(client_id=existing.client_id, tech_id="t1", kind="arrive")
+    )
+
+    assert resp.deduped is True
+    assert resp.event_id == existing.id
+    repo.create_presence.assert_not_awaited()
+
+
+async def test_presence_and_punch_agree_on_geofence_verdict(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Same shared `_evaluate_geofence` powers both, so a punch and an `arrive`
+    # taken at the same coarse fix reach the same "uncertain" verdict.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=80, wifi_bssids=None
+    )
+    # Same coarse fix (accuracy over the ceiling) fed to both paths.
+    lat, lng, accuracy_m = 24.8610, 67.0000, 500.0
+
+    punch = await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            lat=lat,
+            lng=lng,
+            accuracy_m=accuracy_m,
+        )
+    )
+    presence = await service.record_presence(
+        PresenceRequest(
+            client_id=uuid4(), tech_id="t1", kind="arrive", lat=lat, lng=lng, accuracy_m=accuracy_m
+        )
+    )
+
+    assert punch.inside_geofence is None
+    assert presence.inside_geofence is None
+    assert presence.distance_m == punch.distance_m  # both recorded for forensics
+
+
+async def test_tech_days_flags_arrived_but_not_clocked_in(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The anti-fraud signal: the phone entered the fence (an `arrive` exists)
+    # but no clock_in for the day → manager sees "was here, forgot to punch".
+    service, repo, _ = svc
+    repo.list_events.return_value = []  # no punches at all
+    repo.list_presence.return_value = [_presence(kind="arrive", server_time=NINE_AM_PKT)]
+
+    result = await service.tech_days(
+        tech_id="t1", shop_id="default", from_date=date(2026, 6, 3), to_date=date(2026, 6, 3)
+    )
+
+    day = result.days[0]
+    assert day.arrived_not_clocked_in is True
+    assert len(day.presence) == 1 and day.presence[0].kind == "arrive"
+
+
+async def test_tech_days_not_flagged_when_clocked_in(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    repo.list_events.return_value = [_event(kind="clock_in", server_time=NINE_AM_PKT)]
+    repo.list_presence.return_value = [_presence(kind="arrive", server_time=NINE_AM_PKT)]
+
+    result = await service.tech_days(
+        tech_id="t1", shop_id="default", from_date=date(2026, 6, 3), to_date=date(2026, 6, 3)
+    )
+
+    assert result.days[0].arrived_not_clocked_in is False
 
 
 async def test_complete_selfie_finalizes_and_returns_playback(
