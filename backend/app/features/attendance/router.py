@@ -26,6 +26,7 @@ from app.core.storage import StorageClient, get_storage
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.schemas import (
     DEFAULT_SHOP_ID,
+    ActiveGeofence,
     AdjustmentItem,
     AdjustmentRequest,
     AdjustmentResponse,
@@ -35,6 +36,8 @@ from app.features.attendance.schemas import (
     Grid,
     PayrollExport,
     PayrollExportFile,
+    PresenceRequest,
+    PresenceResponse,
     PunchItem,
     PunchRequest,
     PunchResponse,
@@ -168,6 +171,42 @@ async def record_punch(
 
     await session.commit()
     return response
+
+
+@router.post(
+    "/presence",
+    response_model=PresenceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Log a passive geofence crossing (arrive/depart; idempotent on client_id)",
+)
+async def record_presence(
+    body: PresenceRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> PresenceResponse:
+    # A technician's phone logs crossings for itself; a manager may log for any
+    # tech. Same self-or-manager guard as a punch — a presence row is evidence
+    # tied to a specific tech and must not be writable for someone else.
+    _require_self_or_manager(principal, body.tech_id)
+    response = await service.record_presence(body)
+    await session.commit()
+    return response
+
+
+@router.get(
+    "/geofence/active",
+    response_model=ActiveGeofence | None,
+    summary="The active shop geofence the phone monitors (any authenticated caller)",
+)
+async def active_geofence(
+    service: ServiceDep,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> ActiveGeofence | None:
+    # Deliberately NOT manager-gated (the manager `/geofences` config is): the
+    # technician app needs the circle to register OS-level geofencing. Returns
+    # only the circle — never the wifi BSSID list.
+    return await service.active_geofence(shop_id=shop_id)
 
 
 @router.post(
@@ -352,10 +391,17 @@ async def list_adjustments(
 @router.get(
     "/shifts/{tech_id}",
     response_model=Shift,
-    dependencies=[Depends(require_manager)],
-    summary="Get a tech's shift",
+    summary="Get a tech's shift (own shift for a tech; any tech for a manager)",
 )
-async def get_shift(tech_id: str, service: ServiceDep, shop_id: ShopId = DEFAULT_SHOP_ID) -> Shift:
+async def get_shift(
+    tech_id: str,
+    service: ServiceDep,
+    principal: CurrentPrincipal,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> Shift:
+    # A technician must be able to read their OWN shift (the mobile clock screen
+    # shows it); a manager may read anyone's. The PUT below stays manager-only.
+    _require_self_or_manager(principal, tech_id)
     return await service.get_shift(shop_id=shop_id, tech_id=tech_id)
 
 

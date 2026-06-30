@@ -225,4 +225,39 @@ describe("flushOutbox classification", () => {
     expect(mockAddNote).toHaveBeenCalledWith("job-1", "left a note");
     expect((await outboxCounts()).queued).toBe(0);
   });
+
+  // ── Dead-letter: a poison server error must not block the queue forever ──────
+  it("dead-letters a poison 5xx item after the attempt cap, never deleting it", async () => {
+    await queueOne();
+    mockSubmitCompletion.mockRejectedValue(apiError(500, "always boom"));
+    for (let i = 0; i < 5; i++) await flushOutbox();
+    const all = await loadOutbox();
+    expect(all).toHaveLength(1); // parked, never dropped
+    expect(all[0]?.status).toBe("failed");
+    expect(all[0]?.failedReason).toMatch(/gave up after 5 attempts/);
+    expect(await outboxCounts()).toEqual({ queued: 0, failed: 1 });
+  });
+
+  it("a persistently-failing head item stops blocking the queue once it dead-letters", async () => {
+    await queueOne({ id: "poison", kind: "completion" });
+    await queueOne({
+      id: "good",
+      kind: "payment",
+      payload: { amountPaisa: 1, method: "cash", clientId: "c" },
+    });
+    mockSubmitCompletion.mockRejectedValue(apiError(500, "boom")); // the poison completion
+    mockLogPayment.mockResolvedValue(detail); // the payment queued behind it
+    for (let i = 0; i < 5; i++) await flushOutbox();
+    expect(await outboxCounts()).toEqual({ queued: 0, failed: 1 });
+    expect(mockLogPayment).toHaveBeenCalled(); // the good write got through
+  });
+
+  it("connectivity failures never count toward the dead-letter cap", async () => {
+    await queueOne();
+    mockSubmitCompletion.mockRejectedValue(new Error("Network request failed"));
+    for (let i = 0; i < 8; i++) await flushOutbox();
+    const all = await loadOutbox();
+    expect(all[0]?.status).toBe("queued"); // still retrying, never parked
+    expect(all[0]?.attempts).toBe(0); // offline doesn't increment attempts
+  });
 });

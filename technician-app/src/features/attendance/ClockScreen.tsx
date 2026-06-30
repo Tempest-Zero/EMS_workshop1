@@ -9,11 +9,20 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { getAttendancePrompt, subscribeAttendancePrompt } from "./attendancePrompt";
+import { getLastCrossingKind } from "./geofence";
 import { useAttendance } from "./useAttendance";
 import { getWifi, type WifiReading } from "./wifi";
 
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function fmtDate(iso: string): string {
+  const d = new Date(iso);
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return "Today";
+  return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
 type Tone = "ok" | "warn" | "danger";
@@ -25,24 +34,66 @@ function Badge({ text, tone }: { text: string; tone: Tone }) {
 export function ClockScreen() {
   const att = useAttendance();
   const [wifi, setWifi] = useState<WifiReading>({ wifi_bssid: null, wifi_ssid: null });
+  const [prompt, setPrompt] = useState(getAttendancePrompt());
+  const [onSite, setOnSite] = useState(false);
 
   useEffect(() => {
     void getWifi().then(setWifi);
   }, [att.punches.length]);
+
+  // The notification tap that opened this screen (clock_in / clock_out).
+  useEffect(() => subscribeAttendancePrompt(() => setPrompt(getAttendancePrompt())), []);
+
+  // Sticky "you're at the workshop" state — survives a dismissed arrival prompt.
+  useEffect(() => {
+    void getLastCrossingKind().then((k) => setOnSite(k === "arrive"));
+  }, [att.punches.length, att.clockedIn]);
+
+  // What to nudge: a primed prompt wins; otherwise being on-site implies "clock in".
+  const nudge: "in" | "out" | null = att.clockedIn
+    ? prompt === "clock_out"
+      ? "out"
+      : null
+    : prompt === "clock_in" || onSite
+      ? "in"
+      : null;
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.h1}>FixFlow · Attendance</Text>
       <Text style={styles.h2}>Clock in / out</Text>
 
-      <View style={styles.field}>
-        <Text style={styles.label}>Signed in as</Text>
-        <Text style={styles.identity}>{att.technicianName || att.techId || "—"}</Text>
+      <View style={styles.identityBox}>
+        <View>
+          <Text style={styles.label}>Signed in as</Text>
+          <Text style={styles.identity}>{att.technicianName || att.techId || "—"}</Text>
+        </View>
+        {att.shift ? (
+          <View style={styles.shiftBox}>
+            <Text style={styles.shiftLabel}>Shift Schedule</Text>
+            <Text style={styles.shiftText}>
+              {att.shift.start_local.slice(0, 5)} - {att.shift.end_local.slice(0, 5)}
+            </Text>
+            <Text style={styles.shiftSubtext}>
+              {att.shift.grace_minutes} min grace period
+            </Text>
+          </View>
+        ) : null}
       </View>
 
       {att.error ? (
         <View style={styles.errorBox}>
           <Text style={styles.errorText}>{att.error}</Text>
+        </View>
+      ) : null}
+
+      {nudge ? (
+        <View style={[styles.nudge, nudge === "in" ? styles.nudgeIn : styles.nudgeOut]}>
+          <Text style={styles.nudgeText}>
+            {nudge === "in"
+              ? "You're at the workshop — clock in now 👇"
+              : "Heading out? Don't forget to clock out 👇"}
+          </Text>
         </View>
       ) : null}
 
@@ -52,6 +103,7 @@ export function ClockScreen() {
           style={[
             styles.btn,
             att.clockedIn ? styles.btnOut : styles.btnIn,
+            nudge ? styles.btnPrimed : null,
             att.busy ? styles.btnDisabled : null,
           ]}
           onPress={() => {
@@ -72,6 +124,15 @@ export function ClockScreen() {
         )}
       </View>
 
+      {att.punches.some((p) => p.selfieFailed) && (
+        <View style={styles.warningBox}>
+          <Text style={styles.warningTitle}>⚠️ Photo Upload Failed</Text>
+          <Text style={styles.warningText}>
+            One or more punches didn't upload a selfie. Ensure you have a good connection when clocking in.
+          </Text>
+        </View>
+      )}
+
       <View style={styles.field}>
         <Text style={styles.label}>Detected WiFi (for geofence setup)</Text>
         <Text style={styles.wifiText}>
@@ -80,23 +141,35 @@ export function ClockScreen() {
         </Text>
       </View>
 
-      <Text style={styles.sectionTitle}>Recent punches</Text>
+      <Text style={styles.sectionTitle}>Punch History</Text>
       {att.punches.length === 0 ? (
         <Text style={styles.empty}>No punches yet</Text>
       ) : (
-        att.punches.map((p) => (
-          <View key={p.key} style={styles.row}>
-            <View>
-              <Text style={styles.rowKind}>
-                {p.kind === "clock_in" ? "Clock In" : "Clock Out"}
-              </Text>
-              <Text style={styles.rowTime}>{fmtTime(p.at)}</Text>
-            </View>
-            <View style={styles.badges}>
-              {p.isMock ? <Badge text="MOCK" tone="danger" /> : null}
-              {p.hasWifi ? <Badge text="WiFi" tone="ok" /> : null}
-              <Badge text={p.synced ? "Synced" : "Pending"} tone={p.synced ? "ok" : "warn"} />
-            </View>
+        Object.entries(
+          att.punches.reduce((acc, p) => {
+            const d = fmtDate(p.at);
+            (acc[d] ??= []).push(p);
+            return acc;
+          }, {} as Record<string, typeof att.punches>)
+        ).map(([date, list]) => (
+          <View key={date} style={styles.dayGroup}>
+            <Text style={styles.dayHeader}>{date}</Text>
+            {list.map((p) => (
+              <View key={p.key} style={styles.row}>
+                <View>
+                  <Text style={styles.rowKind}>
+                    {p.kind === "clock_in" ? "Clock In" : "Clock Out"}
+                  </Text>
+                  <Text style={styles.rowTime}>{fmtTime(p.at)}</Text>
+                </View>
+                <View style={styles.badges}>
+                  {p.selfieFailed ? <Badge text="No Photo" tone="warn" /> : null}
+                  {p.isMock ? <Badge text="MOCK" tone="danger" /> : null}
+                  {p.hasWifi ? <Badge text="WiFi" tone="ok" /> : null}
+                  <Badge text={p.synced ? "Synced" : "Pending"} tone={p.synced ? "ok" : "warn"} />
+                </View>
+              </View>
+            ))}
           </View>
         ))
       )}
@@ -115,6 +188,16 @@ const styles = StyleSheet.create({
   h1: { fontSize: 22, fontWeight: "800", color: "#0f172a" },
   h2: { fontSize: 14, fontWeight: "600", color: "#475569", marginTop: 2 },
   field: { marginTop: 16 },
+  identityBox: {
+    marginTop: 16,
+    backgroundColor: "white",
+    borderColor: "#e2e8f0",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 16,
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
   label: {
     fontSize: 11,
     fontWeight: "700",
@@ -123,15 +206,29 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   identity: {
-    backgroundColor: "white",
-    borderColor: "#e2e8f0",
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
     fontSize: 16,
+    fontWeight: "800",
+    color: "#0f172a",
+  },
+  shiftBox: {
+    alignItems: "flex-end",
+  },
+  shiftLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#64748b",
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  shiftText: {
+    fontSize: 14,
     fontWeight: "700",
     color: "#0f172a",
+  },
+  shiftSubtext: {
+    fontSize: 11,
+    color: "#64748b",
+    marginTop: 2,
   },
   errorBox: {
     marginTop: 12,
@@ -139,7 +236,26 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 12,
   },
+  warningBox: {
+    marginTop: 12,
+    backgroundColor: "#fffbeb",
+    borderColor: "#fde68a",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+  },
+  warningTitle: { color: "#92400e", fontSize: 14, fontWeight: "700", marginBottom: 4 },
+  warningText: { color: "#92400e", fontSize: 13 },
   errorText: { color: "#b91c1c", fontSize: 13 },
+  nudge: {
+    marginTop: 16,
+    borderRadius: 10,
+    padding: 14,
+    borderWidth: 1,
+  },
+  nudgeIn: { backgroundColor: "#ecfdf5", borderColor: "#6ee7b7" },
+  nudgeOut: { backgroundColor: "#fff7ed", borderColor: "#fdba74" },
+  nudgeText: { fontSize: 15, fontWeight: "800", color: "#0f172a", textAlign: "center" },
   card: {
     marginTop: 16,
     backgroundColor: "white",
@@ -159,6 +275,10 @@ const styles = StyleSheet.create({
   },
   btnIn: { backgroundColor: "#059669" },
   btnOut: { backgroundColor: "#0f172a" },
+  btnPrimed: {
+    borderWidth: 3,
+    borderColor: "#f59e0b", // amber ring draws the eye to the primed action
+  },
   btnDisabled: { opacity: 0.5 },
   btnText: { color: "white", fontWeight: "800", fontSize: 18 },
   pending: { marginTop: 12, color: "#b45309", fontWeight: "700", fontSize: 13 },
@@ -174,13 +294,22 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 18,
+    fontWeight: "800",
     color: "#0f172a",
-    marginTop: 24,
-    marginBottom: 8,
+    marginTop: 28,
+    marginBottom: 12,
   },
-  empty: { color: "#94a3b8", fontStyle: "italic", fontSize: 13 },
+  empty: { color: "#94a3b8", fontStyle: "italic", fontSize: 14 },
+  dayGroup: { marginBottom: 16 },
+  dayHeader: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#475569",
+    textTransform: "uppercase",
+    marginBottom: 8,
+    marginLeft: 4,
+  },
   row: {
     flexDirection: "row",
     justifyContent: "space-between",
