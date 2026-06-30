@@ -175,10 +175,16 @@ export async function removeItem(id: string): Promise<void> {
   await mutate((items) => items.filter((i) => i.id !== id));
 }
 
-export async function bumpAttempts(id: string): Promise<void> {
+export async function bumpAttempts(id: string): Promise<number> {
+  let next = 0;
   await mutate((items) =>
-    items.map((i) => (i.id === id ? { ...i, attempts: i.attempts + 1 } : i)),
+    items.map((i) => {
+      if (i.id !== id) return i;
+      next = i.attempts + 1;
+      return { ...i, attempts: next };
+    }),
   );
+  return next;
 }
 
 /** A definitive server rejection: park the item in the visible failed list.

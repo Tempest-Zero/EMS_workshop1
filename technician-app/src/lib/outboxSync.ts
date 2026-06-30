@@ -93,6 +93,12 @@ async function send(item: OutboxItem): Promise<JobDetail> {
  * the record. */
 const DEFINITIVE_4XX = new Set([400, 403, 404, 409, 422]);
 
+/** A server-reachable error (5xx/429) that recurs this many times is treated as
+ * a poison item: parked in the visible failed list so one bad write can't
+ * head-of-line block the whole queue forever. A real deploy blip clears well
+ * before this — only a write the server keeps erroring on reaches the cap. */
+const MAX_ATTEMPTS = 5;
+
 function isDefinitiveRejection(e: unknown): e is ApiError {
   return e instanceof ApiError && DEFINITIVE_4XX.has(e.status);
 }
@@ -148,8 +154,20 @@ export async function flushOutbox(): Promise<void> {
           await markFailed(item.id, failureReason(e));
           continue; // a parked item must not block the ones behind it
         }
-        // Transient (network, timeout, 5xx, 429, unknown): keep, retry later.
-        await bumpAttempts(item.id);
+        // Server reachable but erroring on THIS item (5xx/429): count it. A
+        // poison write (server keeps 500ing on one payload) would otherwise
+        // block every item behind it forever, so once it exhausts MAX_ATTEMPTS
+        // we park it in the visible failed list and move on — never deleted.
+        if (e instanceof ApiError) {
+          const attempts = await bumpAttempts(item.id);
+          if (attempts >= MAX_ATTEMPTS) {
+            await markFailed(item.id, `gave up after ${attempts} attempts (server ${e.status})`);
+            continue; // parked → must not block the items behind it
+          }
+          break; // transient server blip — retry the whole queue next trigger
+        }
+        // Pure connectivity failure (offline / timeout / DNS) — not this item's
+        // fault, never counts toward the cap. Stop; the next trigger retries.
         break;
       }
     }
