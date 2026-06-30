@@ -46,6 +46,11 @@ class PunchKind(StrEnum):
     CLOCK_OUT = "clock_out"
 
 
+class PresenceKind(StrEnum):
+    ARRIVE = "arrive"
+    DEPART = "depart"
+
+
 class PunchSource(StrEnum):
     MOBILE = "mobile"
     KIOSK = "kiosk"
@@ -122,6 +127,72 @@ class AttendanceEvent(Base):
     selfie_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class AttendancePresenceEvent(Base):
+    """A passive geofence boundary crossing logged by the technician's phone
+    when it ENTERS or LEAVES the workshop circle — independent of whether the
+    tech clocks in.
+
+    This is the anti-fraud backbone for *"I forgot to clock in but I was
+    here"*: a `clock_in` going missing is ambiguous (forgot vs. never came); a
+    matching `arrive` presence event makes the phone's actual presence visible
+    to the manager. It is **evidence, never a punch** — kept in a separate
+    table on purpose so the worked-minutes / board / payroll math (which folds
+    only `attendance_event` clock_in/clock_out rows) is never polluted by it.
+
+    Insert-only, like the punch log. Idempotent on ``client_id`` (the phone
+    queues these offline and retries), and stamped with the same evidentiary
+    fields a punch carries (gps + accuracy + mock flag + wifi + drift) so the
+    geofence verdict is computed identically."""
+
+    __tablename__ = "attendance_presence_event"
+    __table_args__ = (
+        CheckConstraint("kind IN ('arrive', 'depart')", name="attendance_presence_kind_check"),
+        CheckConstraint("source IN ('geofence')", name="attendance_presence_source_check"),
+        UniqueConstraint("client_id", name="uq_attendance_presence_client_id"),
+        Index("ix_attendance_presence_tech_time", "tech_id", "server_time"),
+        Index("ix_attendance_presence_shop_time", "shop_id", "server_time"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    # Client-generated UUID: the offline idempotency / dedup key, exactly like a
+    # punch — a re-synced crossing carries the same client_id and is a no-op.
+    client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'geofence'")
+    )
+
+    # WHEN — server_time is authoritative; device_time + drift catch tampering.
+    server_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    device_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    drift_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # WHERE — the geofence verdict, captured + flagged exactly like a punch.
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    inside_geofence: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_mock_location: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    wifi_bssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    wifi_ssid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    wifi_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

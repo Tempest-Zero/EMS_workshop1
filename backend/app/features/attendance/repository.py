@@ -15,6 +15,7 @@ from app.features.attendance.models import (
     AttendanceAdjustment,
     AttendanceEvent,
     AttendanceGeofence,
+    AttendancePresenceEvent,
     AttendanceShift,
     PayrollExportRecord,
 )
@@ -144,6 +145,74 @@ class AttendanceRepository:
             .order_by(AttendanceEvent.server_time.desc())
             .limit(limit)
         )
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
+    # ── Presence (passive geofence crossings, append-only) ───────────────
+    async def create_presence(
+        self,
+        *,
+        client_id: UUID,
+        shop_id: str,
+        tech_id: str,
+        kind: str,
+        device_time: datetime | None,
+        drift_seconds: int | None,
+        lat: float | None,
+        lng: float | None,
+        accuracy_m: float | None,
+        inside_geofence: bool | None,
+        distance_m: float | None,
+        is_mock_location: bool,
+        wifi_bssid: str | None = None,
+        wifi_ssid: str | None = None,
+        wifi_match: bool | None = None,
+    ) -> AttendancePresenceEvent:
+        event = AttendancePresenceEvent(
+            client_id=client_id,
+            shop_id=shop_id,
+            tech_id=tech_id,
+            kind=kind,
+            source="geofence",
+            device_time=device_time,
+            drift_seconds=drift_seconds,
+            lat=lat,
+            lng=lng,
+            accuracy_m=accuracy_m,
+            inside_geofence=inside_geofence,
+            distance_m=distance_m,
+            is_mock_location=is_mock_location,
+            wifi_bssid=wifi_bssid,
+            wifi_ssid=wifi_ssid,
+            wifi_match=wifi_match,
+        )
+        self._session.add(event)
+        await self._session.flush()
+        await self._session.refresh(event)
+        return event
+
+    async def get_presence_by_client_id(self, client_id: UUID) -> AttendancePresenceEvent | None:
+        stmt = select(AttendancePresenceEvent).where(AttendancePresenceEvent.client_id == client_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_presence(
+        self,
+        *,
+        shop_id: str,
+        start: datetime,
+        end: datetime,
+        tech_id: str | None = None,
+    ) -> list[AttendancePresenceEvent]:
+        stmt = (
+            select(AttendancePresenceEvent)
+            .where(AttendancePresenceEvent.shop_id == shop_id)
+            .where(AttendancePresenceEvent.server_time >= start)
+            .where(AttendancePresenceEvent.server_time < end)
+        )
+        if tech_id is not None:
+            stmt = stmt.where(AttendancePresenceEvent.tech_id == tech_id)
+        stmt = stmt.order_by(AttendancePresenceEvent.server_time.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars())
 

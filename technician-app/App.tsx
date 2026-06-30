@@ -2,14 +2,19 @@ import { Feather } from "@expo/vector-icons";
 import { NavigationContainer } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { StatusBar } from "expo-status-bar";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ClockScreen } from "./src/features/attendance/ClockScreen";
+import { useAttendanceBackground } from "./src/features/attendance/useAttendanceBackground";
 import { AuthProvider, useAuth } from "./src/features/auth/AuthContext";
 import { LoginScreen } from "./src/features/auth/LoginScreen";
 import { JobsStack } from "./src/features/jobs/JobsStack";
+import { OnboardingScreen } from "./src/features/onboarding/OnboardingScreen";
+import { isOnboarded } from "./src/features/onboarding/permissions";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
+import { navigationRef } from "./src/lib/navigation";
 import { initSentry } from "./src/lib/sentry";
 import { useOutboxSync } from "./src/lib/useOutboxSync";
 import { usePushRegistration } from "./src/lib/usePushRegistration";
@@ -49,6 +54,7 @@ function Tabs() {
   // even after the tech leaves the screen that queued a write.
   const { queued, failed } = useOutboxSync();
   usePushRegistration();
+  useAttendanceBackground();
   return (
     <View style={styles.flex}>
       {queued > 0 || failed > 0 ? <OfflineBanner queued={queued} failed={failed} /> : null}
@@ -86,16 +92,30 @@ const styles = StyleSheet.create({
   bannerTextFailed: { color: "#b91c1c" },
 });
 
+function Spinner() {
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      <ActivityIndicator />
+    </View>
+  );
+}
+
+// Authenticated: show the one-time attendance onboarding before the app proper,
+// so the background-location grant is asked for with its "why" already on screen.
+function AuthedApp() {
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  useEffect(() => {
+    void isOnboarded().then(setOnboarded);
+  }, []);
+  if (onboarded === null) return <Spinner />;
+  if (!onboarded) return <OnboardingScreen onDone={() => setOnboarded(true)} />;
+  return <Tabs />;
+}
+
 function Root() {
   const { ready, isAuthenticated } = useAuth();
-  if (!ready) {
-    return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator />
-      </View>
-    );
-  }
-  return isAuthenticated ? <Tabs /> : <LoginScreen />;
+  if (!ready) return <Spinner />;
+  return isAuthenticated ? <AuthedApp /> : <LoginScreen />;
 }
 
 export default function App() {
@@ -103,7 +123,7 @@ export default function App() {
     <SafeAreaProvider>
       <AuthProvider>
         <StatusBar style="dark" />
-        <NavigationContainer>
+        <NavigationContainer ref={navigationRef}>
           <Root />
         </NavigationContainer>
       </AuthProvider>
