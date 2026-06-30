@@ -57,7 +57,7 @@ open; pass ids explicitly (e.g. `job_id`, `tech_id`) for now.
 7. **Native modules** (`react-native-compressor`, `expo-video`) require an **EAS build** — Expo Go can't run them. The `preview` profile = standalone APK pointing at the deployed backend. The API URL lives in `eas.json` and is **build-time only** — `eas update` (OTA) does **not** carry it, so rebuild when the URL changes.
 8. **`expo-asset` must be in `dependencies`.** Expo SDK 52's Metro config requires it at bundle time but does NOT auto-install it. Missing → `eas build` fails at the **Bundle JavaScript** step with `The required package 'expo-asset' cannot be found`. Always run `npx expo-doctor` before `eas build` (CI doesn't run it for you) — 17/17 means clear-to-build.
 9. **Don't churn the architecture.** It cost us the most. It's decided above — lock per-slice scope before building.
-10. **Doc-rot is on the slice owner.** When you ship a slice, update `README.md` + `ARCHITECTURE.md` + the affected runtime's `README.md` in the same PR. The phrases that go stale fastest: "X is upcoming / Phase N", placeholder URLs, script names, and "uploads to Supabase" (the storage backend changed to R2 — search-and-replace before opening a PR).
+10. **Doc-rot is on the slice owner.** When you ship a slice, update `CLAUDE.md` + `README.md` + `ARCHITECTURE.md` + the affected runtime's `README.md` in the same PR. The phrases that go stale fastest: "X is upcoming / Phase N", placeholder URLs, script names, and "uploads to Supabase" (the storage backend changed to R2 — search-and-replace before opening a PR).
 
 ---
 
@@ -81,9 +81,11 @@ the signals: **500 on a data endpoint** = DB/logic issue; **502 on everything
 
 ## Deferred (NOT built yet — future slices)
 
-Auth (Supabase GoTrue + JWT verified in FastAPI), manager-side media viewing
-(web → `GET media` API), server-side SOP gate (needs a jobs slice), R2 retention
-(lifecycle rule + `pg_cron`), and migrating the web app off mock data onto the API.
+R2 retention (lifecycle rule + `pg_cron`).
+
+**Update:** several items once listed here are now built — **auth** (custom
+FastAPI PIN→JWT, *not* Supabase GoTrue), manager-side media viewing, the
+server-side close/evidence gate, and the web app reading the live API.
 
 ---
 

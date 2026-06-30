@@ -6,6 +6,11 @@ real rows. ``role`` is **enforced**: ``identity.deps.CurrentManager`` gates the
 manager-only endpoints (attendance board/grid/payroll/adjustments, session
 revoke, …), so a technician token gets 403 there. Shared actions (job
 assign/claim — dual-assignment by design) stay open to any authenticated user.
+
+A third role, ``ops_viewer`` (migration 0018), backs the read-only ops console:
+``identity.deps.require_ops_access`` admits it (and ``manager``) to the
+``/api/ops/*`` endpoints, and *only* those — it is barred from every
+jobs/attendance/payroll endpoint exactly as a technician is.
 """
 
 from __future__ import annotations
@@ -20,7 +25,9 @@ from app.core.db import Base
 
 class Technician(Base):
     __tablename__ = "technician"
-    __table_args__ = (CheckConstraint("role IN ('tech', 'manager')", name="technician_role_check"),)
+    __table_args__ = (
+        CheckConstraint("role IN ('tech', 'manager', 'ops_viewer')", name="technician_role_check"),
+    )
 
     # Stable slug PK (e.g. "t1"), matching the ids attendance/media already use.
     id: Mapped[str] = mapped_column(String(64), primary_key=True)

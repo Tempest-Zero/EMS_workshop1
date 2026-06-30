@@ -15,6 +15,14 @@ scheduling, and the full carry-in repair lifecycle across a **manager desktop vi
 > [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the rules, [`docs/SOLUTION-ARCHITECT-GUIDE.md`](./docs/SOLUTION-ARCHITECT-GUIDE.md)
 > for the why, and [`docs/PLAYBOOK.md`](./docs/PLAYBOOK.md) before starting a slice.
 
+> 🧭 **New to this codebase — or coming back to it and unsure where to look?** Start with
+> **[`docs/CODE-MAP.md`](./docs/CODE-MAP.md)** — a guided, plain-language course that teaches you how
+> to read, navigate, trace, and review this repo using its own code as the textbook (and turns the
+> docs above into a reading curriculum).
+
+> 🤖 **AI agents / Claude:** read **[`CLAUDE.md`](./CLAUDE.md)** first — the authoritative,
+> always-current statement of the stack; it overrides the prose docs when they disagree.
+
 ## 📦 Repo layout (monorepo)
 
 ```
@@ -125,7 +133,7 @@ src/
     config/       #   constants (TODAY, WORKSHOP, …)
   features/       # one folder per capability — a vertical slice
     dashboard/  jobs/  technicians/  attendance/  schedule/  troubleshooting/  settings/
-      data/         #   mock data the feature owns
+      data/         #   API client + response mappers (reads the live FastAPI backend)
       components/   #   feature-only components
       pages/        #   route screens (manager + technician views)
       index.js      #   public API barrel (what the router imports)

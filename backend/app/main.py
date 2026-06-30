@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.backup import run_db_backup
 from app.core.config import settings
 from app.core.db import SessionLocal
+from app.core.metrics import MetricsMiddleware
 from app.core.request_id import RequestIdMiddleware, configure_logging
 from app.core.scheduler import add_daily_job, add_weekly_sunday_job, create_scheduler
 from app.core.storage import get_storage
@@ -34,6 +35,7 @@ from app.features.identity.router import router as identity_router
 from app.features.jobs.router import router as jobs_router
 from app.features.media.router import router as media_router
 from app.features.notifications.router import router as notifications_router
+from app.features.ops.router import router as ops_router
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,9 @@ async def _run_payroll_export() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Exposed on app.state so the ops health probe can report the scheduler's
+    # running state + next run times (None when disabled or not yet started).
+    app.state.scheduler = None
     scheduler = None
     if settings.enable_scheduler:
         scheduler = create_scheduler()
@@ -67,6 +72,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 name="db-backup-nightly",
             )
         scheduler.start()
+        app.state.scheduler = scheduler
         logger.info(
             "scheduler started (payroll export: Sundays 18:00 %s; db backup: %s daily %02d:%02d)",
             settings.scheduler_timezone,
@@ -79,6 +85,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if scheduler is not None:
             scheduler.shutdown(wait=False)
+        app.state.scheduler = None
 
 
 def create_app() -> FastAPI:
@@ -108,6 +115,10 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestIdMiddleware)
+    # Folds every request into the in-process metrics registry that
+    # /api/ops/metrics reads. Inside CORS (so preflights aren't counted),
+    # outside the router (so it sees the final status + matched route).
+    app.add_middleware(MetricsMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -123,6 +134,7 @@ def create_app() -> FastAPI:
     app.include_router(attendance_router, prefix="/api")
     app.include_router(jobs_router, prefix="/api")
     app.include_router(notifications_router, prefix="/api")
+    app.include_router(ops_router, prefix="/api")
 
     return app
 

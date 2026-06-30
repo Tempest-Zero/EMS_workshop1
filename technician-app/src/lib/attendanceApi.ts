@@ -12,6 +12,7 @@
 import { request } from "./api";
 
 export type PunchKind = "clock_in" | "clock_out";
+export type PresenceKind = "arrive" | "depart";
 export type SelfieStatus = "pending" | "uploaded";
 
 export interface PunchRequest {
@@ -82,6 +83,40 @@ export interface TodayStatus {
   last_out: string | null;
 }
 
+// ── Geofence presence (passive arrive/depart crossings) ──────────────────────
+export interface PresenceRequest {
+  client_id: string;
+  tech_id: string;
+  kind: PresenceKind;
+  shop_id?: string;
+  device_time?: string;
+  lat?: number | null;
+  lng?: number | null;
+  accuracy_m?: number | null;
+  is_mock_location?: boolean;
+  wifi_bssid?: string | null;
+  wifi_ssid?: string | null;
+}
+
+export interface PresenceResponse {
+  event_id: string;
+  client_id: string;
+  server_time: string;
+  kind: PresenceKind;
+  inside_geofence: boolean | null;
+  distance_m: number | null;
+  deduped: boolean;
+}
+
+/** The minimal circle the phone monitors. `null` = no active fence configured. */
+export interface ActiveGeofence {
+  name: string;
+  center_lat: number;
+  center_lng: number;
+  radius_m: number;
+  is_active: boolean;
+}
+
 const q = (v: string) => encodeURIComponent(v);
 
 export const attendanceApi = {
@@ -99,6 +134,16 @@ export const attendanceApi = {
 
   today: (techId: string, shopId = "default") =>
     request<TodayStatus>(`/api/attendance/today?tech_id=${q(techId)}&shop_id=${q(shopId)}`),
+
+  recordPresence: (body: PresenceRequest) =>
+    request<PresenceResponse>("/api/attendance/presence", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // Readable by any signed-in tech (not manager-gated) so the phone can monitor.
+  activeGeofence: (shopId = "default") =>
+    request<ActiveGeofence | null>(`/api/attendance/geofence/active?shop_id=${q(shopId)}`),
 
   listPunches: (techId: string, start: string, end: string, shopId = "default") =>
     request<PunchItem[]>(

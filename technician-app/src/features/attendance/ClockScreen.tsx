@@ -9,6 +9,8 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { getAttendancePrompt, subscribeAttendancePrompt } from "./attendancePrompt";
+import { getLastCrossingKind } from "./geofence";
 import { useAttendance } from "./useAttendance";
 import { getWifi, type WifiReading } from "./wifi";
 
@@ -25,10 +27,29 @@ function Badge({ text, tone }: { text: string; tone: Tone }) {
 export function ClockScreen() {
   const att = useAttendance();
   const [wifi, setWifi] = useState<WifiReading>({ wifi_bssid: null, wifi_ssid: null });
+  const [prompt, setPrompt] = useState(getAttendancePrompt());
+  const [onSite, setOnSite] = useState(false);
 
   useEffect(() => {
     void getWifi().then(setWifi);
   }, [att.punches.length]);
+
+  // The notification tap that opened this screen (clock_in / clock_out).
+  useEffect(() => subscribeAttendancePrompt(() => setPrompt(getAttendancePrompt())), []);
+
+  // Sticky "you're at the workshop" state — survives a dismissed arrival prompt.
+  useEffect(() => {
+    void getLastCrossingKind().then((k) => setOnSite(k === "arrive"));
+  }, [att.punches.length, att.clockedIn]);
+
+  // What to nudge: a primed prompt wins; otherwise being on-site implies "clock in".
+  const nudge: "in" | "out" | null = att.clockedIn
+    ? prompt === "clock_out"
+      ? "out"
+      : null
+    : prompt === "clock_in" || onSite
+      ? "in"
+      : null;
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -46,12 +67,23 @@ export function ClockScreen() {
         </View>
       ) : null}
 
+      {nudge ? (
+        <View style={[styles.nudge, nudge === "in" ? styles.nudgeIn : styles.nudgeOut]}>
+          <Text style={styles.nudgeText}>
+            {nudge === "in"
+              ? "You're at the workshop — clock in now 👇"
+              : "Heading out? Don't forget to clock out 👇"}
+          </Text>
+        </View>
+      ) : null}
+
       <View style={[styles.card, att.clockedIn ? styles.cardOn : null]}>
         <Text style={styles.status}>{att.clockedIn ? "On duty" : "Not clocked in"}</Text>
         <Pressable
           style={[
             styles.btn,
             att.clockedIn ? styles.btnOut : styles.btnIn,
+            nudge ? styles.btnPrimed : null,
             att.busy ? styles.btnDisabled : null,
           ]}
           onPress={() => {
@@ -140,6 +172,15 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   errorText: { color: "#b91c1c", fontSize: 13 },
+  nudge: {
+    marginTop: 16,
+    borderRadius: 10,
+    padding: 14,
+    borderWidth: 1,
+  },
+  nudgeIn: { backgroundColor: "#ecfdf5", borderColor: "#6ee7b7" },
+  nudgeOut: { backgroundColor: "#fff7ed", borderColor: "#fdba74" },
+  nudgeText: { fontSize: 15, fontWeight: "800", color: "#0f172a", textAlign: "center" },
   card: {
     marginTop: 16,
     backgroundColor: "white",
@@ -159,6 +200,10 @@ const styles = StyleSheet.create({
   },
   btnIn: { backgroundColor: "#059669" },
   btnOut: { backgroundColor: "#0f172a" },
+  btnPrimed: {
+    borderWidth: 3,
+    borderColor: "#f59e0b", // amber ring draws the eye to the primed action
+  },
   btnDisabled: { opacity: 0.5 },
   btnText: { color: "white", fontWeight: "800", fontSize: 18 },
   pending: { marginTop: 12, color: "#b45309", fontWeight: "700", fontSize: 13 },

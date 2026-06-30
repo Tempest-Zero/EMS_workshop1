@@ -85,6 +85,33 @@ class Settings(BaseSettings):
     # Sentry DSN — empty disables error reporting (boots fine without an account).
     sentry_dsn: str = ""
 
+    # ── Ops console: Railway API proxy ───────────────────────────────────
+    # The standalone ops app never holds these — the backend proxies Railway's
+    # GraphQL so a teammate's browser only ever sees filtered, role-gated JSON.
+    # All empty = the Railway tabs report "not configured" instead of crashing.
+    # Token: a Railway account/team token (Railway dashboard → Account → Tokens).
+    railway_api_token: str = ""
+    railway_project_id: str = ""
+    railway_environment_id: str = ""
+    # Optional name→service-id map (e.g. {"web": "...", "backend": "...",
+    # "ops": "..."}). If empty, services are resolved dynamically from the
+    # project/environment. JSON in FIXFLOW_RAILWAY_SERVICE_IDS.
+    railway_service_ids: dict[str, str] = {}
+    # Cache window (seconds) for Railway responses — Railway rate-limits, and the
+    # ops UI polls. One cached read is shared across concurrent pollers.
+    railway_cache_ttl_seconds: int = 20
+
+    # ── Ops console: Sentry issues feed (REST API, not the ingest DSN) ────
+    # A Sentry auth token with read scope (event:read, project:read). Distinct
+    # from sentry_dsn (which is write-only ingest). Empty = the Sentry tab is
+    # reported "not configured".
+    sentry_auth_token: str = ""
+    sentry_org: str = ""
+    # Project slugs per runtime; any left empty is simply omitted from the feed.
+    sentry_project_web: str = ""
+    sentry_project_backend: str = ""
+    sentry_project_mobile: str = ""
+
     # ── Scheduler (in-process APScheduler) ───────────────────────────────
     # ASSUMES A SINGLE REPLICA: each replica would run its own scheduler and
     # duplicate every job. If the service is ever scaled out, move the jobs to
@@ -110,6 +137,7 @@ class Settings(BaseSettings):
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
         "http://localhost:5173",  # web (manager / Vite dev server)
+        "http://localhost:5174",  # ops console (separate Vite dev server)
         "http://localhost:8081",  # Expo dev server (Metro)
     ]
 

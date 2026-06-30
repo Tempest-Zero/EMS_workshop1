@@ -26,6 +26,7 @@ from app.core.storage import StorageClient, get_storage
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.schemas import (
     DEFAULT_SHOP_ID,
+    ActiveGeofence,
     AdjustmentItem,
     AdjustmentRequest,
     AdjustmentResponse,
@@ -35,6 +36,8 @@ from app.features.attendance.schemas import (
     Grid,
     PayrollExport,
     PayrollExportFile,
+    PresenceRequest,
+    PresenceResponse,
     PunchItem,
     PunchRequest,
     PunchResponse,
@@ -108,6 +111,42 @@ async def record_punch(
     response = await service.record_punch(body)
     await session.commit()
     return response
+
+
+@router.post(
+    "/presence",
+    response_model=PresenceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Log a passive geofence crossing (arrive/depart; idempotent on client_id)",
+)
+async def record_presence(
+    body: PresenceRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> PresenceResponse:
+    # A technician's phone logs crossings for itself; a manager may log for any
+    # tech. Same self-or-manager guard as a punch — a presence row is evidence
+    # tied to a specific tech and must not be writable for someone else.
+    _require_self_or_manager(principal, body.tech_id)
+    response = await service.record_presence(body)
+    await session.commit()
+    return response
+
+
+@router.get(
+    "/geofence/active",
+    response_model=ActiveGeofence | None,
+    summary="The active shop geofence the phone monitors (any authenticated caller)",
+)
+async def active_geofence(
+    service: ServiceDep,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> ActiveGeofence | None:
+    # Deliberately NOT manager-gated (the manager `/geofences` config is): the
+    # technician app needs the circle to register OS-level geofencing. Returns
+    # only the circle — never the wifi BSSID list.
+    return await service.active_geofence(shop_id=shop_id)
 
 
 @router.post(

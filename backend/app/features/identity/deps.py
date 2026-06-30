@@ -80,3 +80,22 @@ async def require_manager(
 
 
 CurrentManager = Annotated[Principal, Depends(require_manager)]
+
+
+async def require_ops_access(
+    principal: Annotated[Principal, Depends(get_current_principal)],
+) -> Principal:
+    """Gate the read-only ops console (``/api/ops/*``).
+
+    Admits the dedicated ``ops_viewer`` role and ``manager`` (a superset — the
+    owner can view the console too). Every other role, including ``tech``, gets
+    403. This is the real security boundary for the standalone ops app: the app
+    is convenience, this server-side check is what actually keeps a viewer out
+    of shop data — there is no client-only gate to trust.
+    """
+    if principal.role not in ("ops_viewer", "manager"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "ops access required")
+    return principal
+
+
+CurrentOpsAccess = Annotated[Principal, Depends(require_ops_access)]

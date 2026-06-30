@@ -22,8 +22,11 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.ACCESS_WIFI_STATE",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "plugins": [
@@ -38,9 +41,13 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "FixFlow records your location when you clock in, to flag punches made away from the workshop."
+          "locationWhenInUsePermission": "FixFlow records your location when you clock in, to flag punches made away from the workshop.",
+          "locationAlwaysAndWhenInUsePermission": "FixFlow checks when you reach or leave the workshop so it can remind you to clock in/out — even when the app is closed.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
+      "expo-task-manager",
       "expo-audio",
       "expo-notifications",
       "expo-font",

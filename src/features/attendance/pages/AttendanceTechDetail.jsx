@@ -1,6 +1,15 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, MapPinOff, Plus, ShieldAlert, Wifi } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  LogIn,
+  LogOut,
+  MapPinOff,
+  Plus,
+  ShieldAlert,
+  Wifi,
+} from "lucide-react";
 import { Button, Card, EmptyState, Field, SectionHeader, inputClass } from "@shared/ui/primitives";
 import Avatar from "@shared/ui/Avatar";
 import { PresenceBadge } from "@shared/ui/StatusChip";
@@ -80,6 +89,56 @@ function PunchRow({ p }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function crossingLabel(p) {
+  const verb = p.kind === "arrive" ? "Reached the workshop" : "Left the workshop";
+  if (p.inside_geofence === false) return `${verb} (read outside the fence)`;
+  return verb;
+}
+
+/** The day's passive geofence crossings — the phone's whereabouts independent of
+ * any punch. This is what lets a manager tell "forgot to clock in" from "wasn't
+ * here": an `arrive` with no clock-in is presence, a blank day is absence. */
+function PresenceTimeline({ presence }) {
+  if (!presence || presence.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+        Geofence activity
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {presence.map((p) => (
+          <div key={p.id} className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            {p.kind === "arrive" ? (
+              <LogIn className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+            ) : (
+              <LogOut className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+            )}
+            <span className="font-semibold text-slate-700">{fmtClock(p.server_time)}</span>
+            <span>{crossingLabel(p)}</span>
+            {p.is_mock_location ? (
+              <Tag tone="danger" icon={ShieldAlert}>
+                Mock GPS
+              </Tag>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ArrivedNotClockedInBanner() {
+  return (
+    <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-xs font-bold text-amber-800">
+      <AlertTriangle className="h-4 w-4 shrink-0" />
+      <span>
+        The phone reached the workshop but no clock-in was recorded — evidence the tech was on-site
+        (a forgotten punch, not an absence).
+      </span>
     </div>
   );
 }
@@ -199,7 +258,12 @@ export default function AttendanceTechDetail() {
   const { days, adjustments, loading, error, reload } = useTechDetail(techId);
   const [showForm, setShowForm] = useState(false);
 
-  const punchDays = (days || []).filter((d) => d.punches.length > 0).reverse();
+  // Include days with EITHER a punch or a geofence crossing — a day with an
+  // `arrive` but no punch (the "forgot to clock in" case) is exactly what the
+  // manager needs to see, and would otherwise be hidden.
+  const activeDays = (days || [])
+    .filter((d) => d.punches.length > 0 || (d.presence?.length ?? 0) > 0)
+    .reverse();
 
   return (
     <div className="space-y-4">
@@ -252,27 +316,35 @@ export default function AttendanceTechDetail() {
 
       <AdjustmentsCard adjustments={adjustments} />
 
-      {!loading && !error && punchDays.length === 0 ? (
+      {!loading && !error && activeDays.length === 0 ? (
         <EmptyState
-          title="No punches recorded this month"
-          sub="Punches captured from the technician app will appear here with selfie, location, and flags."
+          title="No activity recorded this month"
+          sub="Punches and geofence arrivals captured from the technician app will appear here with selfie, location, and flags."
         />
       ) : null}
 
-      {punchDays.map((day) => (
+      {activeDays.map((day) => (
         <Card key={day.day} className="p-4 md:p-5">
           <SectionHeader
             title={fmtDate(day.day, true)}
-            sub={`${fmtClock(day.first_in)} → ${fmtClock(day.last_out)} · ${fmtWorked(
-              day.worked_minutes
-            )}${day.late ? " · late" : ""}`}
+            sub={
+              day.punches.length > 0
+                ? `${fmtClock(day.first_in)} → ${fmtClock(day.last_out)} · ${fmtWorked(
+                    day.worked_minutes
+                  )}${day.late ? " · late" : ""}`
+                : "No clock-in recorded"
+            }
             action={<PresenceBadge status={day.status} />}
           />
-          <div className="mt-3 space-y-3">
-            {day.punches.map((p) => (
-              <PunchRow key={p.id} p={p} />
-            ))}
-          </div>
+          {day.arrived_not_clocked_in ? <ArrivedNotClockedInBanner /> : null}
+          {day.punches.length > 0 ? (
+            <div className="mt-3 space-y-3">
+              {day.punches.map((p) => (
+                <PunchRow key={p.id} p={p} />
+              ))}
+            </div>
+          ) : null}
+          <PresenceTimeline presence={day.presence} />
         </Card>
       ))}
     </div>

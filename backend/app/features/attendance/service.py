@@ -32,11 +32,13 @@ from app.features.attendance.derive import (
 )
 from app.features.attendance.models import (
     AttendanceEvent,
+    AttendancePresenceEvent,
     AttendanceShift,
     PayrollExportRecord,
 )
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.schemas import (
+    ActiveGeofence,
     AdjustmentItem,
     AdjustmentRequest,
     AdjustmentResponse,
@@ -50,6 +52,9 @@ from app.features.attendance.schemas import (
     PayrollDay,
     PayrollExport,
     PayrollExportFile,
+    PresenceItem,
+    PresenceRequest,
+    PresenceResponse,
     PunchItem,
     PunchRequest,
     PunchResponse,
@@ -181,30 +186,13 @@ class AttendanceService:
         server_now = datetime.now(UTC)
         drift = _compute_drift(server_now, body.device_time)
 
-        inside: bool | None = None
-        distance: float | None = None
-        wifi_match: bool | None = None
-        if (body.lat is not None and body.lng is not None) or body.wifi_bssid is not None:
-            geofence = await self._repo.get_active_geofence(shop_id=body.shop_id)
-            if geofence is not None:
-                if body.lat is not None and body.lng is not None:
-                    inside, distance = geofence_flags(
-                        body.lat,
-                        body.lng,
-                        center_lat=geofence.center_lat,
-                        center_lng=geofence.center_lng,
-                        radius_m=geofence.radius_m,
-                        accuracy_m=body.accuracy_m or 0.0,
-                    )
-                    if body.accuracy_m is None or body.accuracy_m > self._accuracy_ceiling_m:
-                        # The fix is too coarse (or reports no accuracy) to
-                        # judge the fence. Keep the distance for forensics but
-                        # stay agnostic — a false inside/outside verdict is
-                        # worse than "unknown" (which the no-location flag
-                        # surfaces to the manager).
-                        inside = None
-                if body.wifi_bssid is not None and geofence.wifi_bssids:
-                    wifi_match = _wifi_match(body.wifi_bssid, geofence.wifi_bssids)
+        inside, distance, wifi_match = await self._evaluate_geofence(
+            shop_id=body.shop_id,
+            lat=body.lat,
+            lng=body.lng,
+            accuracy_m=body.accuracy_m,
+            wifi_bssid=body.wifi_bssid,
+        )
 
         selfie_path: str | None = None
         if body.selfie_filename is not None:
@@ -260,6 +248,54 @@ class AttendanceService:
                 expires_in=minted.expires_in or DEFAULT_UPLOAD_TTL,
             )
         return self._punch_response(event, selfie=signed, deduped=False)
+
+    async def record_presence(self, body: PresenceRequest) -> PresenceResponse:
+        """Log a passive geofence crossing (``arrive`` / ``depart``). Idempotent
+        on ``client_id`` so the phone's offline retries are safe no-ops. Computes
+        the SAME fence verdict as a punch (shared ``_evaluate_geofence``), but
+        writes to the separate presence log — it is evidence of where the phone
+        was, never a clock-in, and never feeds worked-minutes."""
+        existing = await self._repo.get_presence_by_client_id(body.client_id)
+        if existing is not None:
+            return self._presence_response(existing, deduped=True)
+
+        server_now = datetime.now(UTC)
+        drift = _compute_drift(server_now, body.device_time)
+        inside, distance, wifi_match = await self._evaluate_geofence(
+            shop_id=body.shop_id,
+            lat=body.lat,
+            lng=body.lng,
+            accuracy_m=body.accuracy_m,
+            wifi_bssid=body.wifi_bssid,
+        )
+
+        try:
+            event = await self._repo.create_presence(
+                client_id=body.client_id,
+                shop_id=body.shop_id,
+                tech_id=body.tech_id,
+                kind=body.kind,
+                device_time=body.device_time,
+                drift_seconds=drift,
+                lat=body.lat,
+                lng=body.lng,
+                accuracy_m=body.accuracy_m,
+                inside_geofence=inside,
+                distance_m=distance,
+                is_mock_location=body.is_mock_location,
+                wifi_bssid=body.wifi_bssid,
+                wifi_ssid=body.wifi_ssid,
+                wifi_match=wifi_match,
+            )
+        except IntegrityError:
+            # Same race the punch path guards: a concurrent insert won the
+            # UNIQUE(client_id). Recover as the no-op it is.
+            await self._repo.rollback()
+            raced = await self._repo.get_presence_by_client_id(body.client_id)
+            if raced is None:
+                raise
+            return self._presence_response(raced, deduped=True)
+        return self._presence_response(event, deduped=False)
 
     async def complete_selfie(
         self, *, tech_id: str, event_id: UUID, size_bytes: int | None
@@ -390,6 +426,8 @@ class AttendanceService:
         if day is None:
             day = datetime.now(UTC).astimezone(tz).date()
         bucket, roster = await self._window(shop_id, day, day, tz, tech_ids, set(shifts))
+        start, end = _local_day_window_utc(day, tz)
+        pbucket = await self._presence_by_tech(shop_id=shop_id, start=start, end=end, tz=tz)
         rows: list[BoardRow] = []
         for tech_id in roster:
             events = bucket.get(tech_id, {}).get(day, [])
@@ -397,6 +435,10 @@ class AttendanceService:
                 day=day, punches=_local_punches(events, tz), shift=_shift_for(tech_id, shifts)
             )
             flags = self._day_flags(events)
+            day_presence = pbucket.get(tech_id, {}).get(day, [])
+            arrived_not_in = any(p.kind == "arrive" for p in day_presence) and not any(
+                e.kind == "clock_in" for e in events
+            )
             rows.append(
                 BoardRow(
                     tech_id=tech_id,
@@ -411,6 +453,7 @@ class AttendanceService:
                     flagged_drift=flags.drift,
                     flagged_no_location=flags.no_location,
                     flagged_no_selfie=flags.no_selfie,
+                    flagged_arrived_not_clocked_in=arrived_not_in,
                 )
             )
         return Board(shop_id=shop_id, date=day, rows=rows)
@@ -458,11 +501,19 @@ class AttendanceService:
         if to_date > today:
             to_date = today
         bucket, _ = await self._window(shop_id, from_date, to_date, tz, [tech_id], set(shifts))
+        start, _ = _local_day_window_utc(from_date, tz)
+        _, end = _local_day_window_utc(to_date, tz)
+        pbucket = await self._presence_by_tech(
+            shop_id=shop_id, start=start, end=end, tz=tz, tech_id=tech_id
+        )
         shift = _shift_for(tech_id, shifts)
         days: list[TechDay] = []
         for d in _date_range(from_date, to_date):
             events = bucket.get(tech_id, {}).get(d, [])
+            day_presence = pbucket.get(tech_id, {}).get(d, [])
             roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
+            arrived = any(p.kind == "arrive" for p in day_presence)
+            clocked_in = any(e.kind == "clock_in" for e in events)
             days.append(
                 TechDay(
                     day=d,
@@ -472,6 +523,8 @@ class AttendanceService:
                     last_out=roll.last_out,
                     worked_minutes=roll.worked_minutes,
                     punches=[self._to_item(e) for e in events],
+                    presence=[PresenceItem.model_validate(p) for p in day_presence],
+                    arrived_not_clocked_in=arrived and not clocked_in,
                 )
             )
         return TechDays(tech_id=tech_id, from_date=from_date, to_date=to_date, days=days)
@@ -572,6 +625,20 @@ class AttendanceService:
         row = await self._repo.get_geofence(shop_id=shop_id)
         return Geofence.model_validate(row) if row is not None else None
 
+    async def active_geofence(self, *, shop_id: str) -> ActiveGeofence | None:
+        """The active geofence, trimmed for the technician app (no wifi list).
+        Drives the phone's OS-level geofencing; ``None`` = nothing to monitor."""
+        row = await self._repo.get_active_geofence(shop_id=shop_id)
+        if row is None:
+            return None
+        return ActiveGeofence(
+            name=row.name,
+            center_lat=row.center_lat,
+            center_lng=row.center_lng,
+            radius_m=row.radius_m,
+            is_active=row.is_active,
+        )
+
     async def upsert_geofence(self, *, shop_id: str, body: GeofenceUpdate) -> Geofence:
         row = await self._repo.upsert_geofence(
             shop_id=shop_id,
@@ -585,6 +652,77 @@ class AttendanceService:
         return Geofence.model_validate(row)
 
     # ── Internals ────────────────────────────────────────────────────────
+    async def _evaluate_geofence(
+        self,
+        *,
+        shop_id: str,
+        lat: float | None,
+        lng: float | None,
+        accuracy_m: float | None,
+        wifi_bssid: str | None,
+    ) -> tuple[bool | None, float | None, bool | None]:
+        """Judge a fix against the shop's active geofence. Shared verbatim by
+        punches and presence crossings, so a clock-in and an ``arrive`` taken at
+        the same spot agree. Returns ``(inside, distance_m, wifi_match)``; any is
+        ``None`` when there is nothing to judge — no active fence, no coords, or
+        a fix too coarse to trust (the accuracy ceiling, where a false
+        inside/outside verdict is worse than an honest "unknown")."""
+        inside: bool | None = None
+        distance: float | None = None
+        wifi_match: bool | None = None
+        if (lat is not None and lng is not None) or wifi_bssid is not None:
+            geofence = await self._repo.get_active_geofence(shop_id=shop_id)
+            if geofence is not None:
+                if lat is not None and lng is not None:
+                    inside, distance = geofence_flags(
+                        lat,
+                        lng,
+                        center_lat=geofence.center_lat,
+                        center_lng=geofence.center_lng,
+                        radius_m=geofence.radius_m,
+                        accuracy_m=accuracy_m or 0.0,
+                    )
+                    if accuracy_m is None or accuracy_m > self._accuracy_ceiling_m:
+                        inside = None
+                if wifi_bssid is not None and geofence.wifi_bssids:
+                    wifi_match = _wifi_match(wifi_bssid, geofence.wifi_bssids)
+        return inside, distance, wifi_match
+
+    def _presence_response(
+        self, event: AttendancePresenceEvent, *, deduped: bool
+    ) -> PresenceResponse:
+        return PresenceResponse(
+            event_id=event.id,
+            client_id=event.client_id,
+            server_time=event.server_time,
+            kind=event.kind,  # type: ignore[arg-type]
+            inside_geofence=event.inside_geofence,
+            distance_m=event.distance_m,
+            deduped=deduped,
+        )
+
+    async def _presence_by_tech(
+        self,
+        *,
+        shop_id: str,
+        start: datetime,
+        end: datetime,
+        tz: ZoneInfo,
+        tech_id: str | None = None,
+    ) -> dict[str, dict[date, list[AttendancePresenceEvent]]]:
+        """Load + bucket presence crossings by (tech, local day) — mirrors how
+        ``_window`` buckets punches, so the board / tech-detail can line a day's
+        ``arrive`` against its ``clock_in``."""
+        rows = await self._repo.list_presence(
+            shop_id=shop_id, start=start, end=end, tech_id=tech_id
+        )
+        bucket: dict[str, dict[date, list[AttendancePresenceEvent]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for p in rows:
+            bucket[p.tech_id][p.server_time.astimezone(tz).date()].append(p)
+        return bucket
+
     async def _load_owned(self, tech_id: str, event_id: UUID) -> AttendanceEvent:
         event = await self._repo.get_event(event_id)
         if event is None or event.tech_id != tech_id:

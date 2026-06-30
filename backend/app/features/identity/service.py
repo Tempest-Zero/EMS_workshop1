@@ -27,8 +27,12 @@ from app.features.identity.throttle import (
 
 # Managers reach payroll, customer PII and the revenue ledger — a 4-digit PIN
 # is too thin for that account. Technicians keep 4 (workshop ergonomics).
+# Ops viewers see production logs/secrets-presence and are handed to teammates,
+# so they get the same stronger floor as managers.
 MIN_PIN_DIGITS_TECH = 4
 MIN_PIN_DIGITS_MANAGER = 6
+# Roles held to the stronger PIN floor.
+_STRONG_PIN_ROLES = ("manager", "ops_viewer")
 
 
 class InvalidCredentialsError(Exception):
@@ -141,6 +145,6 @@ class IdentityService:
     def _check_pin_policy(pin: str, tech: Technician) -> None:
         if not pin.isdigit():
             raise PinPolicyError("PIN must be digits only")
-        minimum = MIN_PIN_DIGITS_MANAGER if tech.role == "manager" else MIN_PIN_DIGITS_TECH
+        minimum = MIN_PIN_DIGITS_MANAGER if tech.role in _STRONG_PIN_ROLES else MIN_PIN_DIGITS_TECH
         if len(pin) < minimum:
             raise PinPolicyError(f"PIN for a {tech.role} account must be at least {minimum} digits")

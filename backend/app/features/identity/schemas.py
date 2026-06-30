@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Role = str  # "tech" | "manager" (checked at the DB; not enumerated for the client)
+Role = str  # "tech" | "manager" | "ops_viewer" (checked at the DB; not enumerated for the client)
 
 
 class TechnicianPublic(BaseModel):

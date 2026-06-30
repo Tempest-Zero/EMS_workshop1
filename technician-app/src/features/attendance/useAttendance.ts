@@ -12,10 +12,11 @@
 
 import NetInfo from "@react-native-community/netinfo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState } from "react-native";
+import { AppState, Vibration } from "react-native";
 
 import { attendanceApi, type PunchItem } from "../../lib/attendanceApi";
 import { useAuth } from "../auth/AuthContext";
+import { clearAttendancePrompt } from "./attendancePrompt";
 import { loadQueue, type QueuedPunch } from "./queue";
 import { punch } from "./punch";
 import { syncNow } from "./sync";
@@ -164,6 +165,11 @@ export function useAttendance() {
       setError(null);
       try {
         await punch({ techId, kind });
+        // A short buzz confirms success without the tech needing to read the
+        // screen — important for low-literacy users. Clear any prompt that
+        // brought them here so the primed banner resolves.
+        Vibration.vibrate(40);
+        clearAttendancePrompt();
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

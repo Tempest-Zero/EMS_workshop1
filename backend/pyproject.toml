@@ -108,6 +108,7 @@ modules = [
   "app.features.jobs",
   "app.features.media",
   "app.features.notifications",
+  "app.features.ops",
 ]
 ignore_imports = [
   # Jobs' close-gate checks closing media through the media surface.
