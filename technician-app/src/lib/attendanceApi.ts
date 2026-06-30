@@ -82,6 +82,16 @@ export interface TodayStatus {
   last_out: string | null;
 }
 
+export interface Shift {
+  shop_id: string;
+  tech_id: string;
+  start_local: string; // "09:00:00"
+  end_local: string;
+  working_days: string;
+  grace_minutes: number;
+  timezone: string;
+}
+
 const q = (v: string) => encodeURIComponent(v);
 
 export const attendanceApi = {
@@ -104,4 +114,7 @@ export const attendanceApi = {
     request<PunchItem[]>(
       `/api/attendance/punches?tech_id=${q(techId)}&start=${q(start)}&end=${q(end)}&shop_id=${q(shopId)}`,
     ),
+
+  getShift: (techId: string, shopId = "default") =>
+    request<Shift>(`/api/attendance/shifts/${q(techId)}?shop_id=${q(shopId)}`),
 };

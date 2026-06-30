@@ -106,21 +106,27 @@ def payroll_week_window(today: date) -> tuple[date, date]:
     return sunday - timedelta(days=6), sunday
 
 
-def payroll_csv(export: PayrollExport) -> str:
+def payroll_csv(export: PayrollExport, tech_names: dict[str, str] | None = None) -> str:
     """The same flat shape the manager web builds for its on-demand download —
     one row per tech per day, ERP-friendly. The evidence flags ride along so
     the document a pay decision is made from carries the anti-cheat signals,
-    not just the today-board."""
+    not just the today-board. ``tech_names`` (when given) fills the leading
+    human-readable ``technician`` column, falling back to the id; ``hours`` is
+    ``worked_minutes`` as a decimal so the sheet is payroll-ready without a
+    formula."""
+    names = tech_names or {}
     buf = io_module.StringIO()
     writer = csv_module.writer(buf, lineterminator="\n")
     writer.writerow(
         [
+            "technician",
             "tech_id",
             "date",
             "status",
             "first_in",
             "last_out",
             "worked_minutes",
+            "hours",
             "flag_mock_gps",
             "flag_outside_geofence",
             "flag_clock_drift",
@@ -131,12 +137,14 @@ def payroll_csv(export: PayrollExport) -> str:
     for row in export.rows:
         writer.writerow(
             [
+                names.get(row.tech_id, row.tech_id),
                 row.tech_id,
                 row.date.isoformat(),
                 row.status,
                 row.first_in.isoformat() if row.first_in else "",
                 row.last_out.isoformat() if row.last_out else "",
                 row.worked_minutes if row.worked_minutes is not None else "",
+                f"{row.worked_minutes / 60:.1f}" if row.worked_minutes is not None else "",
                 int(row.flagged_mock),
                 int(row.flagged_outside),
                 int(row.flagged_drift),
@@ -711,7 +719,11 @@ class AttendanceService:
             return existing
 
         export = await self.payroll(shop_id=shop_id, from_date=from_date, to_date=to_date)
-        csv_text = payroll_csv(export)
+        # Human-readable names for the leading CSV column (matching the on-demand
+        # download the manager web builds). Fetched through the repository so the
+        # service never reaches across slices or into the session directly.
+        tech_names = await self._repo.list_active_tech_names()
+        csv_text = payroll_csv(export, tech_names=tech_names)
         storage_path = f"payroll/{shop_id}/{from_date.isoformat()}_{to_date.isoformat()}.csv"
         self._storage.put_bytes(storage_path, csv_text.encode("utf-8"), "text/csv")
         record = await self._repo.add_export(

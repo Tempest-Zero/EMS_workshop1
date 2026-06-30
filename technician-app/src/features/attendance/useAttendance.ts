@@ -14,7 +14,7 @@ import NetInfo from "@react-native-community/netinfo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 
-import { attendanceApi, type PunchItem } from "../../lib/attendanceApi";
+import { attendanceApi, type PunchItem, type Shift } from "../../lib/attendanceApi";
 import { useAuth } from "../auth/AuthContext";
 import { loadQueue, type QueuedPunch } from "./queue";
 import { punch } from "./punch";
@@ -34,6 +34,7 @@ export interface PunchRow {
   isMock: boolean;
   hasWifi: boolean;
   synced: boolean;
+  selfieFailed: boolean;
 }
 
 export function useAttendance() {
@@ -43,6 +44,7 @@ export function useAttendance() {
   const [all, setAll] = useState<QueuedPunch[]>([]);
   const [serverPunches, setServerPunches] = useState<PunchItem[]>([]);
   const [serverClockedIn, setServerClockedIn] = useState<boolean | null>(null);
+  const [shift, setShift] = useState<Shift | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,12 +55,14 @@ export function useAttendance() {
     try {
       const end = new Date();
       const start = new Date(end.getTime() - HISTORY_DAYS * 24 * 3600 * 1000);
-      const [today, list] = await Promise.all([
+      const [today, list, shiftData] = await Promise.all([
         attendanceApi.today(techId),
         attendanceApi.listPunches(techId, start.toISOString(), end.toISOString()),
+        attendanceApi.getShift(techId).catch(() => null),
       ]);
       setServerClockedIn(today.clocked_in);
       setServerPunches(list);
+      setShift(shiftData);
     } catch {
       // Keep the last-known server state; the local queue still drives the UI.
     }
@@ -108,6 +112,7 @@ export function useAttendance() {
       isMock: p.is_mock_location,
       hasWifi: Boolean(p.wifi_bssid),
       synced: false,
+      selfieFailed: false,
     }));
     const server: PunchRow[] = serverPunches.map((p) => ({
       key: p.id,
@@ -116,6 +121,7 @@ export function useAttendance() {
       isMock: p.is_mock_location,
       hasWifi: Boolean(p.wifi_bssid),
       synced: true,
+      selfieFailed: p.selfie_status === "pending" && (Date.now() - new Date(p.created_at).getTime() > 24 * 3600 * 1000),
     }));
     return [...local, ...server].sort((a, b) => b.at.localeCompare(a.at));
   }, [localPending, serverPunches]);
@@ -185,5 +191,6 @@ export function useAttendance() {
     clockIn: () => doPunch("clock_in"),
     clockOut: () => doPunch("clock_out"),
     refresh,
+    shift,
   };
 }
