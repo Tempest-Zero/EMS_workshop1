@@ -76,7 +76,9 @@ describe("<Attendance />", () => {
     expect(screen.getAllByText("Imran Ahmed").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Kashif Raza").length).toBeGreaterThan(0);
     expect(screen.getByText("LATE")).toBeInTheDocument();
-    expect(screen.getByText("3/4 present")).toBeInTheDocument();
+    // Present/working now renders as "<present>/<working> days" with the count
+    // in an emerald span — assert that count is shown for the first tech.
+    expect(screen.getByText("3", { selector: ".text-emerald-600" })).toBeInTheDocument();
     expect(screen.getByText("Jun 2026")).toBeInTheDocument();
   });
 });

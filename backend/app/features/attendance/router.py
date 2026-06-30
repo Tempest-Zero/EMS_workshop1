@@ -292,10 +292,17 @@ async def list_adjustments(
 @router.get(
     "/shifts/{tech_id}",
     response_model=Shift,
-    dependencies=[Depends(require_manager)],
-    summary="Get a tech's shift",
+    summary="Get a tech's shift (own shift for a tech; any tech for a manager)",
 )
-async def get_shift(tech_id: str, service: ServiceDep, shop_id: ShopId = DEFAULT_SHOP_ID) -> Shift:
+async def get_shift(
+    tech_id: str,
+    service: ServiceDep,
+    principal: CurrentPrincipal,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> Shift:
+    # A technician must be able to read their OWN shift (the mobile clock screen
+    # shows it); a manager may read anyone's. The PUT below stays manager-only.
+    _require_self_or_manager(principal, tech_id)
     return await service.get_shift(shop_id=shop_id, tech_id=tech_id)
 
 

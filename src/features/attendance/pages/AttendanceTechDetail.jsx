@@ -6,6 +6,7 @@ import Avatar from "@shared/ui/Avatar";
 import { PresenceBadge } from "@shared/ui/StatusChip";
 import { fmtDate } from "@shared/lib/date";
 import { useApp } from "@app/providers/AppContext";
+import { useAuth } from "@app/providers/AuthContext";
 import { createAdjustment } from "@features/attendance/data/attendanceApi";
 import { useTechDetail } from "@features/attendance/hooks/useTechDetail";
 import { fmtClock, fmtWorked } from "@features/attendance/lib/format";
@@ -85,10 +86,10 @@ function PunchRow({ p }) {
 }
 
 function CorrectionForm({ techId, onSaved, onCancel }) {
+  const { user } = useAuth();
   const [kind, setKind] = useState("clock_in");
   const [when, setWhen] = useState("");
   const [reason, setReason] = useState("");
-  const [managerId, setManagerId] = useState("manager");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -106,7 +107,7 @@ function CorrectionForm({ techId, onSaved, onCancel }) {
         kind,
         server_time: new Date(when).toISOString(),
         reason: reason.trim(),
-        manager_id: managerId.trim() || "manager",
+        manager_id: user?.tech_id || "manager",
       });
       onSaved();
     } catch (e2) {
@@ -146,13 +147,9 @@ function CorrectionForm({ techId, onSaved, onCancel }) {
             placeholder="e.g. forgot to clock out"
           />
         </Field>
-        <Field label="Manager">
-          <input
-            className={inputClass}
-            value={managerId}
-            onChange={(e) => setManagerId(e.target.value)}
-          />
-        </Field>
+        <div className="text-sm text-slate-500">
+          Correction by <span className="font-bold text-slate-700">{user?.name || "Manager"}</span>
+        </div>
         {err ? <div className="rounded-lg bg-red-50 p-2 text-xs text-red-700">{err}</div> : null}
         <div className="flex gap-2">
           <Button type="submit" variant="primary" disabled={busy}>
