@@ -95,3 +95,23 @@ export function saveShift(techId, body) {
     body
   );
 }
+
+// ── Technician Field Operations ──────────────────────────────────────────────
+
+/**
+ * Technician action: Clock in for the day.
+ * The backend verifies the GPS coordinates against the shop's geofence.
+ */
+export function clockIn(lat, lng, photoFile) {
+  const formData = new FormData();
+  formData.append("shop_id", SHOP_ID);
+  formData.append("lat", lat);
+  formData.append("lng", lng);
+  
+  // ── DIAGNOSTIC TEST: Temporarily hide the photo from the backend ──
+   if (photoFile) {
+     formData.append("photo", photoFile);
+   }
+
+  return apiSend(`/api/attendance/punches?shop_id=${encodeURIComponent(SHOP_ID)}`, "POST", formData, { isMultipart: true });
+}

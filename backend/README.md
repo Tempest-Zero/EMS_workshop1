@@ -5,15 +5,17 @@ business rules, persistence, and (later) auth. Each business capability lives as
 a self-contained module under `app/features/<slice>/`, mirroring the frontend's
 vertical-slice layout.
 
-> **Live.** The backend runs at
-> `https://efficient-tenderness-production-2d09.up.railway.app` (Railway), with migrations
-> applied automatically on deploy (`start.sh`). Shipped slices: `identity` (Name + PIN → JWT,
-> technician roster), `jobs` (intake → estimate → payment → close), `attendance` (selfie + GPS
-> clock-in/out, append-only log, daily rollups, payroll export), `media` (Cloudflare R2-backed
-> before/after capture), and `notifications` (FCM push). **Auth is enforced** — endpoints require
-> a JWT and manager-only routes reject technician tokens (403). See
-> [`docs/ROADMAP.md`](../docs/ROADMAP.md) for current work and
-> [`docs/PLAYBOOK.md`](../docs/PLAYBOOK.md) before adding a slice.
+> ⚠️ **Early stage.** The app skeleton, `/api/health`, the `media` slice
+> (Cloudflare R2-backed before/after capture), and the `attendance` slice
+> (selfie + GPS clock-in/out, append-only log, daily rollups) are **live** at
+> `https://efficient-tenderness-production-2d09.up.railway.app` (Railway).
+> The `identity` slice (Name + PIN → JWT, the technician roster) is the
+> foundation for the **Jobs vertical** — see
+> [`docs/jobs-vertical-plan.md`](../docs/jobs-vertical-plan.md). Auth exists but
+> is **not yet enforced** on attendance/media (so the installed app keeps
+> working); enforcement + client login land in the next PR. Other slices
+> (`jobs`, `invoices`, …) follow. Migrations now run automatically on deploy
+> (`start.sh`). See [`docs/PLAYBOOK.md`](../docs/PLAYBOOK.md) before a new slice.
 
 ## Layout
 

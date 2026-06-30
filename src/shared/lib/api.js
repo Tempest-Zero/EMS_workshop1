@@ -63,10 +63,20 @@ export async function apiGet(path) {
 }
 
 export async function apiSend(path, method, body) {
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  const headers = { ...authHeaders() };
+
+  // Only force JSON headers if we are NOT sending a file/FormData
+  if (!isFormData) {
+    headers["Content-Type"] = "application/json";
+  }
+
   const res = await fetch(`${apiUrl}${path}`, {
     method,
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: body == null ? undefined : JSON.stringify(body),
+    headers,
+    // Pass FormData directly to the browser, otherwise stringify the JSON
+    body: isFormData ? body : (body == null ? undefined : JSON.stringify(body)),
   });
+  
   return handle(res, method, path);
 }
