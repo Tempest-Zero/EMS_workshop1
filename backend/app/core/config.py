@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     # Sentry DSN — empty disables error reporting (boots fine without an account).
     sentry_dsn: str = ""
 
+    # ── Ops console: deep-health + metrics proxy token ───────────────────
+    # The standalone ops server (ops-server.mjs) holds the Railway/Sentry tokens
+    # itself and proxies those surfaces. For the two surfaces only the backend
+    # can produce — deep health (DB/R2/scheduler/migrations/config) and in-app
+    # API metrics — it calls this backend's read-only /api/ops/* with a shared
+    # secret in the X-Ops-Proxy-Token header, compared here in constant time.
+    # Empty = those endpoints are fail-closed (401 for everyone), so a
+    # misconfigured deploy can never expose them unauthenticated. No DB role and
+    # no migration are involved — this is a pure shared-secret check.
+    ops_proxy_token: str = ""
+
     # ── Scheduler (in-process APScheduler) ───────────────────────────────
     # ASSUMES A SINGLE REPLICA: each replica would run its own scheduler and
     # duplicate every job. If the service is ever scaled out, move the jobs to
@@ -110,6 +121,7 @@ class Settings(BaseSettings):
     # ── HTTP ─────────────────────────────────────────────────────────────
     cors_origins: list[str] = [
         "http://localhost:5173",  # web (manager / Vite dev server)
+        "http://localhost:5174",  # ops console (separate Vite dev server)
         "http://localhost:8081",  # Expo dev server (Metro)
     ]
 

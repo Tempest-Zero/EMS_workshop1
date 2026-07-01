@@ -7,7 +7,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 export default defineConfig([
   // Each sibling runtime owns its own quality gates. This config covers only
   // the web manager app at the repo root.
-  globalIgnores(["dist", "backend", "technician-app"]),
+  globalIgnores(["dist", "dist-ops", "backend", "technician-app"]),
   {
     files: ["**/*.{js,jsx}"],
     extends: [
