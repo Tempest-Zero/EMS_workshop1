@@ -1,4 +1,5 @@
 dist
+dist-ops
 node_modules
 package-lock.json
 coverage
@@ -6,6 +7,8 @@ coverage
 # Hand-authored demo collateral — leave formatting untouched
 docs
 *.pdf
+# Ground-truth doc with deliberately hand-aligned wide tables
+CLAUDE.md
 
 # Backend is Python — formatted by ruff, not Prettier
 backend

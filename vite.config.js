@@ -14,6 +14,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@app": fileURLToPath(new URL("./src/app", import.meta.url)),
+      // The ops console is built by vite.ops.config.js; the alias is mirrored
+      // here so Vitest (which loads this config) can resolve @ops in tests.
+      "@ops": fileURLToPath(new URL("./src/ops", import.meta.url)),
       "@shared": fileURLToPath(new URL("./src/shared", import.meta.url)),
       "@features": fileURLToPath(new URL("./src/features", import.meta.url)),
     },

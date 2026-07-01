@@ -1,0 +1,37 @@
+# Standalone Ops Console — its OWN Railway service, fully decoupled from the
+# FixFlow backend and database. One Node process (ops-server.mjs, zero npm deps)
+# serves the built SPA AND proxies Railway/Sentry + pings the main app for health,
+# behind a shared team password. It holds the Railway/Sentry tokens server-side,
+# so the browser never sees them. Hand a teammate this service's URL + the team
+# password and they get read-only monitoring — nothing else.
+
+# ── Build stage: compile the SPA bundle ──────────────────────────────────────
+FROM node:20-alpine AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Cache-bust (see Dockerfile.web): bump on any deploy that serves stale assets.
+ARG REBUILD=2026-06-30a
+RUN echo "rebuild ${REBUILD}"
+
+COPY . .
+
+# The SPA and the API are served from the SAME origin by ops-server.mjs, so the
+# client uses RELATIVE URLs — VITE_API_URL is empty on purpose. VITE_SENTRY_DSN
+# (the ops app's own error tracking) is optional.
+ENV VITE_API_URL=""
+ARG VITE_SENTRY_DSN
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+RUN npm run build:ops
+
+# ── Serve stage: the zero-dep Node BFF ───────────────────────────────────────
+FROM node:20-alpine AS serve
+WORKDIR /app
+COPY --from=build /app/dist-ops ./dist-ops
+COPY --from=build /app/ops-server.mjs ./ops-server.mjs
+
+ENV PORT=8080
+EXPOSE 8080
+CMD ["node", "ops-server.mjs"]

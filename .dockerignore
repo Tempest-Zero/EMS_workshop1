@@ -3,6 +3,7 @@
 # backend/ context, so this file does not affect the backend image.)
 node_modules
 dist
+dist-ops
 .git
 .github
 backend
