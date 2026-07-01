@@ -101,5 +101,7 @@ async def test_unconfigured_token_is_fail_closed(
     # A blank token must never mean "open" — even a matching blank header is 401.
     monkeypatch.setattr(config_module.settings, "ops_proxy_token", "")
     async with _client(fake_service) as c:
-        assert (await c.get("/api/ops/health", headers={"X-Ops-Proxy-Token": ""})).status_code == 401
+        assert (
+            await c.get("/api/ops/health", headers={"X-Ops-Proxy-Token": ""})
+        ).status_code == 401
         assert (await c.get("/api/ops/health")).status_code == 401
