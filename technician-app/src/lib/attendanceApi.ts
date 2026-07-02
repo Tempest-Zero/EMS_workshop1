@@ -106,6 +106,8 @@ export interface PresenceRequest {
   is_mock_location?: boolean;
   wifi_bssid?: string | null;
   wifi_ssid?: string | null;
+  // Crossing confirmation (D5): true/false/null. Backend persists it verbatim.
+  confirmed?: boolean | null;
 }
 
 export interface PresenceResponse {

@@ -42,6 +42,7 @@ export async function syncPresence(techId: string | null): Promise<void> {
           is_mock_location: item.is_mock_location,
           wifi_bssid: item.wifi_bssid,
           wifi_ssid: item.wifi_ssid,
+          confirmed: item.confirmed,
         });
         await markPresenceDone(item.client_id);
         settled.push(item.client_id);

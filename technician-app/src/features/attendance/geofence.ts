@@ -22,7 +22,8 @@ import * as TaskManager from "expo-task-manager";
 
 import { attendanceApi, type ActiveGeofence, type PresenceKind } from "../../lib/attendanceApi";
 import { getToken, loadToken } from "../../lib/auth";
-import { getLocation } from "./location";
+import { haversineM } from "../../lib/geo";
+import { getLocation, type LocationReading } from "./location";
 import { notifyArrived, notifyLeaving } from "./attendanceNotifications";
 import { enqueuePresence, type QueuedPresence } from "./presenceQueue";
 import { syncPresence } from "./presenceSync";
@@ -40,6 +41,93 @@ const LAST_CROSSING_KEY = "attendance.presence.lastCrossing.v1";
 // Boundary jitter can fire Enter/Exit in quick succession; ignore a repeat of
 // the SAME kind within this window so we don't spam the server or the tech.
 const DEBOUNCE_MS = 3 * 60 * 1000;
+
+// ── D5 crossing confirmation ──────────────────────────────────────────────
+// The OS geofence event is cross-checked against a fresh fix vs the cached
+// fence before we trust it. A fix coarser than this can't judge the boundary.
+const CONFIRM_ACCURACY_MAX_M = 100;
+// EXIT needs the phone to be clearly OUTSIDE, not merely a metre past the edge
+// (hysteresis kills boundary flapping): outside = max(radius×factor, radius+min).
+const EXIT_HYSTERESIS_FACTOR = 1.5;
+const EXIT_HYSTERESIS_MIN_M = 40;
+// A first fix that contradicts the OS event gets ONE dwell re-check before we
+// overrule it — 20s keeps the whole task inside Android's ~30s headless budget.
+const DWELL_RECHECK_MS = 20 * 1000;
+
+/**
+ * The result of confirming an OS crossing against a fresh fix:
+ *   - "confirmed"    — the fix agrees with the OS event
+ *   - "contradicted" — the fix disagrees, twice (after a dwell re-check)
+ *   - "unknown"      — couldn't judge (no fence cache, no fix, or too coarse):
+ *                      trust the OS event rather than overrule it on bad data
+ */
+export type CrossingVerdict = "confirmed" | "contradicted" | "unknown";
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function verdictConfirmed(verdict: CrossingVerdict): boolean | null {
+  if (verdict === "confirmed") return true;
+  if (verdict === "contradicted") return false;
+  return null; // unknown — recorded as evidence, OS event trusted
+}
+
+/** The last fence the phone cached (written by `fetchActiveFence`); no network. */
+async function loadCachedFence(): Promise<ActiveGeofence | null> {
+  try {
+    const raw = await AsyncStorage.getItem(FENCE_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as ActiveGeofence | null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Judge ONE fix against the fence. "unknown" when it can't be judged. */
+function evaluateFix(
+  kind: PresenceKind,
+  loc: LocationReading,
+  fence: ActiveGeofence | null,
+): CrossingVerdict {
+  if (
+    fence === null ||
+    loc.lat === null ||
+    loc.lng === null ||
+    loc.accuracy_m === null ||
+    loc.accuracy_m > CONFIRM_ACCURACY_MAX_M
+  ) {
+    return "unknown";
+  }
+  const distance = haversineM(loc.lat, loc.lng, fence.center_lat, fence.center_lng);
+  if (kind === "arrive") {
+    return distance <= fence.radius_m ? "confirmed" : "contradicted";
+  }
+  // depart — must be clearly outside the fence, not just past the edge.
+  const exitThreshold = Math.max(
+    fence.radius_m * EXIT_HYSTERESIS_FACTOR,
+    fence.radius_m + EXIT_HYSTERESIS_MIN_M,
+  );
+  return distance >= exitThreshold ? "confirmed" : "contradicted";
+}
+
+/**
+ * Confirm an OS geofence crossing against a fresh fix vs the cached fence (D5).
+ * Returns the verdict AND the fix used, so the caller records that same fix as
+ * the crossing's evidence — no second GPS read. A first fix that contradicts
+ * the OS event gets ONE 20s dwell re-check before we call it contradicted (and
+ * suppress the notification); real flap resolves, real crossings survive.
+ */
+export async function confirmCrossing(
+  kind: PresenceKind,
+): Promise<{ verdict: CrossingVerdict; loc: LocationReading }> {
+  const fence = await loadCachedFence();
+  const first = await getLocation();
+  const firstVerdict = evaluateFix(kind, first, fence);
+  if (firstVerdict !== "contradicted") return { verdict: firstVerdict, loc: first };
+  // The first fix says the OS was wrong — could be a boundary flap. Wait a beat
+  // and look again before overruling (and silencing) the crossing.
+  await delay(DWELL_RECHECK_MS);
+  const second = await getLocation();
+  return { verdict: evaluateFix(kind, second, fence), loc: second };
+}
 
 async function getSignedInTechId(): Promise<string | null> {
   try {
@@ -83,9 +171,21 @@ async function isDuplicate(kind: PresenceKind): Promise<boolean> {
   return false;
 }
 
-/** Capture evidence, queue the crossing, and kick a sync (offline-tolerant). */
-export async function recordCrossing(kind: PresenceKind, techId: string): Promise<QueuedPresence> {
-  const [loc, wifi] = await Promise.all([getLocation(), getWifi()]);
+/**
+ * Capture evidence, queue the crossing, and kick a sync (offline-tolerant).
+ * ``opts.loc`` lets the caller reuse the fix taken during confirmation (D5) so a
+ * crossing costs one GPS read, not two; ``opts.confirmed`` rides along as the
+ * crossing's verdict (true/false/null).
+ */
+export async function recordCrossing(
+  kind: PresenceKind,
+  techId: string,
+  opts: { loc?: LocationReading; confirmed?: boolean | null } = {},
+): Promise<QueuedPresence> {
+  const [loc, wifi] = await Promise.all([
+    opts.loc ? Promise.resolve(opts.loc) : getLocation(),
+    getWifi(),
+  ]);
   const now = new Date().toISOString();
   const item: QueuedPresence = {
     client_id: Crypto.randomUUID(),
@@ -99,6 +199,7 @@ export async function recordCrossing(kind: PresenceKind, techId: string): Promis
     is_mock_location: loc.is_mock_location,
     wifi_bssid: wifi.wifi_bssid,
     wifi_ssid: wifi.wifi_ssid,
+    confirmed: opts.confirmed ?? null,
     done: false,
     created_at: now,
   };
@@ -130,16 +231,20 @@ export async function handleGeofenceEvent(
 
   if (eventType === Location.GeofencingEventType.Enter) {
     if (await isDuplicate("arrive")) return;
-    await recordCrossing("arrive", techId);
-    // Don't nag if already on duty. If the check can't run (offline), err toward
-    // reminding — a redundant prompt is cheaper than a forgotten clock-in.
-    if ((await isClockedIn(techId)) !== true) await notifyArrived();
+    // Confirm the OS event against a fresh fix (D5); reuse that fix as evidence.
+    const { verdict, loc } = await confirmCrossing("arrive");
+    await recordCrossing("arrive", techId, { loc, confirmed: verdictConfirmed(verdict) });
+    // A contradicted crossing is kept as evidence but stays silent (flap noise).
+    // Otherwise: don't nag if already on duty; if the check can't run (offline),
+    // err toward reminding — a redundant prompt beats a forgotten clock-in.
+    if (verdict !== "contradicted" && (await isClockedIn(techId)) !== true) await notifyArrived();
   } else if (eventType === Location.GeofencingEventType.Exit) {
     if (await isDuplicate("depart")) return;
-    await recordCrossing("depart", techId);
-    // Only remind to clock OUT when we positively know they're clocked in;
-    // nagging someone who never clocked in is worse than staying quiet.
-    if ((await isClockedIn(techId)) === true) await notifyLeaving();
+    const { verdict, loc } = await confirmCrossing("depart");
+    await recordCrossing("depart", techId, { loc, confirmed: verdictConfirmed(verdict) });
+    // Only remind to clock OUT when we positively know they're clocked in, and
+    // never on a contradicted crossing (a flap out-and-back isn't leaving).
+    if (verdict !== "contradicted" && (await isClockedIn(techId)) === true) await notifyLeaving();
   }
 }
 

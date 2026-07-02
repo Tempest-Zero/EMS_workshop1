@@ -28,6 +28,9 @@ export interface QueuedPresence {
   is_mock_location: boolean;
   wifi_bssid: string | null;
   wifi_ssid: string | null;
+  // Crossing confirmation (D5): true = a fresh fix agreed with the OS event,
+  // false = it contradicted (kept as evidence), null = unconfirmable.
+  confirmed: boolean | null;
   // ── sync state ──
   done: boolean;
   created_at: string;

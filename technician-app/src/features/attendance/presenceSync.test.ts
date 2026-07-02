@@ -42,6 +42,7 @@ const crossing: QueuedPresence = {
   is_mock_location: false,
   wifi_bssid: "AA:BB",
   wifi_ssid: "Shop",
+  confirmed: false,
   done: false,
   created_at: "2026-06-03T04:00:00.000Z",
 };
@@ -68,7 +69,12 @@ it("posts each crossing, marks it done, and removes it", async () => {
   await syncPresence("t1");
 
   expect(mockedApi.recordPresence).toHaveBeenCalledWith(
-    expect.objectContaining({ client_id: "c1", kind: "arrive", wifi_bssid: "AA:BB" }),
+    expect.objectContaining({
+      client_id: "c1",
+      kind: "arrive",
+      wifi_bssid: "AA:BB",
+      confirmed: false,
+    }),
   );
   expect(mockedDone).toHaveBeenCalledWith("c1");
   expect(mockedRemove).toHaveBeenCalledWith(["c1"]);
