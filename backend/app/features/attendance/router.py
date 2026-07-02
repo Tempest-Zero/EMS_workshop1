@@ -74,6 +74,10 @@ def get_service(session: SessionDep, storage: StorageDep) -> AttendanceService:
         drift_flag_seconds=settings.attendance_drift_flag_seconds,
         location_accuracy_ceiling_m=settings.attendance_location_accuracy_ceiling_m,
         selfie_grace_hours=settings.attendance_selfie_grace_hours,
+        device_time_future_tolerance_seconds=(
+            settings.attendance_device_time_future_tolerance_seconds
+        ),
+        device_time_backdate_ceiling_hours=settings.attendance_device_time_backdate_ceiling_hours,
     )
 
 

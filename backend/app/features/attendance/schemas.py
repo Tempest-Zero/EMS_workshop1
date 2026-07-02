@@ -84,6 +84,9 @@ class PunchItem(BaseModel):
     kind: PunchKind
     source: PunchSource
     server_time: datetime
+    # The analytical time the rollups bucket on (device_time when it's a sane
+    # offline capture, else server_time). server_time is kept for audit.
+    effective_time: datetime
     device_time: datetime | None = None
     drift_seconds: int | None = None
     lat: float | None = None
@@ -128,6 +131,10 @@ class PresenceRequest(BaseModel):
     is_mock_location: bool = False
     wifi_bssid: str | None = Field(default=None, max_length=64)
     wifi_ssid: str | None = Field(default=None, max_length=128)
+    # The phone's crossing confirmation (D5): True = a fresh fix agreed with the
+    # OS geofence event, False = contradicted (still logged as evidence), None =
+    # unconfirmable / pre-feature. Persisted as-is; never rejected.
+    confirmed: bool | None = None
 
 
 class PresenceResponse(BaseModel):
@@ -155,6 +162,7 @@ class PresenceItem(BaseModel):
     kind: PresenceKind
     source: str
     server_time: datetime
+    effective_time: datetime
     device_time: datetime | None = None
     drift_seconds: int | None = None
     lat: float | None = None
@@ -166,6 +174,8 @@ class PresenceItem(BaseModel):
     wifi_bssid: str | None = None
     wifi_ssid: str | None = None
     wifi_match: bool | None = None
+    # Crossing confirmation (D5): True/False/None — see the model.
+    confirmed: bool | None = None
     created_at: datetime
 
 

@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     # surfaces on the manager's selfie-gaps reconciliation list (the punch
     # itself stays valid — evidence is flagged, never blocking).
     attendance_selfie_grace_hours: int = 24
+    # Bounded trust of the device clock for the analytical time axis (D8). A
+    # punch/crossing captured offline carries a device timestamp; the server
+    # honours it as "when it happened" (effective_time) only when it sits within
+    # a sane window around receipt — at most this many seconds into the future
+    # (a punch can't legitimately predate its own arrival; clocks skew a little)…
+    attendance_device_time_future_tolerance_seconds: int = 120
+    # …and no further back than this many hours (an offline batch synced next
+    # morning is legitimate; a week-old backdate smells of spoofing). Outside the
+    # window, effective_time falls back to the authoritative server_time. The
+    # drift flag still surfaces every clock disagreement regardless.
+    attendance_device_time_backdate_ceiling_hours: int = 24
 
     # ── Jobs / billing ───────────────────────────────────────────────────
     # Labour rate used to auto-generate the bill from time on-site. Integer

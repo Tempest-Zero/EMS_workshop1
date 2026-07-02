@@ -52,6 +52,10 @@ def _event(**overrides: object) -> AttendanceEvent:
     )
     for key, value in overrides.items():
         setattr(event, key, value)
+    # effective_time (D8) defaults to mirror server_time so the rollup tests read
+    # the times they set; a test that cares about the offline case overrides it.
+    if "effective_time" not in overrides:
+        event.effective_time = event.server_time
     return event
 
 
@@ -76,10 +80,13 @@ def _presence(**overrides: object) -> AttendancePresenceEvent:
         wifi_bssid=None,
         wifi_ssid=None,
         wifi_match=None,
+        confirmed=None,
         created_at=NINE_AM_PKT,
     )
     for key, value in overrides.items():
         setattr(event, key, value)
+    if "effective_time" not in overrides:
+        event.effective_time = event.server_time
     return event
 
 
@@ -418,8 +425,88 @@ async def test_create_adjustment_appends_manual_event_and_audit(
     )
     repo.create_event.assert_awaited_once()
     assert repo.create_event.await_args.kwargs["source"] == "manual"
+    # A manual correction's effective_time is the corrected time it asserts.
+    assert repo.create_event.await_args.kwargs["effective_time"] == SIX_PM_PKT
     repo.create_adjustment.assert_awaited_once()
     assert resp.new_event_id is not None
+
+
+# ── D8: effective_time (bounded trust of the device clock) ────────────────────
+async def test_offline_punch_uses_device_time_as_effective_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Captured offline 3h ago, synced now: effective_time is the capture moment
+    # (so it buckets on the day it happened), and the clock gap is still flagged.
+    service, repo, _ = svc
+    captured = datetime.now(UTC) - timedelta(hours=3)
+    resp = await service.record_punch(
+        PunchRequest(client_id=uuid4(), tech_id="t1", kind="clock_in", device_time=captured)
+    )
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == captured
+    assert kwargs["effective_time"] != kwargs["server_time"]
+    assert resp.drift_flagged is True  # ~3h drift > 120s ceiling
+
+
+async def test_future_device_time_falls_back_to_server_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # A device clock 10 min ahead can't be a real capture time (2 min tolerance)
+    # — fall back to the authoritative server_time.
+    service, repo, _ = svc
+    await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            device_time=datetime.now(UTC) + timedelta(minutes=10),
+        )
+    )
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == kwargs["server_time"]
+
+
+async def test_stale_backdated_device_time_falls_back_to_server_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 30h in the past exceeds the 24h backdate ceiling → server_time wins.
+    service, repo, _ = svc
+    await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            device_time=datetime.now(UTC) - timedelta(hours=30),
+        )
+    )
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == kwargs["server_time"]
+
+
+async def test_missing_device_time_uses_server_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    await service.record_punch(PunchRequest(client_id=uuid4(), tech_id="t1", kind="clock_in"))
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == kwargs["server_time"]
+
+
+async def test_presence_confirmed_and_effective_time_round_trip(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The phone's crossing confirmation is persisted verbatim (evidence, never
+    # rejected), and a presence crossing gets an effective_time like a punch.
+    service, repo, _ = svc
+    await service.record_presence(
+        PresenceRequest(client_id=uuid4(), tech_id="t1", kind="arrive", confirmed=False)
+    )
+    kwargs = repo.create_presence.await_args.kwargs
+    assert kwargs["confirmed"] is False
+    # No device_time given → effective_time is the receipt moment. (Presence
+    # server_time is a DB default, so it isn't in the create kwargs to compare;
+    # assert effective_time landed at "now" instead.)
+    assert (datetime.now(UTC) - kwargs["effective_time"]).total_seconds() < 5
 
 
 async def test_board_classifies_present_day(

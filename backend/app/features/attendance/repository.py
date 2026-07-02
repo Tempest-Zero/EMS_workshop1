@@ -41,6 +41,7 @@ class AttendanceRepository:
         kind: str,
         source: str,
         device_time: datetime | None,
+        effective_time: datetime,
         drift_seconds: int | None,
         lat: float | None,
         lng: float | None,
@@ -63,6 +64,7 @@ class AttendanceRepository:
             kind=kind,
             source=source,
             device_time=device_time,
+            effective_time=effective_time,
             drift_seconds=drift_seconds,
             lat=lat,
             lng=lng,
@@ -114,15 +116,19 @@ class AttendanceRepository:
         end: datetime,
         tech_id: str | None = None,
     ) -> list[AttendanceEvent]:
+        # Windowed + ordered on effective_time (the analytical axis): a punch
+        # captured offline must fall in the day it happened, so the fetch window
+        # and the rollup bucketing agree. Receipt-side feeds (selfie gaps,
+        # adjustments) still key on server_time below.
         stmt = (
             select(AttendanceEvent)
             .where(AttendanceEvent.shop_id == shop_id)
-            .where(AttendanceEvent.server_time >= start)
-            .where(AttendanceEvent.server_time < end)
+            .where(AttendanceEvent.effective_time >= start)
+            .where(AttendanceEvent.effective_time < end)
         )
         if tech_id is not None:
             stmt = stmt.where(AttendanceEvent.tech_id == tech_id)
-        stmt = stmt.order_by(AttendanceEvent.server_time.asc())
+        stmt = stmt.order_by(AttendanceEvent.effective_time.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars())
 
@@ -157,6 +163,7 @@ class AttendanceRepository:
         tech_id: str,
         kind: str,
         device_time: datetime | None,
+        effective_time: datetime,
         drift_seconds: int | None,
         lat: float | None,
         lng: float | None,
@@ -167,6 +174,7 @@ class AttendanceRepository:
         wifi_bssid: str | None = None,
         wifi_ssid: str | None = None,
         wifi_match: bool | None = None,
+        confirmed: bool | None = None,
     ) -> AttendancePresenceEvent:
         event = AttendancePresenceEvent(
             client_id=client_id,
@@ -175,6 +183,7 @@ class AttendanceRepository:
             kind=kind,
             source="geofence",
             device_time=device_time,
+            effective_time=effective_time,
             drift_seconds=drift_seconds,
             lat=lat,
             lng=lng,
@@ -185,6 +194,7 @@ class AttendanceRepository:
             wifi_bssid=wifi_bssid,
             wifi_ssid=wifi_ssid,
             wifi_match=wifi_match,
+            confirmed=confirmed,
         )
         self._session.add(event)
         await self._session.flush()
@@ -207,12 +217,12 @@ class AttendanceRepository:
         stmt = (
             select(AttendancePresenceEvent)
             .where(AttendancePresenceEvent.shop_id == shop_id)
-            .where(AttendancePresenceEvent.server_time >= start)
-            .where(AttendancePresenceEvent.server_time < end)
+            .where(AttendancePresenceEvent.effective_time >= start)
+            .where(AttendancePresenceEvent.effective_time < end)
         )
         if tech_id is not None:
             stmt = stmt.where(AttendancePresenceEvent.tech_id == tech_id)
-        stmt = stmt.order_by(AttendancePresenceEvent.server_time.asc())
+        stmt = stmt.order_by(AttendancePresenceEvent.effective_time.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars())
 

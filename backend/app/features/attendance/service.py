@@ -73,6 +73,10 @@ DEFAULT_MAX_SELFIE_BYTES = 5 * 1024 * 1024
 DEFAULT_DRIFT_FLAG_SECONDS = 120
 DEFAULT_ACCURACY_CEILING_M = 200.0
 DEFAULT_SELFIE_GRACE_HOURS = 24
+# D8 device-clock trust window (see _effective_time). Defaults mirror
+# core.config; the migration 0018 backfill hard-codes the same literals.
+DEFAULT_DEVICE_TIME_FUTURE_TOLERANCE_SECONDS = 120
+DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS = 24
 # How far back the selfie-gaps reconciliation looks. Bounds the list so punches
 # from before the selfie-evidence policy don't surface forever.
 SELFIE_GAP_LOOKBACK_DAYS = 14
@@ -172,6 +176,8 @@ class AttendanceService:
         drift_flag_seconds: int = DEFAULT_DRIFT_FLAG_SECONDS,
         location_accuracy_ceiling_m: float = DEFAULT_ACCURACY_CEILING_M,
         selfie_grace_hours: int = DEFAULT_SELFIE_GRACE_HOURS,
+        device_time_future_tolerance_seconds: int = DEFAULT_DEVICE_TIME_FUTURE_TOLERANCE_SECONDS,
+        device_time_backdate_ceiling_hours: int = DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS,
     ) -> None:
         self._repo = repo
         self._storage = storage
@@ -179,6 +185,8 @@ class AttendanceService:
         self._drift_flag_seconds = drift_flag_seconds
         self._accuracy_ceiling_m = location_accuracy_ceiling_m
         self._selfie_grace_hours = selfie_grace_hours
+        self._device_time_future_tolerance_seconds = device_time_future_tolerance_seconds
+        self._device_time_backdate_ceiling_hours = device_time_backdate_ceiling_hours
 
     # ── Commands ─────────────────────────────────────────────────────────
     async def record_punch(self, body: PunchRequest) -> PunchResponse:
@@ -195,6 +203,7 @@ class AttendanceService:
 
         server_now = datetime.now(UTC)
         drift = _compute_drift(server_now, body.device_time)
+        effective = self._effective(body.device_time, server_now)
 
         inside, distance, wifi_match = await self._evaluate_geofence(
             shop_id=body.shop_id,
@@ -218,6 +227,7 @@ class AttendanceService:
                 source="mobile",
                 server_time=server_now,
                 device_time=body.device_time,
+                effective_time=effective,
                 drift_seconds=drift,
                 lat=body.lat,
                 lng=body.lng,
@@ -271,6 +281,7 @@ class AttendanceService:
 
         server_now = datetime.now(UTC)
         drift = _compute_drift(server_now, body.device_time)
+        effective = self._effective(body.device_time, server_now)
         inside, distance, wifi_match = await self._evaluate_geofence(
             shop_id=body.shop_id,
             lat=body.lat,
@@ -286,6 +297,7 @@ class AttendanceService:
                 tech_id=body.tech_id,
                 kind=body.kind,
                 device_time=body.device_time,
+                effective_time=effective,
                 drift_seconds=drift,
                 lat=body.lat,
                 lng=body.lng,
@@ -296,6 +308,7 @@ class AttendanceService:
                 wifi_bssid=body.wifi_bssid,
                 wifi_ssid=body.wifi_ssid,
                 wifi_match=wifi_match,
+                confirmed=body.confirmed,
             )
         except IntegrityError:
             # Same race the punch path guards: a concurrent insert won the
@@ -351,6 +364,9 @@ class AttendanceService:
             kind=body.kind,
             source="manual",
             server_time=body.server_time,
+            # A manager correction asserts *when it happened*; there is no device
+            # clock to reconcile, so the corrected time is the effective time.
+            effective_time=body.server_time,
             device_time=None,
             drift_seconds=None,
             lat=None,
@@ -411,13 +427,13 @@ class AttendanceService:
         last_in = _latest(events, "clock_in")
         last_out = _latest(events, "clock_out")
         clocked_in = last_in is not None and (
-            last_out is None or last_in.server_time > last_out.server_time
+            last_out is None or last_in.effective_time > last_out.effective_time
         )
         return TodayStatus(
             tech_id=tech_id,
             clocked_in=clocked_in,
-            last_in=last_in.server_time if last_in else None,
-            last_out=last_out.server_time if last_out else None,
+            last_in=last_in.effective_time if last_in else None,
+            last_out=last_out.effective_time if last_out else None,
         )
 
     async def list_punches(
@@ -734,7 +750,7 @@ class AttendanceService:
             lambda: defaultdict(list)
         )
         for p in rows:
-            bucket[p.tech_id][p.server_time.astimezone(tz).date()].append(p)
+            bucket[p.tech_id][p.effective_time.astimezone(tz).date()].append(p)
         return bucket
 
     async def _load_owned(self, tech_id: str, event_id: UUID) -> AttendanceEvent:
@@ -786,6 +802,15 @@ class AttendanceService:
     def _drift_flagged(self, drift_seconds: int | None) -> bool:
         return drift_seconds is not None and abs(drift_seconds) > self._drift_flag_seconds
 
+    def _effective(self, device_time: datetime | None, server_now: datetime) -> datetime:
+        """D8 effective_time with this service's configured trust window."""
+        return _effective_time(
+            device_time,
+            server_now,
+            future_tolerance_seconds=self._device_time_future_tolerance_seconds,
+            backdate_ceiling_hours=self._device_time_backdate_ceiling_hours,
+        )
+
     def _location_unreliable(self, event: AttendanceEvent) -> bool:
         """No usable fix: coords absent (GPS off / permission denied) or the
         reported accuracy is over the ceiling (garbage fix). Either way the
@@ -836,7 +861,7 @@ class AttendanceService:
             lambda: defaultdict(list)
         )
         for e in events:
-            local_day = e.server_time.astimezone(tz).date()
+            local_day = e.effective_time.astimezone(tz).date()
             bucket[e.tech_id][local_day].append(e)
 
         if tech_ids is not None:
@@ -903,6 +928,34 @@ def _compute_drift(server_now: datetime, device_time: datetime | None) -> int | 
     return int((server_now - device_time).total_seconds())
 
 
+def _effective_time(
+    device_time: datetime | None,
+    server_now: datetime,
+    *,
+    future_tolerance_seconds: int,
+    backdate_ceiling_hours: int,
+) -> datetime:
+    """D8 — the analytical "when it happened" time, trusting the device clock
+    only within a sane window around receipt.
+
+    Returns ``device_time`` when it is present and sits inside
+    ``[server_now - backdate_ceiling, server_now + future_tolerance]`` — an
+    offline capture synced hours later is legitimate and must count on the day
+    it happened. Otherwise (no device time, a future timestamp that can't be
+    real, or a stale backdate that smells of spoofing) it falls back to the
+    authoritative ``server_now``. The separate ``drift_seconds`` flag still
+    surfaces every clock disagreement to the manager — this only decides which
+    timestamp the rollups bucket on, never hides the mismatch."""
+    if device_time is None:
+        return server_now
+    dt = device_time if device_time.tzinfo is not None else device_time.replace(tzinfo=UTC)
+    future_limit = server_now + timedelta(seconds=future_tolerance_seconds)
+    backdate_limit = server_now - timedelta(hours=backdate_ceiling_hours)
+    if backdate_limit <= dt <= future_limit:
+        return dt
+    return server_now
+
+
 def _wifi_match(bssid: str, configured_csv: str) -> bool:
     """Case-insensitive membership of a BSSID in the shop's configured AP list."""
     configured = {b.strip().lower() for b in configured_csv.split(",") if b.strip()}
@@ -937,7 +990,7 @@ def _local_punches(events: list[AttendanceEvent], tz: ZoneInfo) -> list[LocalPun
     return [
         LocalPunch(
             kind=e.kind,
-            local_dt=e.server_time.astimezone(tz).replace(tzinfo=None),
+            local_dt=e.effective_time.astimezone(tz).replace(tzinfo=None),
             inside_geofence=e.inside_geofence,
         )
         for e in events
@@ -946,7 +999,7 @@ def _local_punches(events: list[AttendanceEvent], tz: ZoneInfo) -> list[LocalPun
 
 def _latest(events: list[AttendanceEvent], kind: str) -> AttendanceEvent | None:
     matches = [e for e in events if e.kind == kind]
-    return max(matches, key=lambda e: e.server_time) if matches else None
+    return max(matches, key=lambda e: e.effective_time) if matches else None
 
 
 def _local_day_window_utc(day: date, tz: ZoneInfo) -> tuple[datetime, datetime]:
