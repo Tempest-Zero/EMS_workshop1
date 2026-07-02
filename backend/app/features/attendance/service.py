@@ -137,6 +137,7 @@ def payroll_csv(export: PayrollExport, tech_names: dict[str, str] | None = None)
             "flag_clock_drift",
             "flag_no_location",
             "flag_no_selfie",
+            "flag_order",
         ]
     )
     for row in export.rows:
@@ -155,6 +156,7 @@ def payroll_csv(export: PayrollExport, tech_names: dict[str, str] | None = None)
                 int(row.flagged_drift),
                 int(row.flagged_no_location),
                 int(row.flagged_no_selfie),
+                int(row.flagged_order),
             ]
         )
     return buf.getvalue()
@@ -462,6 +464,7 @@ class AttendanceService:
                     flagged_no_location=flags.no_location,
                     flagged_no_selfie=flags.no_selfie,
                     flagged_arrived_not_clocked_in=arrived_not_in,
+                    flagged_order=roll.order_violation,
                 )
             )
         return Board(shop_id=shop_id, date=day, rows=rows)
@@ -490,6 +493,7 @@ class AttendanceService:
                         flagged_drift=flags.drift,
                         flagged_no_location=flags.no_location,
                         flagged_no_selfie=flags.no_selfie,
+                        flagged_order=roll.order_violation,
                     )
                 )
                 if roll.status != "holiday":
@@ -533,6 +537,7 @@ class AttendanceService:
                     punches=[self._to_item(e) for e in events],
                     presence=[PresenceItem.model_validate(p) for p in day_presence],
                     arrived_not_clocked_in=arrived and not clocked_in,
+                    flagged_order=roll.order_violation,
                 )
             )
         return TechDays(tech_id=tech_id, from_date=from_date, to_date=to_date, days=days)
@@ -572,6 +577,7 @@ class AttendanceService:
                         flagged_drift=flags.drift,
                         flagged_no_location=flags.no_location,
                         flagged_no_selfie=flags.no_selfie,
+                        flagged_order=roll.order_violation,
                     )
                 )
         return PayrollExport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)

@@ -33,6 +33,32 @@ vi.mock("@features/attendance/hooks/useTechDetail", () => ({
         ],
         arrived_not_clocked_in: true,
       },
+      // A day whose clock-out precedes its clock-in — the ordering banner.
+      {
+        day: "2026-06-11",
+        status: "present",
+        late: false,
+        first_in: "2026-06-11T18:00:00",
+        last_out: "2026-06-11T09:00:00",
+        worked_minutes: 0,
+        punches: [
+          {
+            id: "e1",
+            kind: "clock_out",
+            server_time: "2026-06-11T09:00:00",
+            is_mock_location: false,
+          },
+          {
+            id: "e2",
+            kind: "clock_in",
+            server_time: "2026-06-11T18:00:00",
+            is_mock_location: false,
+          },
+        ],
+        presence: [],
+        arrived_not_clocked_in: false,
+        flagged_order: true,
+      },
     ],
     adjustments: [],
     loading: false,
@@ -61,5 +87,10 @@ describe("<AttendanceTechDetail />", () => {
     // Exact match → only the timeline span, not the banner sentence that also
     // contains the phrase.
     expect(screen.getByText("Reached the workshop")).toBeInTheDocument();
+  });
+
+  it("flags a day whose clock-out precedes its clock-in", () => {
+    renderDetail();
+    expect(screen.getByText(/clock-out before clock-in/i)).toBeInTheDocument();
   });
 });

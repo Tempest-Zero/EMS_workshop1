@@ -144,6 +144,17 @@ function ArrivedNotClockedInBanner() {
   );
 }
 
+function OrderViolationBanner() {
+  return (
+    <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-xs font-bold text-amber-800">
+      <AlertTriangle className="h-4 w-4 shrink-0" />
+      <span>
+        Clock-out before clock-in — check punches. Worked minutes were clamped to zero for this day.
+      </span>
+    </div>
+  );
+}
+
 function CorrectionForm({ techId, onSaved, onCancel }) {
   const { user } = useAuth();
   const [kind, setKind] = useState("clock_in");
@@ -334,6 +345,7 @@ export default function AttendanceTechDetail() {
             action={<PresenceBadge status={day.status} />}
           />
           {day.arrived_not_clocked_in ? <ArrivedNotClockedInBanner /> : null}
+          {day.flagged_order ? <OrderViolationBanner /> : null}
           {day.punches.length > 0 ? (
             <div className="mt-3 space-y-3">
               {day.punches.map((p) => (

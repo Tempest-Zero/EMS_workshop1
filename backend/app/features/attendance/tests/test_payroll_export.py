@@ -49,12 +49,12 @@ def test_payroll_csv_shape() -> None:
     assert lines[0] == (
         "technician,tech_id,date,status,first_in,last_out,worked_minutes,hours,"
         "flag_mock_gps,flag_outside_geofence,flag_clock_drift,"
-        "flag_no_location,flag_no_selfie"
+        "flag_no_location,flag_no_selfie,flag_order"
     )
     # No tech_names passed → the technician column falls back to the id.
     assert lines[1].startswith("t1,t1,2026-06-01,present,")
-    assert lines[1].endswith(",540,9.0,0,0,0,0,0")
-    assert lines[2] == "t2,t2,2026-06-01,absent,,,,,0,0,0,0,0"
+    assert lines[1].endswith(",540,9.0,0,0,0,0,0,0")
+    assert lines[2] == "t2,t2,2026-06-01,absent,,,,,0,0,0,0,0,0"
 
 
 def test_payroll_csv_carries_evidence_flags() -> None:
@@ -69,11 +69,12 @@ def test_payroll_csv_carries_evidence_flags() -> None:
                 status="present",
                 flagged_mock=True,
                 flagged_no_selfie=True,
+                flagged_order=True,
             ),
         ],
     )
     lines = payroll_csv(export).strip().split("\n")
-    assert lines[1] == "t1,t1,2026-06-01,present,,,,,1,0,0,0,1"
+    assert lines[1] == "t1,t1,2026-06-01,present,,,,,1,0,0,0,1,1"
 
 
 def _record() -> PayrollExportRecord:

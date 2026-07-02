@@ -159,6 +159,37 @@ def test_earliest_in_and_latest_out_used_for_multiple_punches() -> None:
     assert roll.worked_minutes == 9 * 60 + 30
 
 
+def test_clock_out_before_clock_in_flags_order_and_clamps_minutes() -> None:
+    # Out at 08:00 precedes in at 09:00 — nonsensical ordering. The flag fires
+    # and worked-minutes clamp to 0 (payroll stays sane, the oddity surfaces).
+    roll = classify_day(
+        day=WORKDAY, punches=[_in(WORKDAY, 9, 0), _out(WORKDAY, 8, 0)], shift=DEFAULT_SHIFT
+    )
+    assert roll.order_violation is True
+    assert roll.worked_minutes == 0
+
+
+def test_clock_out_with_no_clock_in_flags_order_and_is_absent() -> None:
+    # A lone clock-out has nothing to close: absent, but the ordering flag fires
+    # so a manager sees the stray punch rather than a silent blank day.
+    roll = classify_day(day=WORKDAY, punches=[_out(WORKDAY, 18, 0)], shift=DEFAULT_SHIFT)
+    assert roll.status == "absent"
+    assert roll.order_violation is True
+
+
+def test_normal_day_has_no_order_violation() -> None:
+    roll = classify_day(
+        day=WORKDAY, punches=[_in(WORKDAY, 9, 0), _out(WORKDAY, 18, 0)], shift=DEFAULT_SHIFT
+    )
+    assert roll.order_violation is False
+
+
+def test_clock_in_without_out_has_no_order_violation() -> None:
+    # An open shift (in, no out) is normal, not an ordering problem.
+    roll = classify_day(day=WORKDAY, punches=[_in(WORKDAY, 9, 0)], shift=DEFAULT_SHIFT)
+    assert roll.order_violation is False
+
+
 def test_custom_working_days_mask() -> None:
     # Mask with only Monday working; WORKDAY (Wed) becomes a holiday.
     mon_only = ShiftSpec(start_local=time(9, 0), end_local=time(18, 0), working_days="1000000")

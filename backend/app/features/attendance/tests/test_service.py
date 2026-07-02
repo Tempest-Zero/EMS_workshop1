@@ -440,6 +440,22 @@ async def test_board_classifies_present_day(
     assert row.late is False
 
 
+async def test_board_flags_clock_out_before_clock_in(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Clock-out (09:00) precedes clock-in (18:00) on the same local day — the
+    # ordering flag must ride onto the board row for a manager to check.
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(kind="clock_out", server_time=NINE_AM_PKT),
+        _event(kind="clock_in", server_time=SIX_PM_PKT),
+    ]
+
+    board = await service.board(shop_id="default", day=date(2026, 6, 3), tech_ids=["t1"])
+
+    assert board.rows[0].flagged_order is True
+
+
 async def test_board_flags_missing_location_and_selfie(
     svc: tuple[AttendanceService, MagicMock, MagicMock],
 ) -> None:
@@ -495,6 +511,7 @@ async def test_board_clean_punch_has_no_evidence_flags(
     row = board.rows[0]
     assert row.flagged_no_location is False
     assert row.flagged_no_selfie is False
+    assert row.flagged_order is False
 
 
 async def test_grid_and_payroll_carry_evidence_flags(

@@ -65,6 +65,11 @@ class DayRollup:
     last_out: datetime | None  # naive, shop-local
     worked_minutes: int | None
     late: bool
+    # The day's punches don't make chronological sense: a clock-out with no
+    # clock-in, or the last clock-out lands before the first clock-in. Worked
+    # minutes still clamp to 0 (payroll stays sane); this flag surfaces the
+    # oddity for a manager to check rather than swallowing it silently.
+    order_violation: bool = False
 
 
 # ── Geofence ─────────────────────────────────────────────────────────────────
@@ -112,7 +117,8 @@ def classify_day(*, day: date, punches: list[LocalPunch], shift: ShiftSpec) -> D
     clock_outs = sorted((p for p in punches if p.kind == CLOCK_OUT), key=lambda p: p.local_dt)
 
     if not clock_ins:
-        return DayRollup(day, ABSENT, None, None, None, False)
+        # A clock-out with nothing to close is itself an ordering violation.
+        return DayRollup(day, ABSENT, None, None, None, False, order_violation=bool(clock_outs))
 
     first = clock_ins[0]
     first_in = first.local_dt
@@ -122,9 +128,11 @@ def classify_day(*, day: date, punches: list[LocalPunch], shift: ShiftSpec) -> D
     late = first_in > grace_cutoff
 
     worked_minutes: int | None = None
+    order_violation = False
     if last_out is not None:
         minutes = int((last_out - first_in).total_seconds() // 60)
         worked_minutes = max(minutes, 0)
+        order_violation = last_out < first_in
 
     if first.inside_geofence is False:
         status = FIELD
@@ -133,7 +141,9 @@ def classify_day(*, day: date, punches: list[LocalPunch], shift: ShiftSpec) -> D
     else:
         status = PRESENT
 
-    return DayRollup(day, status, first_in, last_out, worked_minutes, late)
+    return DayRollup(
+        day, status, first_in, last_out, worked_minutes, late, order_violation=order_violation
+    )
 
 
 def _is_working_day(day: date, working_days: str) -> bool:

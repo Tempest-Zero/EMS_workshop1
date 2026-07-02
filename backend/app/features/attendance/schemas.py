@@ -199,6 +199,9 @@ class BoardRow(BaseModel):
     # The phone entered the workshop fence (a geofence `arrive` was logged) but
     # the tech never clocked in — the "forgot vs absent" signal at a glance.
     flagged_arrived_not_clocked_in: bool = False
+    # Clock-out before clock-in (or a clock-out with no clock-in). Worked
+    # minutes are clamped to 0; this surfaces the punch oddity to check.
+    flagged_order: bool = False
 
 
 class Board(BaseModel):
@@ -218,6 +221,7 @@ class GridCell(BaseModel):
     flagged_drift: bool = False
     flagged_no_location: bool = False
     flagged_no_selfie: bool = False
+    flagged_order: bool = False
 
 
 class GridRow(BaseModel):
@@ -246,6 +250,7 @@ class TechDay(BaseModel):
     # clocked in. The manager's evidence for adjudicating a missing punch.
     presence: list[PresenceItem] = []
     arrived_not_clocked_in: bool = False
+    flagged_order: bool = False
 
 
 class TechDays(BaseModel):
@@ -272,6 +277,7 @@ class PayrollDay(BaseModel):
     flagged_drift: bool = False
     flagged_no_location: bool = False
     flagged_no_selfie: bool = False
+    flagged_order: bool = False
 
 
 class PayrollExport(BaseModel):
