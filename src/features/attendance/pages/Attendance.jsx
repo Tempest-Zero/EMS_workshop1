@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
   LocateOff,
   MapPinOff,
+  Scale,
   ShieldAlert,
   Upload,
   Wifi,
@@ -214,6 +215,12 @@ export default function Attendance() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               <LiveBadge />
+              <Link
+                to="/attendance/variance"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50"
+              >
+                <Scale className="h-4 w-4" /> Variance
+              </Link>
               <input
                 type="date"
                 className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-600"

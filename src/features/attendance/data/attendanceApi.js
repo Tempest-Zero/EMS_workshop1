@@ -47,6 +47,18 @@ export function fetchPayroll(techIds, start, end) {
   return apiGet(`/api/attendance/payroll?${params.toString()}${ids ? `&${ids}` : ""}`);
 }
 
+/** System-vs-manual attendance variance per tech/day (manager-only). Omitting
+ * dates defaults to the last 7 days on the server. Returns
+ * `{ shop_id, from_date, to_date, rows[] }` where each row lines the geofence
+ * arrive/depart crossings up against the clock-in/out punches with the deltas. */
+export function fetchVariance(techIds, start, end) {
+  const params = new URLSearchParams({ shop_id: SHOP_ID });
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  const ids = techIdsQuery(techIds);
+  return apiGet(`/api/attendance/variance?${params.toString()}${ids ? `&${ids}` : ""}`);
+}
+
 /** Punches past the grace window whose selfie never uploaded (manager-only).
  * The flag-side of "selfie is required evidence": capture never blocks, but a
  * gap must surface here instead of passing silently. */

@@ -625,6 +625,76 @@ async def test_grid_and_payroll_carry_evidence_flags(
     assert row.flagged_no_selfie is True
 
 
+# ── Variance report ───────────────────────────────────────────────────────────
+async def test_variance_computes_arrival_and_departure_deltas(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # clock-in 09:00 / clock-out 18:00; geofence arrive 08:50, depart 18:10 →
+    # the tech clocked in 10 min after arriving and left 10 min after clocking out.
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT),
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_presence.return_value = [
+        _presence(kind="arrive", server_time=datetime(2026, 6, 3, 3, 50, tzinfo=UTC)),
+        _presence(kind="depart", server_time=datetime(2026, 6, 3, 13, 10, tzinfo=UTC)),
+    ]
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = next(r for r in report.rows if r.date == day)
+    assert row.delta_in_minutes == 10  # clock-in 09:00 − arrive 08:50
+    assert row.delta_out_minutes == 10  # depart 18:10 − clock-out 18:00
+    assert row.clocked_minutes == 9 * 60
+    assert row.inside_minutes is None  # ping fields stay null until Step 7
+    assert row.away_intervals == []
+
+
+async def test_variance_deltas_null_when_presence_missing(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # No geofence crossings: the manual side stands alone, the deltas are null
+    # (not zero — there is nothing to compare against).
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT),
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_presence.return_value = []
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = report.rows[0]
+    assert row.first_clock_in is not None
+    assert row.first_arrive is None
+    assert row.delta_in_minutes is None
+    assert row.delta_out_minutes is None
+
+
+async def test_variance_flags_order_and_omits_holidays(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Out-before-in on Wed 06-03 → flagged_order rides along. The range runs
+    # through Sun 06-07 (a holiday under the default Mon–Sat mask), which must be
+    # omitted — a non-working day carries no variance.
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(kind="clock_out", server_time=NINE_AM_PKT),
+        _event(kind="clock_in", server_time=SIX_PM_PKT),
+    ]
+
+    report = await service.variance(
+        shop_id="default", from_date=date(2026, 6, 3), to_date=date(2026, 6, 7), tech_ids=["t1"]
+    )
+
+    wed = next(r for r in report.rows if r.date == date(2026, 6, 3))
+    assert wed.flagged_order is True
+    assert all(r.date != date(2026, 6, 7) for r in report.rows)  # Sunday omitted
+
+
 async def test_selfie_gaps_maps_events_and_applies_grace_window(
     svc: tuple[AttendanceService, MagicMock, MagicMock],
 ) -> None:

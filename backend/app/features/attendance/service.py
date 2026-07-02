@@ -65,6 +65,8 @@ from app.features.attendance.schemas import (
     TechDay,
     TechDays,
     TodayStatus,
+    VarianceReport,
+    VarianceRow,
 )
 
 logger = logging.getLogger(__name__)
@@ -598,6 +600,65 @@ class AttendanceService:
                 )
         return PayrollExport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)
 
+    # ── Variance report (system evidence vs manual punches) ──────────────
+    async def variance(
+        self,
+        *,
+        shop_id: str,
+        from_date: date,
+        to_date: date,
+        tech_ids: list[str] | None = None,
+    ) -> VarianceReport:
+        """Per tech/day, line the system's geofence crossings (and Step 7 pings)
+        up against the manual punches, exposing the arrival/departure deltas a
+        manager reviews. All times/deltas are on ``effective_time`` so sync
+        latency never masquerades as attendance variance; a delta is null when
+        either side is missing. Holiday rows are omitted; ``to_date`` is clamped
+        to today like the payroll export."""
+        tz, shifts = await self._tz_and_shifts(shop_id)
+        today = datetime.now(UTC).astimezone(tz).date()
+        if to_date > today:  # classify_day would mislabel a future day
+            to_date = today
+        bucket, roster = await self._window(shop_id, from_date, to_date, tz, tech_ids, set(shifts))
+        start, _ = _local_day_window_utc(from_date, tz)
+        _, end = _local_day_window_utc(to_date, tz)
+        pbucket = await self._presence_by_tech(shop_id=shop_id, start=start, end=end, tz=tz)
+        rows: list[VarianceRow] = []
+        for tech_id in roster:
+            shift = _shift_for(tech_id, shifts)
+            for d in _date_range(from_date, to_date):
+                events = bucket.get(tech_id, {}).get(d, [])
+                day_presence = pbucket.get(tech_id, {}).get(d, [])
+                roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
+                if roll.status == "holiday":
+                    continue  # a non-working day carries no variance to review
+                arrivals = [
+                    _local_naive(p.effective_time, tz) for p in day_presence if p.kind == "arrive"
+                ]
+                departures = [
+                    _local_naive(p.effective_time, tz) for p in day_presence if p.kind == "depart"
+                ]
+                first_arrive = min(arrivals) if arrivals else None
+                last_depart = max(departures) if departures else None
+                rows.append(
+                    VarianceRow(
+                        tech_id=tech_id,
+                        date=d,
+                        status=roll.status,  # type: ignore[arg-type]
+                        first_arrive=first_arrive,
+                        first_clock_in=roll.first_in,
+                        delta_in_minutes=_delta_minutes(roll.first_in, first_arrive),
+                        last_depart=last_depart,
+                        last_clock_out=roll.last_out,
+                        delta_out_minutes=_delta_minutes(last_depart, roll.last_out),
+                        clocked_minutes=roll.worked_minutes,
+                        flagged_arrived_not_clocked_in=bool(arrivals)
+                        and not any(e.kind == "clock_in" for e in events),
+                        flagged_order=roll.order_violation,
+                    )
+                )
+        return VarianceReport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)
+
     # ── Selfie evidence reconciliation ───────────────────────────────────
     async def selfie_gaps(self, *, shop_id: str) -> list[SelfieGap]:
         """Mobile punches past the grace window whose selfie never reached
@@ -984,6 +1045,20 @@ def _shift_for(tech_id: str, shifts: dict[str, AttendanceShift]) -> ShiftSpec:
         working_days=row.working_days,
         grace_minutes=row.grace_minutes,
     )
+
+
+def _local_naive(dt: datetime, tz: ZoneInfo) -> datetime:
+    """A UTC instant projected to shop-local wall-clock (naive), matching how
+    ``classify_day`` reports ``first_in``/``last_out`` so deltas subtract cleanly."""
+    return dt.astimezone(tz).replace(tzinfo=None)
+
+
+def _delta_minutes(later: datetime | None, earlier: datetime | None) -> int | None:
+    """Signed minutes between two naive-local times, truncated toward zero; null
+    when either side is missing. Both come from ``effective_time``."""
+    if later is None or earlier is None:
+        return None
+    return int((later - earlier).total_seconds() / 60)
 
 
 def _local_punches(events: list[AttendanceEvent], tz: ZoneInfo) -> list[LocalPunch]:

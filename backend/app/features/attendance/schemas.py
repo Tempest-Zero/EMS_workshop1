@@ -308,6 +308,57 @@ class PayrollExportFile(BaseModel):
     download_url: str
 
 
+# ── Manager: variance report (system evidence vs manual punches) ─────────────
+class AwayInterval(BaseModel):
+    """A run within the clocked window where the tech's on-duty pings put them
+    OUTSIDE the fence (``outside``) or gave no usable data (``no_data``). Empty
+    until pings land (Step 7); the shape is fixed now so the report is stable."""
+
+    start: datetime  # naive shop-local
+    end: datetime
+    kind: Literal["outside", "no_data"]
+
+
+class VarianceRow(BaseModel):
+    """One tech-day: the system's evidence (geofence crossings; pings from
+    Step 7) lined up against the manual punches, with the deltas a manager
+    reviews. All times/deltas are on ``effective_time`` (so sync latency never
+    shows up as attendance variance); a delta is null when either side is
+    missing. Ping fields are null until Step 7. Flags are read-time annotations
+    that never block."""
+
+    tech_id: str
+    date: date
+    status: DayStatus
+    # Arrival: first geofence `arrive` vs first clock-in (naive shop-local).
+    first_arrive: datetime | None = None
+    first_clock_in: datetime | None = None
+    # clock_in − arrive, minutes. +ve = clocked in after the phone arrived.
+    delta_in_minutes: int | None = None
+    # Departure: last geofence `depart` vs last clock-out.
+    last_depart: datetime | None = None
+    last_clock_out: datetime | None = None
+    # depart − clock_out, minutes. +ve = phone left after clocking out.
+    delta_out_minutes: int | None = None
+    clocked_minutes: int | None = None
+    # Ping summary — null until Step 7 (on-duty pings).
+    inside_minutes: int | None = None
+    outside_minutes: int | None = None
+    no_data_minutes: int | None = None
+    coverage_pct: float | None = None
+    away_intervals: list[AwayInterval] = []
+    flagged_arrived_not_clocked_in: bool = False
+    flagged_order: bool = False
+    flagged_away: bool = False
+
+
+class VarianceReport(BaseModel):
+    shop_id: str
+    from_date: date
+    to_date: date
+    rows: list[VarianceRow]
+
+
 # ── Selfie evidence reconciliation ───────────────────────────────────────────
 class SelfieGap(BaseModel):
     """A mobile punch whose selfie never reached storage after the grace

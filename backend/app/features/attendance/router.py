@@ -47,6 +47,7 @@ from app.features.attendance.schemas import (
     ShiftUpdate,
     TechDays,
     TodayStatus,
+    VarianceReport,
 )
 from app.features.attendance.service import (
     AttendanceNotFoundError,
@@ -266,6 +267,26 @@ async def payroll(
     end_date = end or datetime.now(UTC).date()
     start_date = start or (end_date - timedelta(days=6))
     return await service.payroll(
+        shop_id=shop_id, from_date=start_date, to_date=end_date, tech_ids=tech_ids
+    )
+
+
+@router.get(
+    "/variance",
+    response_model=VarianceReport,
+    dependencies=[Depends(require_manager)],
+    summary="System-vs-manual attendance variance per tech/day (defaults to the last 7 days)",
+)
+async def variance(
+    service: ServiceDep,
+    start: Annotated[date | None, Query()] = None,
+    end: Annotated[date | None, Query()] = None,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+    tech_ids: TechIds = None,
+) -> VarianceReport:
+    end_date = end or datetime.now(UTC).date()
+    start_date = start or (end_date - timedelta(days=6))
+    return await service.variance(
         shop_id=shop_id, from_date=start_date, to_date=end_date, tech_ids=tech_ids
     )
 

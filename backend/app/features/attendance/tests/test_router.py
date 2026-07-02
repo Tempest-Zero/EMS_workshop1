@@ -23,6 +23,8 @@ from app.features.attendance.schemas import (
     PresenceResponse,
     PunchResponse,
     TodayStatus,
+    VarianceReport,
+    VarianceRow,
 )
 from app.features.attendance.service import (
     AttendanceNotFoundError,
@@ -312,9 +314,24 @@ async def test_manager_endpoint_rejects_technician(client: AsyncClient) -> None:
         "/api/attendance/payroll/exports",
         "/api/attendance/grid?month=2026-06",
         "/api/attendance/selfie-gaps",
+        "/api/attendance/variance?start=2026-06-02&end=2026-06-09",
     ):
         resp = await client.get(path)
         assert resp.status_code == 403, path
+
+
+async def test_variance_returns_200_for_manager(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.variance.return_value = VarianceReport(
+        shop_id="default",
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 7),
+        rows=[VarianceRow(tech_id="t1", date=date(2026, 6, 3), status="present")],
+    )
+    resp = await client.get("/api/attendance/variance")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rows"][0]["tech_id"] == "t1"
 
 
 async def test_selfie_gaps_returns_200_for_manager(
