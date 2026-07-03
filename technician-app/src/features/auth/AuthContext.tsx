@@ -19,6 +19,7 @@ import { loadToken, setToken } from "../../lib/auth";
 import { authApi, type Technician } from "../../lib/authApi";
 import { setOutboxPrincipal } from "../../lib/outbox";
 import { resumeOutbox } from "../../lib/outboxSync";
+import { stopDutyPings } from "../attendance/pingTracker";
 
 const TECH_KEY = "fixflow_tech";
 
@@ -66,6 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTechnician(null);
       setOutboxPrincipal(null);
       void AsyncStorage.removeItem(TECH_KEY);
+      void stopDutyPings(); // session ended — stop recording location
     });
     return () => setUnauthorizedHandler(null);
   }, []);
@@ -81,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    await stopDutyPings(); // privacy: stop location recording before signing out
     await setToken(null);
     await AsyncStorage.removeItem(TECH_KEY);
     setTok(null);
