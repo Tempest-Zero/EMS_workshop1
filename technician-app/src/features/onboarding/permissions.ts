@@ -11,6 +11,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
 
+import { requestBatteryExemption } from "./battery";
+
 const ONBOARDED_KEY = "attendance.onboarded.v1";
 
 export async function isOnboarded(): Promise<boolean> {
@@ -33,6 +35,7 @@ export interface PermissionResult {
   notifications: boolean;
   foreground: boolean;
   background: boolean;
+  batteryExempt: boolean;
 }
 
 export async function requestAttendancePermissions(): Promise<PermissionResult> {
@@ -59,5 +62,11 @@ export async function requestAttendancePermissions(): Promise<PermissionResult> 
     }
   }
 
-  return { notifications, foreground, background };
+  // Battery-optimization exemption LAST — after the hardest-yes (background
+  // location), so we don't spend the user's goodwill before the grant the whole
+  // feature depends on. Without it, OEM battery savers kill the foreground
+  // service mid-shift and coverage collapses to no_data. Best-effort.
+  const batteryExempt = await requestBatteryExemption();
+
+  return { notifications, foreground, background, batteryExempt };
 }

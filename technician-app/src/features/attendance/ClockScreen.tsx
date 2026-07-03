@@ -12,6 +12,7 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View
 import { getAttendancePrompt, subscribeAttendancePrompt } from "./attendancePrompt";
 import { getLastCrossingKind } from "./geofence";
 import { useAttendance } from "./useAttendance";
+import { useBatteryExemptionWarning } from "./useBatteryExemptionWarning";
 import { getWifi, type WifiReading } from "./wifi";
 
 function fmtTime(iso: string): string {
@@ -33,6 +34,7 @@ function Badge({ text, tone }: { text: string; tone: Tone }) {
 
 export function ClockScreen() {
   const att = useAttendance();
+  const battery = useBatteryExemptionWarning(att.clockedIn);
   const [wifi, setWifi] = useState<WifiReading>({ wifi_bssid: null, wifi_ssid: null });
   const [prompt, setPrompt] = useState(getAttendancePrompt());
   const [onSite, setOnSite] = useState(false);
@@ -123,6 +125,15 @@ export function ClockScreen() {
           <Text style={styles.synced}>All synced</Text>
         )}
       </View>
+
+      {battery.show ? (
+        <Pressable style={styles.warningBox} onPress={() => void battery.fix()}>
+          <Text style={styles.warningTitle}>🔋 Battery saver may stop attendance tracking</Text>
+          <Text style={styles.warningText}>
+            Tap to allow FixFlow to run in the background so your on-duty location keeps recording.
+          </Text>
+        </Pressable>
+      ) : null}
 
       {att.punches.some((p) => p.selfieFailed) && (
         <View style={styles.warningBox}>
