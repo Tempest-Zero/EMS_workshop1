@@ -31,6 +31,13 @@ export interface QueuedPunch {
   selfie_done: boolean;
   done: boolean;
   created_at: string;
+  // ── failure state (mirrors the jobs outbox) ──
+  // A definitive 4xx (or a 5xx that exhausted MAX_ATTEMPTS) parks the punch in
+  // a visible "did not sync" list instead of retrying it forever. `attempts`
+  // counts only server-reachable 5xx/429 errors — never network/timeout.
+  attempts?: number;
+  failed_reason?: string;
+  failed_at?: string;
 }
 
 const KEY = "attendance.queue.v1";
@@ -87,6 +94,43 @@ export async function removePunches(clientIds: string[]): Promise<void> {
   await mutate((items) => items.filter((i) => !drop.has(i.client_id)));
 }
 
+/** Not yet settled AND not parked as failed — these are what the sync drains
+ * and the pending badge counts. A failed punch waits for the technician to
+ * Retry or Discard it (mirrors the jobs outbox). */
 export async function pendingPunches(): Promise<QueuedPunch[]> {
-  return (await loadQueue()).filter((i) => !i.done);
+  return (await loadQueue()).filter((i) => !i.done && i.failed_reason === undefined);
+}
+
+/** Punches parked in the visible "did not sync" list. */
+export async function failedPunches(): Promise<QueuedPunch[]> {
+  return (await loadQueue()).filter((i) => i.failed_reason !== undefined && !i.done);
+}
+
+/** Park a punch as failed (definitive rejection or exhausted retries). */
+export async function markPunchFailed(clientId: string, reason: string): Promise<void> {
+  await updatePunch(clientId, { failed_reason: reason, failed_at: new Date().toISOString() });
+}
+
+/** Bump the server-error attempt counter and return the new total. */
+export async function bumpPunchAttempts(clientId: string): Promise<number> {
+  let next = 0;
+  await mutate((items) =>
+    items.map((i) => {
+      if (i.client_id !== clientId) return i;
+      next = (i.attempts ?? 0) + 1;
+      return { ...i, attempts: next };
+    }),
+  );
+  return next;
+}
+
+/** Clear the failed state so the next sync retries the punch. */
+export async function retryPunch(clientId: string): Promise<void> {
+  await mutate((items) =>
+    items.map((i) =>
+      i.client_id === clientId
+        ? { ...i, failed_reason: undefined, failed_at: undefined, attempts: 0 }
+        : i,
+    ),
+  );
 }

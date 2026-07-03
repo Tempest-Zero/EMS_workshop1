@@ -1,9 +1,13 @@
 /** Ping-sync tests — api, queue, and auth mocked (no network/storage). */
 
+import { ApiError } from "../../lib/api";
 import { attendanceApi } from "../../lib/attendanceApi";
 import { getToken, loadToken } from "../../lib/auth";
 import { markPingsDone, pendingPings, removePings, type QueuedPing } from "./pingQueue";
 import { syncPings } from "./pingSync";
+
+const apiError = (status: number, detail = "nope") =>
+  new ApiError("POST", "/api/attendance/pings", status, JSON.stringify({ detail }));
 
 jest.mock("../../lib/attendanceApi", () => ({
   attendanceApi: { recordPings: jest.fn() },
@@ -85,7 +89,7 @@ it("drains in batches of at most 100", async () => {
   expect(mockedRemove).toHaveBeenCalledWith(ids(150));
 });
 
-it("keeps a failed batch (and everything after it) queued", async () => {
+it("keeps a failed batch (and everything after it) queued on a network error", async () => {
   mockedPending.mockResolvedValue(ids(150).map((c) => ping(c)));
   mockedApi.recordPings
     .mockResolvedValueOnce({ accepted: 100, deduped: 0, ping_interval_minutes: 5 }) // batch 1 ok
@@ -96,6 +100,44 @@ it("keeps a failed batch (and everything after it) queued", async () => {
   expect(mockedApi.recordPings).toHaveBeenCalledTimes(2);
   expect(mockedDone).toHaveBeenCalledTimes(1); // only the first batch settled
   expect(mockedRemove).toHaveBeenCalledWith(ids(100)); // the rest stay queued
+});
+
+it("keeps a failed batch queued on a 5xx (transient), not dropped", async () => {
+  mockedPending.mockResolvedValue(ids(150).map((c) => ping(c)));
+  mockedApi.recordPings
+    .mockResolvedValueOnce({ accepted: 100, deduped: 0, ping_interval_minutes: 5 })
+    .mockRejectedValueOnce(apiError(503)); // server blip → stop, retry next trigger
+
+  await syncPings("t1");
+
+  expect(mockedDone).toHaveBeenCalledTimes(1);
+  expect(mockedRemove).toHaveBeenCalledWith(ids(100));
+});
+
+it("DROPS a definitively-rejected batch and drains the rest (pings are droppable)", async () => {
+  // A 422 (e.g. every captured_at outside the trust window) can never succeed
+  // on replay → drop it as an honest no_data gap, then keep draining.
+  mockedPending.mockResolvedValue(ids(150).map((c) => ping(c)));
+  mockedApi.recordPings
+    .mockRejectedValueOnce(apiError(422, "all stale")) // batch 1 rejected → dropped
+    .mockResolvedValueOnce({ accepted: 50, deduped: 0, ping_interval_minutes: 5 }); // batch 2 ok
+
+  await syncPings("t1");
+
+  expect(mockedApi.recordPings).toHaveBeenCalledTimes(2); // did NOT stop at batch 1
+  expect(mockedDone).toHaveBeenCalledTimes(2); // both batches settled (1 dropped, 1 sent)
+  expect(mockedRemove).toHaveBeenCalledWith(ids(150)); // all pruned from the queue
+});
+
+it("does NOT drop pings on 401 — a dead token stops the drain instead", async () => {
+  mockedPending.mockResolvedValue(ids(150).map((c) => ping(c)));
+  mockedApi.recordPings.mockRejectedValueOnce(apiError(401));
+
+  await syncPings("t1");
+
+  expect(mockedApi.recordPings).toHaveBeenCalledTimes(1); // broke out
+  expect(mockedDone).not.toHaveBeenCalled(); // nothing dropped or settled
+  expect(mockedRemove).toHaveBeenCalledWith([]);
 });
 
 it("hydrates the token from storage when the cache is cold (headless)", async () => {

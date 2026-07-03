@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { getAttendancePrompt, subscribeAttendancePrompt } from "./attendancePrompt";
 import { getLastCrossingKind } from "./geofence";
@@ -133,6 +133,44 @@ export function ClockScreen() {
         </View>
       )}
 
+      {att.failed.length > 0 ? (
+        <View style={styles.failedCard}>
+          <Text style={styles.failedTitle}>⚠️ DID NOT SYNC — NEEDS ATTENTION</Text>
+          {att.failed.map((f) => (
+            <View key={f.key} style={styles.failedRow}>
+              <View style={styles.failedGrow}>
+                <Text style={styles.failedKind}>{f.label}</Text>
+                <Text style={styles.failedMeta}>{fmtDate(f.at)} · {fmtTime(f.at)}</Text>
+                <Text style={styles.failedReason}>{f.reason}</Text>
+              </View>
+              <Pressable onPress={() => void att.retryFailed(f)} hitSlop={8} style={styles.failedAction}>
+                <Text style={styles.retryText}>Retry</Text>
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  Alert.alert(
+                    "Discard this record?",
+                    `${f.label} (${fmtDate(f.at)} ${fmtTime(f.at)}) will be permanently removed. The server rejected it: ${f.reason}.`,
+                    [
+                      { text: "Keep", style: "cancel" },
+                      {
+                        text: "Discard",
+                        style: "destructive",
+                        onPress: () => void att.discardFailed(f),
+                      },
+                    ],
+                  )
+                }
+                hitSlop={8}
+                style={styles.failedAction}
+              >
+                <Text style={styles.discardText}>Discard</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
       <View style={styles.field}>
         <Text style={styles.label}>Detected WiFi (for geofence setup)</Text>
         <Text style={styles.wifiText}>
@@ -247,6 +285,30 @@ const styles = StyleSheet.create({
   warningTitle: { color: "#92400e", fontSize: 14, fontWeight: "700", marginBottom: 4 },
   warningText: { color: "#92400e", fontSize: 13 },
   errorText: { color: "#b91c1c", fontSize: 13 },
+  failedCard: {
+    marginTop: 12,
+    backgroundColor: "#fef2f2",
+    borderColor: "#fecaca",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+  },
+  failedTitle: { color: "#991b1b", fontSize: 13, fontWeight: "800", marginBottom: 8 },
+  failedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#fee2e2",
+  },
+  failedGrow: { flex: 1 },
+  failedKind: { color: "#0f172a", fontSize: 14, fontWeight: "700" },
+  failedMeta: { color: "#64748b", fontSize: 11, marginTop: 1 },
+  failedReason: { color: "#b91c1c", fontSize: 12, marginTop: 2 },
+  failedAction: { paddingHorizontal: 6, paddingVertical: 4 },
+  retryText: { color: "#2563eb", fontWeight: "800", fontSize: 13 },
+  discardText: { color: "#991b1b", fontWeight: "800", fontSize: 13 },
   nudge: {
     marginTop: 16,
     borderRadius: 10,

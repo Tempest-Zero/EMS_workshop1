@@ -2,18 +2,33 @@
 
 import * as FileSystem from "expo-file-system";
 
+import { ApiError } from "../../lib/api";
 import { attendanceApi } from "../../lib/attendanceApi";
-import { loadQueue, pendingPunches, removePunches, updatePunch, type QueuedPunch } from "./queue";
+import {
+  bumpPunchAttempts,
+  loadQueue,
+  markPunchFailed,
+  pendingPunches,
+  removePunches,
+  updatePunch,
+  type QueuedPunch,
+} from "./queue";
 import { pruneSettled, syncNow } from "./sync";
 
 jest.mock("../../lib/attendanceApi", () => ({
   attendanceApi: { recordPunch: jest.fn(), completeSelfie: jest.fn() },
 }));
+// Importing the real `ApiError` (for `instanceof` checks) pulls in lib/api →
+// lib/auth → AsyncStorage's native module (null under Jest). We don't use auth
+// here, so stub it to break that chain — mirrors presence/ping sync tests.
+jest.mock("../../lib/auth", () => ({ getToken: jest.fn(), loadToken: jest.fn() }));
 jest.mock("./queue", () => ({
   pendingPunches: jest.fn(),
   updatePunch: jest.fn(),
   loadQueue: jest.fn(),
   removePunches: jest.fn(),
+  markPunchFailed: jest.fn(),
+  bumpPunchAttempts: jest.fn(),
 }));
 jest.mock("expo-file-system", () => ({
   uploadAsync: jest.fn(),
@@ -26,7 +41,12 @@ const mockedPending = pendingPunches as jest.MockedFunction<typeof pendingPunche
 const mockedUpdate = updatePunch as jest.MockedFunction<typeof updatePunch>;
 const mockedLoad = loadQueue as jest.MockedFunction<typeof loadQueue>;
 const mockedRemove = removePunches as jest.MockedFunction<typeof removePunches>;
+const mockedFailed = markPunchFailed as jest.MockedFunction<typeof markPunchFailed>;
+const mockedBump = bumpPunchAttempts as jest.MockedFunction<typeof bumpPunchAttempts>;
 const mockedFs = FileSystem as jest.Mocked<typeof FileSystem>;
+
+const apiError = (status: number, detail = "nope") =>
+  new ApiError("POST", "/api/attendance/punches", status, JSON.stringify({ detail }));
 
 const withSelfie: QueuedPunch = {
   client_id: "c1",
@@ -78,6 +98,8 @@ beforeEach(() => {
   (mockedFs.deleteAsync as unknown as jest.Mock).mockResolvedValue(undefined);
   mockedLoad.mockResolvedValue([]);
   mockedRemove.mockResolvedValue(undefined);
+  mockedFailed.mockResolvedValue(undefined);
+  mockedBump.mockResolvedValue(1);
 });
 
 describe("syncNow", () => {
@@ -167,6 +189,69 @@ describe("syncNow", () => {
 
     // c1's file delete failed → its entry survives for the next sweep.
     expect(mockedRemove).toHaveBeenCalledWith(["c2"]);
+  });
+
+  it("parks a definitively-rejected punch in the failed list and drains the rest", async () => {
+    // A 422 on the punch POST (before the row exists) will never succeed on
+    // replay → park it with the server's reason, then keep draining.
+    const second: QueuedPunch = { ...withSelfie, client_id: "c2" };
+    mockedPending.mockResolvedValue([withSelfie, second]);
+    mockedApi.recordPunch.mockRejectedValueOnce(apiError(422, "bad payload"));
+
+    await syncNow("t1");
+
+    expect(mockedFailed).toHaveBeenCalledWith("c1", "bad payload");
+    // Drain continued: the second punch was still attempted (and settled).
+    expect(mockedApi.recordPunch).toHaveBeenCalledTimes(2);
+    expect(mockedUpdate).toHaveBeenCalledWith("c2", { done: true });
+  });
+
+  it("stops the drain on 401 without parking anything (token, not the write)", async () => {
+    const second: QueuedPunch = { ...withSelfie, client_id: "c2" };
+    mockedPending.mockResolvedValue([withSelfie, second]);
+    mockedApi.recordPunch.mockRejectedValueOnce(apiError(401));
+
+    await syncNow("t1");
+
+    expect(mockedFailed).not.toHaveBeenCalled();
+    // Broke out before the second item — a dead token would just 401 it too.
+    expect(mockedApi.recordPunch).toHaveBeenCalledTimes(1);
+  });
+
+  it("parks a punch that exhausts its retries on a repeated 5xx", async () => {
+    mockedPending.mockResolvedValue([withSelfie]);
+    mockedApi.recordPunch.mockRejectedValueOnce(apiError(500));
+    mockedBump.mockResolvedValueOnce(5); // this attempt hits MAX_ATTEMPTS
+
+    await syncNow("t1");
+
+    expect(mockedBump).toHaveBeenCalledWith("c1");
+    expect(mockedFailed).toHaveBeenCalledWith(
+      "c1",
+      expect.stringContaining("gave up after 5 attempts"),
+    );
+  });
+
+  it("keeps a punch queued on a transient 5xx below the cap (no park)", async () => {
+    mockedPending.mockResolvedValue([withSelfie]);
+    mockedApi.recordPunch.mockRejectedValueOnce(apiError(503));
+    mockedBump.mockResolvedValueOnce(2);
+
+    await syncNow("t1");
+
+    expect(mockedBump).toHaveBeenCalledWith("c1");
+    expect(mockedFailed).not.toHaveBeenCalled();
+    expect(mockedUpdate).not.toHaveBeenCalledWith("c1", { done: true });
+  });
+
+  it("does not count a network error toward the retry cap", async () => {
+    mockedPending.mockResolvedValue([withSelfie]);
+    mockedApi.recordPunch.mockRejectedValueOnce(new Error("network down"));
+
+    await syncNow("t1");
+
+    expect(mockedBump).not.toHaveBeenCalled();
+    expect(mockedFailed).not.toHaveBeenCalled();
   });
 
   it("settles a punch whose selfie the server already considers closed", async () => {
