@@ -50,3 +50,8 @@ technician-app/.env.local
 # EAS build token (local only, never commit)
 technician-app/.eastoken
 .eastoken
+
+# ── Local office docs (strategy/review notes, not code) ───────────────────
+*.docx
+# Word lock/owner temp files (~$Document.docx)
+~$*
