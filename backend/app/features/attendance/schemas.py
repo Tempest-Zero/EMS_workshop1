@@ -230,6 +230,17 @@ class PingBatchResponse(BaseModel):
     ping_interval_minutes: int
 
 
+class AwayInterval(BaseModel):
+    """A run within the clocked window where the tech's on-duty pings put them
+    OUTSIDE the fence (``outside``) or gave no usable data (``no_data``). The
+    manager-meaningful shape of the ping data — the raw per-ping list is never
+    exposed. Rendered neutrally on ``field`` days (offsite is the job there)."""
+
+    start: datetime  # naive shop-local
+    end: datetime
+    kind: Literal["outside", "no_data"]
+
+
 # ── Manager: board / grid / detail ───────────────────────────────────────────
 class BoardRow(BaseModel):
     tech_id: str
@@ -300,6 +311,14 @@ class TechDay(BaseModel):
     presence: list[PresenceItem] = []
     arrived_not_clocked_in: bool = False
     flagged_order: bool = False
+    # On-duty ping breakdown over the clocked window (null when there's no closed
+    # window or no pings). The raw ping list is deliberately NOT exposed — the
+    # away intervals are the manager-meaningful shape.
+    inside_minutes: int | None = None
+    outside_minutes: int | None = None
+    no_data_minutes: int | None = None
+    coverage_pct: float | None = None
+    away_intervals: list[AwayInterval] = []
 
 
 class TechDays(BaseModel):
@@ -348,16 +367,6 @@ class PayrollExportFile(BaseModel):
 
 
 # ── Manager: variance report (system evidence vs manual punches) ─────────────
-class AwayInterval(BaseModel):
-    """A run within the clocked window where the tech's on-duty pings put them
-    OUTSIDE the fence (``outside``) or gave no usable data (``no_data``). Empty
-    until pings land (Step 7); the shape is fixed now so the report is stable."""
-
-    start: datetime  # naive shop-local
-    end: datetime
-    kind: Literal["outside", "no_data"]
-
-
 class VarianceRow(BaseModel):
     """One tech-day: the system's evidence (geofence crossings; pings from
     Step 7) lined up against the manual punches, with the deltas a manager

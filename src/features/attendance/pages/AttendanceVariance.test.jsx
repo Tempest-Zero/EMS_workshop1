@@ -28,14 +28,16 @@ vi.mock("@features/attendance/data/attendanceApi", () => ({
           last_clock_out: "2026-06-03T18:00:00",
           delta_out_minutes: 10, // within ±10 → neutral
           clocked_minutes: 505,
-          inside_minutes: null,
-          outside_minutes: null,
-          no_data_minutes: null,
-          coverage_pct: null,
-          away_intervals: [],
+          inside_minutes: 250,
+          outside_minutes: 35, // > 30 on a present day → away flag
+          no_data_minutes: 60,
+          coverage_pct: 82.6,
+          away_intervals: [
+            { start: "2026-06-03T10:00:00", end: "2026-06-03T10:35:00", kind: "outside" },
+          ],
           flagged_arrived_not_clocked_in: false,
           flagged_order: false,
-          flagged_away: false,
+          flagged_away: true,
         },
       ],
     })
@@ -55,5 +57,8 @@ describe("<AttendanceVariance />", () => {
     expect(await screen.findByText("Imran Ahmed")).toBeInTheDocument();
     expect(screen.getByText("+45m")).toBeInTheDocument(); // arrival delta
     expect(screen.getByText("+10m")).toBeInTheDocument(); // departure delta
+    expect(screen.getByText("83%")).toBeInTheDocument(); // coverage (82.6 → 83)
+    expect(screen.getByText("35m")).toBeInTheDocument(); // outside/away minutes
+    expect(screen.getByLabelText("Away from the workshop over 30 min")).toBeInTheDocument();
   });
 });

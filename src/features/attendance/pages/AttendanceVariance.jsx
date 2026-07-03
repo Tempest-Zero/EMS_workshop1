@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, ArrowDownUp, ArrowLeft, Download } from "lucide-react";
+import { AlertTriangle, ArrowDownUp, ArrowLeft, Download, MapPinOff } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import { fetchVariance } from "@features/attendance/data/attendanceApi";
 import { Button, Card, EmptyState, SectionHeader } from "@shared/ui/primitives";
@@ -45,7 +45,28 @@ function RowFlags({ row }) {
           aria-label="Clock-out before clock-in — check punches"
         />
       )}
+      {row.flagged_away && (
+        <MapPinOff
+          className="h-4 w-4 text-amber-500"
+          aria-label="Away from the workshop over 30 min"
+        />
+      )}
     </span>
+  );
+}
+
+/** Ping coverage of the clocked window (share with location data). */
+function Coverage({ pct }) {
+  if (pct == null) return <span className="text-slate-300">—</span>;
+  return <span className="text-slate-500">{Math.round(pct)}%</span>;
+}
+
+/** Minutes the phone read outside the fence; amber once the away flag fires. */
+function Away({ minutes, flagged }) {
+  if (minutes == null) return <span className="text-slate-300">—</span>;
+  if (minutes === 0) return <span className="text-slate-400">0m</span>;
+  return (
+    <span className={flagged ? "font-bold text-amber-600" : "text-slate-500"}>{minutes}m</span>
   );
 }
 
@@ -102,8 +123,13 @@ export default function AttendanceVariance() {
       "Departed",
       "Delta Out (min)",
       "Hours",
+      "Coverage %",
+      "Inside Min",
+      "Outside Min",
+      "No Data Min",
       "Arrived Not Clocked In",
       "Clock Order",
+      "Away Flag",
     ];
     const body = rows.map((r) => [
       techById[r.tech_id]?.name ?? r.tech_id,
@@ -117,8 +143,13 @@ export default function AttendanceVariance() {
       fmtClock(r.last_depart),
       r.delta_out_minutes ?? "",
       r.clocked_minutes == null ? "" : (r.clocked_minutes / 60).toFixed(1),
+      r.coverage_pct == null ? "" : Math.round(r.coverage_pct),
+      r.inside_minutes ?? "",
+      r.outside_minutes ?? "",
+      r.no_data_minutes ?? "",
       flag(r.flagged_arrived_not_clocked_in),
       flag(r.flagged_order),
+      flag(r.flagged_away),
     ]);
     const csv = [header, ...body]
       .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -181,7 +212,7 @@ export default function AttendanceVariance() {
           </div>
         ) : (
           <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[860px] text-sm">
+            <table className="w-full min-w-[1000px] text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-xs font-bold uppercase tracking-wide text-slate-400">
                   <th className="pb-2">Technician</th>
@@ -194,6 +225,8 @@ export default function AttendanceVariance() {
                   <th className="pb-2">Departed</th>
                   <th className="pb-2 text-right">Δ Out</th>
                   <th className="pb-2 text-right">Hours</th>
+                  <th className="pb-2 text-right">Coverage</th>
+                  <th className="pb-2 text-right">Away</th>
                   <th className="pb-2 text-right">Flags</th>
                 </tr>
               </thead>
@@ -224,6 +257,12 @@ export default function AttendanceVariance() {
                       </td>
                       <td className="py-2.5 text-right font-bold text-slate-700">
                         {fmtWorked(r.clocked_minutes)}
+                      </td>
+                      <td className="py-2.5 text-right">
+                        <Coverage pct={r.coverage_pct} />
+                      </td>
+                      <td className="py-2.5 text-right">
+                        <Away minutes={r.outside_minutes} flagged={r.flagged_away} />
                       </td>
                       <td className="py-2.5 text-right">
                         <RowFlags row={r} />

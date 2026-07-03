@@ -26,13 +26,17 @@ from app.features.attendance.derive import (
     DEFAULT_SHIFT,
     DEFAULT_TIMEZONE,
     LocalPunch,
+    PingSample,
     ShiftSpec,
     classify_day,
+    duty_intervals,
+    duty_summary,
     geofence_flags,
 )
 from app.features.attendance.models import (
     AttendanceEvent,
     AttendanceGeofence,
+    AttendancePing,
     AttendancePresenceEvent,
     AttendanceShift,
     PayrollExportRecord,
@@ -43,6 +47,7 @@ from app.features.attendance.schemas import (
     AdjustmentItem,
     AdjustmentRequest,
     AdjustmentResponse,
+    AwayInterval,
     Board,
     BoardRow,
     Geofence,
@@ -86,6 +91,8 @@ DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS = 24
 # On-duty ping cadence (minutes). Surfaced on ActiveGeofence so the phone paces
 # to it; the same value drives the server's missing-ping (2×) math.
 DEFAULT_PING_INTERVAL_MINUTES = 5
+# Outside-fence minutes at or above this (on a non-field day) raise the away flag.
+AWAY_FLAG_MINUTES = 30
 # How far back the selfie-gaps reconciliation looks. Bounds the list so punches
 # from before the selfie-evidence policy don't surface forever.
 SELFIE_GAP_LOOKBACK_DAYS = 14
@@ -583,6 +590,9 @@ class AttendanceService:
         pbucket = await self._presence_by_tech(
             shop_id=shop_id, start=start, end=end, tz=tz, tech_id=tech_id
         )
+        ping_bucket = await self._pings_by_tech(
+            shop_id=shop_id, start=start, end=end, tz=tz, tech_id=tech_id
+        )
         shift = _shift_for(tech_id, shifts)
         days: list[TechDay] = []
         for d in _date_range(from_date, to_date):
@@ -591,6 +601,9 @@ class AttendanceService:
             roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
             arrived = any(p.kind == "arrive" for p in day_presence)
             clocked_in = any(e.kind == "clock_in" for e in events)
+            inside_m, outside_m, no_data_m, coverage, away = self._duty_breakdown(
+                ping_bucket.get(tech_id, {}).get(d, []), roll.first_in, roll.last_out, tz
+            )
             days.append(
                 TechDay(
                     day=d,
@@ -603,6 +616,11 @@ class AttendanceService:
                     presence=[PresenceItem.model_validate(p) for p in day_presence],
                     arrived_not_clocked_in=arrived and not clocked_in,
                     flagged_order=roll.order_violation,
+                    inside_minutes=inside_m,
+                    outside_minutes=outside_m,
+                    no_data_minutes=no_data_m,
+                    coverage_pct=coverage,
+                    away_intervals=away,
                 )
             )
         return TechDays(tech_id=tech_id, from_date=from_date, to_date=to_date, days=days)
@@ -670,6 +688,7 @@ class AttendanceService:
         start, _ = _local_day_window_utc(from_date, tz)
         _, end = _local_day_window_utc(to_date, tz)
         pbucket = await self._presence_by_tech(shop_id=shop_id, start=start, end=end, tz=tz)
+        ping_bucket = await self._pings_by_tech(shop_id=shop_id, start=start, end=end, tz=tz)
         rows: list[VarianceRow] = []
         for tech_id in roster:
             shift = _shift_for(tech_id, shifts)
@@ -687,6 +706,16 @@ class AttendanceService:
                 ]
                 first_arrive = min(arrivals) if arrivals else None
                 last_depart = max(departures) if departures else None
+                inside_m, outside_m, no_data_m, coverage, away = self._duty_breakdown(
+                    ping_bucket.get(tech_id, {}).get(d, []), roll.first_in, roll.last_out, tz
+                )
+                # Away time is only a FLAG off a `field` day — offsite is the job
+                # there, so it's shown but never raised as a concern.
+                flagged_away = (
+                    outside_m is not None
+                    and outside_m >= AWAY_FLAG_MINUTES
+                    and roll.status != "field"
+                )
                 rows.append(
                     VarianceRow(
                         tech_id=tech_id,
@@ -699,9 +728,15 @@ class AttendanceService:
                         last_clock_out=roll.last_out,
                         delta_out_minutes=_delta_minutes(last_depart, roll.last_out),
                         clocked_minutes=roll.worked_minutes,
+                        inside_minutes=inside_m,
+                        outside_minutes=outside_m,
+                        no_data_minutes=no_data_m,
+                        coverage_pct=coverage,
+                        away_intervals=away,
                         flagged_arrived_not_clocked_in=bool(arrivals)
                         and not any(e.kind == "clock_in" for e in events),
                         flagged_order=roll.order_violation,
+                        flagged_away=flagged_away,
                     )
                 )
         return VarianceReport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)
@@ -888,6 +923,56 @@ class AttendanceService:
         for p in rows:
             bucket[p.tech_id][p.effective_time.astimezone(tz).date()].append(p)
         return bucket
+
+    async def _pings_by_tech(
+        self,
+        *,
+        shop_id: str,
+        start: datetime,
+        end: datetime,
+        tz: ZoneInfo,
+        tech_id: str | None = None,
+    ) -> dict[str, dict[date, list[AttendancePing]]]:
+        """Load + bucket on-duty pings by (tech, local day) on ``captured_at`` —
+        the input to the away-interval math."""
+        rows = await self._repo.list_pings(shop_id=shop_id, start=start, end=end, tech_id=tech_id)
+        bucket: dict[str, dict[date, list[AttendancePing]]] = defaultdict(lambda: defaultdict(list))
+        for p in rows:
+            bucket[p.tech_id][p.captured_at.astimezone(tz).date()].append(p)
+        return bucket
+
+    def _duty_breakdown(
+        self,
+        day_pings: list[AttendancePing],
+        first_in: datetime | None,
+        last_out: datetime | None,
+        tz: ZoneInfo,
+    ) -> tuple[int | None, int | None, int | None, float | None, list[AwayInterval]]:
+        """Fold a day's pings into (inside, outside, no_data) minutes, coverage %,
+        and the away intervals over the clocked window. Null/empty when there is
+        no closed window to measure against (open shift / no clock-out) OR no
+        pings at all — a day with zero pings has nothing to report, not "0%
+        coverage" noise; a day with a coverage GAP still surfaces it as no_data."""
+        if first_in is None or last_out is None or last_out <= first_in or not day_pings:
+            return None, None, None, None, []
+        samples = [
+            PingSample(p.captured_at.astimezone(tz).replace(tzinfo=None), p.inside_geofence)
+            for p in day_pings
+        ]
+        intervals = duty_intervals(samples, first_in, last_out, self._ping_interval_minutes)
+        summary = duty_summary(intervals)
+        away = [
+            AwayInterval(start=iv.start, end=iv.end, kind=iv.kind)  # type: ignore[arg-type]
+            for iv in intervals
+            if iv.kind != "inside"
+        ]
+        return (
+            summary.inside_minutes,
+            summary.outside_minutes,
+            summary.no_data_minutes,
+            summary.coverage_pct,
+            away,
+        )
 
     async def _load_owned(self, tech_id: str, event_id: UUID) -> AttendanceEvent:
         event = await self._repo.get_event(event_id)

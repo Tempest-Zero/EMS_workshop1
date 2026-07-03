@@ -58,6 +58,13 @@ vi.mock("@features/attendance/hooks/useTechDetail", () => ({
         presence: [],
         arrived_not_clocked_in: false,
         flagged_order: true,
+        inside_minutes: 250,
+        outside_minutes: 35,
+        no_data_minutes: 60,
+        coverage_pct: 82.6,
+        away_intervals: [
+          { start: "2026-06-11T10:00:00", end: "2026-06-11T10:35:00", kind: "outside" },
+        ],
       },
     ],
     adjustments: [],
@@ -92,5 +99,11 @@ describe("<AttendanceTechDetail />", () => {
   it("flags a day whose clock-out precedes its clock-in", () => {
     renderDetail();
     expect(screen.getByText(/clock-out before clock-in/i)).toBeInTheDocument();
+  });
+
+  it("renders the on-duty away strip from the day's ping intervals", () => {
+    renderDetail();
+    expect(screen.getByText("On-duty location")).toBeInTheDocument();
+    expect(screen.getByText(/Outside fence/)).toBeInTheDocument();
   });
 });

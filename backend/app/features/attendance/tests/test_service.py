@@ -13,7 +13,11 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.core.storage import SignedUpload
-from app.features.attendance.models import AttendanceEvent, AttendancePresenceEvent
+from app.features.attendance.models import (
+    AttendanceEvent,
+    AttendancePing,
+    AttendancePresenceEvent,
+)
 from app.features.attendance.schemas import (
     AdjustmentRequest,
     PingBatch,
@@ -94,6 +98,31 @@ def _presence(**overrides: object) -> AttendancePresenceEvent:
     if "effective_time" not in overrides:
         event.effective_time = event.server_time
     return event
+
+
+def _ping(**overrides: object) -> AttendancePing:
+    """Build an in-memory on-duty ping without SQLAlchemy defaults."""
+    ping = AttendancePing(
+        id=uuid4(),
+        client_id=uuid4(),
+        shop_id="default",
+        tech_id="t1",
+        captured_at=NINE_AM_PKT,
+        received_at=NINE_AM_PKT,
+        lat=None,
+        lng=None,
+        accuracy_m=None,
+        inside_geofence=None,
+        distance_m=None,
+        is_mock_location=False,
+        wifi_bssid=None,
+        wifi_ssid=None,
+        wifi_match=None,
+        created_at=NINE_AM_PKT,
+    )
+    for key, value in overrides.items():
+        setattr(ping, key, value)
+    return ping
 
 
 @pytest.fixture
@@ -792,6 +821,56 @@ async def test_variance_flags_order_and_omits_holidays(
     wed = next(r for r in report.rows if r.date == date(2026, 6, 3))
     assert wed.flagged_order is True
     assert all(r.date != date(2026, 6, 7) for r in report.rows)  # Sunday omitted
+
+
+def _outside_pings() -> list[AttendancePing]:
+    # Eight outside pings at 5-min spacing (10:00–10:35 PKT = 05:00–05:35 UTC), so
+    # the step function reads ~35 min outside within the clocked 09:00–18:00 window.
+    return [
+        _ping(captured_at=datetime(2026, 6, 3, 5, m, tzinfo=UTC), inside_geofence=False)
+        for m in range(0, 40, 5)
+    ]
+
+
+async def test_variance_away_flag_fires_on_a_present_day(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT),  # inside/uncertain → present
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_pings.return_value = _outside_pings()
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = report.rows[0]
+    assert row.status == "present"
+    assert row.outside_minutes is not None and row.outside_minutes >= 30
+    assert row.flagged_away is True
+    assert any(iv.kind == "outside" for iv in row.away_intervals)
+
+
+async def test_variance_away_flag_suppressed_on_field_days(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Same away time, but the first clock-in is OUTSIDE the fence → a field day,
+    # where offsite IS the job: the intervals still show, the flag does not fire.
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT, inside_geofence=False),
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_pings.return_value = _outside_pings()
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = report.rows[0]
+    assert row.status == "field"
+    assert row.outside_minutes is not None and row.outside_minutes >= 30
+    assert row.flagged_away is False  # suppressed on a field day
 
 
 async def test_selfie_gaps_maps_events_and_applies_grace_window(
