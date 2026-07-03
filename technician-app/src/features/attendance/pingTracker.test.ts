@@ -6,9 +6,15 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 
+import { notifyDutyAutoStopped } from "./attendanceNotifications";
 import { enqueuePing } from "./pingQueue";
 import { syncPings } from "./pingSync";
-import { ensurePingTracking, handlePingUpdate, PING_TASK } from "./pingTracker";
+import {
+  ensurePingTracking,
+  handlePingUpdate,
+  PING_TASK,
+  startDutyPings,
+} from "./pingTracker";
 import { loadQueue, type QueuedPunch } from "./queue";
 
 jest.mock("expo-task-manager", () => ({ defineTask: jest.fn() }));
@@ -22,6 +28,7 @@ jest.mock("expo-location", () => ({
 jest.mock("./queue", () => ({ loadQueue: jest.fn() }));
 jest.mock("./pingQueue", () => ({ enqueuePing: jest.fn() }));
 jest.mock("./pingSync", () => ({ syncPings: jest.fn() }));
+jest.mock("./attendanceNotifications", () => ({ notifyDutyAutoStopped: jest.fn() }));
 jest.mock("./wifi", () => ({
   getWifi: jest.fn(async () => ({ wifi_bssid: null, wifi_ssid: null })),
 }));
@@ -59,6 +66,10 @@ const mockedHasStarted = Location.hasStartedLocationUpdatesAsync as jest.MockedF
 const mockedEnqueue = enqueuePing as jest.MockedFunction<typeof enqueuePing>;
 const mockedLoadQueue = loadQueue as jest.MockedFunction<typeof loadQueue>;
 const mockedSync = syncPings as jest.MockedFunction<typeof syncPings>;
+const mockedNotify = notifyDutyAutoStopped as jest.MockedFunction<typeof notifyDutyAutoStopped>;
+
+const DUTY_KEY = "attendance.duty.v1";
+const HOUR_MS = 60 * 60 * 1000;
 
 const FIX_TS = Date.parse("2026-06-03T09:00:00.000Z");
 const fix = {
@@ -67,9 +78,16 @@ const fix = {
   mocked: false,
 } as unknown as Location.LocationObject;
 
-// isOnDuty reads only tech_id / kind / device_time off the latest local punch.
-function localPunch(kind: "clock_in" | "clock_out"): QueuedPunch {
-  return { tech_id: "t1", kind, device_time: "2026-06-03T04:00:00Z" } as unknown as QueuedPunch;
+// dutyStatus reads only tech_id / kind / device_time off the latest local punch.
+// device_time drives the max-duration cap, so it must be RELATIVE to now —
+// default a minute ago (fresh), pass a larger age to simulate a long/forgotten
+// session.
+function localPunch(kind: "clock_in" | "clock_out", ageMs = 60_000): QueuedPunch {
+  return {
+    tech_id: "t1",
+    kind,
+    device_time: new Date(Date.now() - ageMs).toISOString(),
+  } as unknown as QueuedPunch;
 }
 
 async function signIn(id = "t1") {
@@ -168,4 +186,72 @@ it("reconcile — nobody signed in ∧ running → stops", async () => {
   await ensurePingTracking();
 
   expect(mockedStop).toHaveBeenCalledWith(PING_TASK);
+});
+
+// ── max-duration failsafe (forgot-to-clock-out) ────────────────────────────
+it("over the cap: the headless task discards the fix, stops, and notifies", async () => {
+  await signIn();
+  // A clock_in from 15h ago — past the 14h ceiling — the tech never clocked out.
+  mockedLoadQueue.mockResolvedValue([localPunch("clock_in", 15 * HOUR_MS)]);
+  mockedHasStarted.mockResolvedValue(true);
+
+  await handlePingUpdate([fix]);
+
+  expect(mockedEnqueue).not.toHaveBeenCalled(); // fix discarded, not recorded
+  expect(mockedStop).toHaveBeenCalledWith(PING_TASK);
+  expect(mockedNotify).toHaveBeenCalledTimes(1);
+});
+
+it("expired session refuses to re-arm and notifies only ONCE across reconciles", async () => {
+  // The re-arm hole: a stale clock_in punch stuck in the queue (e.g. a failed
+  // sync) keeps reporting expired on every launch. It must never re-arm, and
+  // the nudge must fire once — not on every reconcile.
+  await signIn();
+  mockedLoadQueue.mockResolvedValue([localPunch("clock_in", 20 * HOUR_MS)]);
+  mockedHasStarted.mockResolvedValue(true);
+
+  await ensurePingTracking();
+  await ensurePingTracking();
+
+  expect(mockedStart).not.toHaveBeenCalled(); // never re-armed
+  expect(mockedStop).toHaveBeenCalledWith(PING_TASK);
+  expect(mockedNotify).toHaveBeenCalledTimes(1); // one-shot, not per-reconcile
+});
+
+it("a fresh (well under cap) clock_in still tracks normally", async () => {
+  await signIn();
+  mockedLoadQueue.mockResolvedValue([localPunch("clock_in", 2 * HOUR_MS)]);
+
+  await handlePingUpdate([fix]);
+
+  expect(mockedEnqueue).toHaveBeenCalled();
+  expect(mockedNotify).not.toHaveBeenCalled();
+});
+
+it("startDutyPings preserves the original startedAt across a relaunch re-arm", async () => {
+  await signIn();
+  mockedLoadQueue.mockResolvedValue([]); // punch already synced + pruned
+  const started = new Date(Date.now() - 3 * HOUR_MS).toISOString();
+  await AsyncStorage.setItem(
+    DUTY_KEY,
+    JSON.stringify({ techId: "t1", clockedIn: true, startedAt: started }),
+  );
+
+  await startDutyPings("t1"); // the launch reconcile re-arms
+
+  const cache = JSON.parse((await AsyncStorage.getItem(DUTY_KEY)) ?? "{}");
+  expect(cache.startedAt).toBe(started); // NOT reset to now — the clock keeps running
+});
+
+it("legacy duty cache without startedAt is treated as on-duty and patched", async () => {
+  await signIn();
+  mockedLoadQueue.mockResolvedValue([]); // fall through to the cache
+  await AsyncStorage.setItem(DUTY_KEY, JSON.stringify({ techId: "t1", clockedIn: true }));
+  mockedHasStarted.mockResolvedValue(false);
+
+  await ensurePingTracking();
+
+  expect(mockedStart).toHaveBeenCalled(); // still on duty (not hard-stopped)
+  const cache = JSON.parse((await AsyncStorage.getItem(DUTY_KEY)) ?? "{}");
+  expect(cache.startedAt).toBeDefined(); // adopted "now" so the cap can start counting
 });

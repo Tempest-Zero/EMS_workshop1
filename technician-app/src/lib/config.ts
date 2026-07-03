@@ -25,4 +25,17 @@ export const config = {
     maxSize: 720,
     bitrate: 2_500_000,
   },
+  attendance: {
+    /**
+     * Privacy failsafe: the hard ceiling (hours) on a single on-duty tracking
+     * session. All three ping-tracker privacy layers key off "did they punch
+     * out", never elapsed time — so a tech who FORGETS to clock out would be
+     * location-sampled indefinitely (the duty cache even re-arms it on the next
+     * launch). This bounds that: past this age the sampler auto-stops and the
+     * tech is nudged to clock out. 14h clears any legitimate shift + overtime
+     * while still stopping an overnight "left it running" case. We deliberately
+     * do NOT auto-punch a clock-out — that would fabricate attendance evidence.
+     */
+    maxDutyHours: 14,
+  },
 } as const;

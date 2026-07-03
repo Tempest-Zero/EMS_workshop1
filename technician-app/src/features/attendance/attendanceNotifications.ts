@@ -61,3 +61,18 @@ export async function notifyLeaving(): Promise<void> {
     "clock_out",
   );
 }
+
+/**
+ * Fired when on-duty tracking hits the max-duration cap (config.attendance
+ * .maxDutyHours) and auto-stops — the tech very likely forgot to clock out.
+ * Bilingual (EN/Urdu) like the onboarding copy, for the low-literacy field
+ * population. Tapping opens the clock screen so they can clock out for real;
+ * we never punch it for them.
+ */
+export async function notifyDutyAutoStopped(): Promise<void> {
+  await prompt(
+    "Still on duty? / کیا آپ ابھی تک کام پر ہیں؟",
+    "Location tracking stopped to protect your privacy. If you forgot to clock out, tap to do it now. / اگر آپ کلاک آؤٹ کرنا بھول گئے ہیں تو ابھی کریں۔",
+    "clock_out",
+  );
+}
