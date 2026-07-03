@@ -36,8 +36,11 @@ class Settings(BaseSettings):
     r2_secret_access_key: str = ""
     r2_bucket: str = "job-media"
     # Hard ceiling enforced at finalize: oversized uploads are rejected + purged.
-    # 30 MB comfortably fits a 60s 720p clip while blocking abuse.
-    r2_max_upload_bytes: int = 30 * 1024 * 1024
+    # The closing video is the app's longest clip (up to 60s); 64 MB leaves
+    # headroom for a high-motion 720p clip (~20-40 MB after compression, VBR)
+    # so a legitimate closure isn't rejected, while still blocking abuse. R2 has
+    # no free-tier size cap (the old 30 MB / "Supabase 50 MB" limit is obsolete).
+    r2_max_upload_bytes: int = 64 * 1024 * 1024
 
     # ── Attendance ───────────────────────────────────────────────────────
     # A selfie is a single still — far smaller than a 720p video clip.

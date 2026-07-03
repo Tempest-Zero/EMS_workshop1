@@ -44,7 +44,7 @@ class MediaUploadRequest(BaseModel):
 
 
 class MediaUploadResponse(BaseModel):
-    """Returned to the mobile app so it can PUT bytes to Supabase directly."""
+    """Returned to the mobile app so it can PUT bytes to R2 directly."""
 
     media_id: UUID
     signed_url: str

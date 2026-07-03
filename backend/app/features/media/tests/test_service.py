@@ -60,7 +60,9 @@ def service() -> Iterator[tuple[MediaService, MagicMock, MagicMock]]:
     storage.head_size = MagicMock(return_value=None)
     storage.delete = MagicMock()
 
-    yield MediaService(repo, storage), repo, storage
+    # Pin an explicit ceiling so these tests don't ride on the production
+    # default (which can change) — the oversized cases below assume 30 MB.
+    yield MediaService(repo, storage, max_upload_bytes=30 * 1024 * 1024), repo, storage
 
 
 async def test_count_phase_delegates_to_repo(
@@ -243,7 +245,7 @@ async def test_list_for_job_does_not_mint_playback_for_pending(
 async def test_complete_upload_rejects_oversized(
     service: tuple[MediaService, MagicMock, MagicMock],
 ) -> None:
-    # Default ceiling is 30 MB; a 40 MB finalize must be rejected + purged.
+    # Ceiling is pinned to 30 MB in the fixture; a 40 MB finalize must be rejected + purged.
     svc, repo, storage = service
     target = _media(storage_path="job-1/before/big.mp4")
     repo.get.return_value = target

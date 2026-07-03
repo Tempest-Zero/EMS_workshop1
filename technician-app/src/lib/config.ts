@@ -17,9 +17,10 @@ export const config = {
   apiUrl,
   /**
    * Compression target. 720p at ~2.5 Mbps is more than enough to verify an
-   * appliance is running correctly, lands comfortably under Supabase free
-   * tier's 50 MB cap for short clips, and stays kind to mobile data. Bump on
-   * a paid tier by changing these numbers — no other code needs to move.
+   * appliance is running correctly, lands comfortably under the backend's
+   * finalize ceiling (`r2_max_upload_bytes`) for short clips, and stays kind to
+   * mobile data. Bump these numbers if the ceiling is raised — no other code
+   * needs to move.
    */
   compress: {
     maxSize: 720,
