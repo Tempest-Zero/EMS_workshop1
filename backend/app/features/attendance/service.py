@@ -32,6 +32,7 @@ from app.features.attendance.derive import (
 )
 from app.features.attendance.models import (
     AttendanceEvent,
+    AttendanceGeofence,
     AttendancePresenceEvent,
     AttendanceShift,
     PayrollExportRecord,
@@ -52,6 +53,9 @@ from app.features.attendance.schemas import (
     PayrollDay,
     PayrollExport,
     PayrollExportFile,
+    PingBatch,
+    PingBatchResponse,
+    PingRequest,
     PresenceItem,
     PresenceRequest,
     PresenceResponse,
@@ -79,6 +83,9 @@ DEFAULT_SELFIE_GRACE_HOURS = 24
 # core.config; the migration 0018 backfill hard-codes the same literals.
 DEFAULT_DEVICE_TIME_FUTURE_TOLERANCE_SECONDS = 120
 DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS = 24
+# On-duty ping cadence (minutes). Surfaced on ActiveGeofence so the phone paces
+# to it; the same value drives the server's missing-ping (2×) math.
+DEFAULT_PING_INTERVAL_MINUTES = 5
 # How far back the selfie-gaps reconciliation looks. Bounds the list so punches
 # from before the selfie-evidence policy don't surface forever.
 SELFIE_GAP_LOOKBACK_DAYS = 14
@@ -180,6 +187,7 @@ class AttendanceService:
         selfie_grace_hours: int = DEFAULT_SELFIE_GRACE_HOURS,
         device_time_future_tolerance_seconds: int = DEFAULT_DEVICE_TIME_FUTURE_TOLERANCE_SECONDS,
         device_time_backdate_ceiling_hours: int = DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS,
+        ping_interval_minutes: int = DEFAULT_PING_INTERVAL_MINUTES,
     ) -> None:
         self._repo = repo
         self._storage = storage
@@ -189,6 +197,7 @@ class AttendanceService:
         self._selfie_grace_hours = selfie_grace_hours
         self._device_time_future_tolerance_seconds = device_time_future_tolerance_seconds
         self._device_time_backdate_ceiling_hours = device_time_backdate_ceiling_hours
+        self._ping_interval_minutes = ping_interval_minutes
 
     # ── Commands ─────────────────────────────────────────────────────────
     async def record_punch(self, body: PunchRequest) -> PunchResponse:
@@ -321,6 +330,44 @@ class AttendanceService:
                 raise
             return self._presence_response(raced, deduped=True)
         return self._presence_response(event, deduped=False)
+
+    async def record_pings(self, body: PingBatch) -> PingBatchResponse:
+        """Store a batch of on-duty pings. Idempotent per ``client_id`` via the
+        repository's ``ON CONFLICT DO NOTHING`` — a re-sent (overlapping) batch
+        is a safe no-op. The active fence is fetched ONCE and every ping is
+        judged in-process (not ``_evaluate_geofence``, which queries per call),
+        so a 100-ping batch is one fence read, not a hundred."""
+        if not body.pings:
+            return PingBatchResponse(
+                accepted=0, deduped=0, ping_interval_minutes=self._ping_interval_minutes
+            )
+        geofence = await self._repo.get_active_geofence(shop_id=body.pings[0].shop_id)
+        rows: list[dict[str, object]] = []
+        for p in body.pings:
+            inside, distance, wifi_match = self._evaluate_ping(p, geofence)
+            rows.append(
+                {
+                    "client_id": p.client_id,
+                    "shop_id": p.shop_id,
+                    "tech_id": p.tech_id,
+                    "captured_at": p.captured_at,
+                    "lat": p.lat,
+                    "lng": p.lng,
+                    "accuracy_m": p.accuracy_m,
+                    "inside_geofence": inside,
+                    "distance_m": distance,
+                    "is_mock_location": p.is_mock_location,
+                    "wifi_bssid": p.wifi_bssid,
+                    "wifi_ssid": p.wifi_ssid,
+                    "wifi_match": wifi_match,
+                }
+            )
+        accepted = await self._repo.create_pings(rows)
+        return PingBatchResponse(
+            accepted=accepted,
+            deduped=len(rows) - accepted,
+            ping_interval_minutes=self._ping_interval_minutes,
+        )
 
     async def complete_selfie(
         self, *, tech_id: str, event_id: UUID, size_bytes: int | None
@@ -728,6 +775,7 @@ class AttendanceService:
             center_lng=row.center_lng,
             radius_m=row.radius_m,
             is_active=row.is_active,
+            ping_interval_minutes=self._ping_interval_minutes,
         )
 
     async def upsert_geofence(self, *, shop_id: str, body: GeofenceUpdate) -> Geofence:
@@ -777,6 +825,33 @@ class AttendanceService:
                         inside = None
                 if wifi_bssid is not None and geofence.wifi_bssids:
                     wifi_match = _wifi_match(wifi_bssid, geofence.wifi_bssids)
+        return inside, distance, wifi_match
+
+    def _evaluate_ping(
+        self, ping: PingRequest, geofence: AttendanceGeofence | None
+    ) -> tuple[bool | None, float | None, bool | None]:
+        """Judge one ping against a PRE-FETCHED fence — the batch fetches the
+        fence once and evaluates every ping in-process. Same rules as
+        ``_evaluate_geofence``: overlap-aware inside/outside, the accuracy
+        ceiling collapses a coarse fix to ``None``, wifi corroboration."""
+        inside: bool | None = None
+        distance: float | None = None
+        wifi_match: bool | None = None
+        if geofence is None:
+            return inside, distance, wifi_match
+        if ping.lat is not None and ping.lng is not None:
+            inside, distance = geofence_flags(
+                ping.lat,
+                ping.lng,
+                center_lat=geofence.center_lat,
+                center_lng=geofence.center_lng,
+                radius_m=geofence.radius_m,
+                accuracy_m=ping.accuracy_m or 0.0,
+            )
+            if ping.accuracy_m is None or ping.accuracy_m > self._accuracy_ceiling_m:
+                inside = None
+        if ping.wifi_bssid is not None and geofence.wifi_bssids:
+            wifi_match = _wifi_match(ping.wifi_bssid, geofence.wifi_bssids)
         return inside, distance, wifi_match
 
     def _presence_response(

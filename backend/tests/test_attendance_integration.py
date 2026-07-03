@@ -248,6 +248,35 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
     assert body["wifi_match"] is True
 
 
+async def test_pings_batch_is_idempotent(app_client: AsyncClient, auth_headers: Headers) -> None:
+    # A batch re-sent (overlapping sync / retry) stores nothing new: the
+    # ON CONFLICT(client_id) DO NOTHING dedup makes the second call a no-op.
+    cid = str(uuid4())
+    batch = {
+        "pings": [
+            {
+                "client_id": cid,
+                "tech_id": "t7",
+                "captured_at": "2026-07-01T04:00:00Z",
+                "lat": 24.86,
+                "lng": 67.0,
+                "accuracy_m": 10.0,
+                "is_mock_location": False,
+            }
+        ]
+    }
+    first = await app_client.post("/api/attendance/pings", json=batch, headers=auth_headers)
+    assert first.status_code == 201, first.text
+    assert first.json()["accepted"] == 1
+    assert first.json()["deduped"] == 0
+    assert first.json()["ping_interval_minutes"] == 5
+
+    second = await app_client.post("/api/attendance/pings", json=batch, headers=auth_headers)
+    assert second.status_code == 201, second.text
+    assert second.json()["accepted"] == 0  # already stored
+    assert second.json()["deduped"] == 1
+
+
 async def test_payroll_export_returns_rows(app_client: AsyncClient, auth_headers: Headers) -> None:
     resp = await app_client.get("/api/attendance/payroll", headers=auth_headers)
     assert resp.status_code == 200, resp.text

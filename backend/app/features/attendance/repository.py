@@ -9,12 +9,14 @@ from datetime import date as date_type
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.attendance.models import (
     AttendanceAdjustment,
     AttendanceEvent,
     AttendanceGeofence,
+    AttendancePing,
     AttendancePresenceEvent,
     AttendanceShift,
     PayrollExportRecord,
@@ -223,6 +225,47 @@ class AttendanceRepository:
         if tech_id is not None:
             stmt = stmt.where(AttendancePresenceEvent.tech_id == tech_id)
         stmt = stmt.order_by(AttendancePresenceEvent.effective_time.asc())
+        result = await self._session.execute(stmt)
+        return list(result.scalars())
+
+    # ── On-duty pings (interval location samples, append-only) ───────────
+    async def create_pings(self, rows: list[dict[str, object]]) -> int:
+        """Bulk-insert on-duty pings, skipping any whose ``client_id`` already
+        landed (overlapping batches / offline retries). ``ON CONFLICT DO
+        NOTHING`` + ``RETURNING`` so the count is exactly the rows *newly*
+        stored — the service derives ``deduped`` from ``len(rows) - accepted``."""
+        if not rows:
+            return 0
+        stmt = (
+            pg_insert(AttendancePing)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=["client_id"])
+            .returning(AttendancePing.id)
+        )
+        result = await self._session.execute(stmt)
+        inserted = len(result.scalars().all())
+        await self._session.flush()
+        return inserted
+
+    async def list_pings(
+        self,
+        *,
+        shop_id: str,
+        start: datetime,
+        end: datetime,
+        tech_id: str | None = None,
+    ) -> list[AttendancePing]:
+        """Pings in ``[start, end)`` on ``captured_at`` (the analytical axis),
+        oldest first — the input to the away-interval math (Step 7)."""
+        stmt = (
+            select(AttendancePing)
+            .where(AttendancePing.shop_id == shop_id)
+            .where(AttendancePing.captured_at >= start)
+            .where(AttendancePing.captured_at < end)
+        )
+        if tech_id is not None:
+            stmt = stmt.where(AttendancePing.tech_id == tech_id)
+        stmt = stmt.order_by(AttendancePing.captured_at.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars())
 

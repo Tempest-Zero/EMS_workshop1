@@ -217,6 +217,63 @@ class AttendancePresenceEvent(Base):
     )
 
 
+class AttendancePing(Base):
+    """One on-duty location ping. The phone samples its location on an interval
+    *only while clocked in* (a privacy hard-stop, not continuous tracking) so a
+    manager can later see whether a tech stayed on-site through the shift.
+
+    ``captured_at`` (the device clock at the sample) is the analytical time axis:
+    a batch synced hours later must still land each ping on the minute it was
+    taken, or a day would collapse onto the sync instant. ``received_at`` records
+    when the server got it (audit). Deliberately **no drift column** — every
+    offline batch would false-flag it; the device clock is trusted for the axis
+    and corroborated by the punches/crossings whose own timestamps agree.
+
+    Append-only and idempotent on ``client_id`` (batches overlap / retry). A
+    dropped ping degrades to a "no data" gap server-side — it can never fabricate
+    presence — so the phone queue may cap+drop these (unlike punches/crossings).
+    Retention: ~240k rows/yr at 6 techs × 5-min pings; a purge job is future work,
+    not built here."""
+
+    __tablename__ = "attendance_ping"
+    __table_args__ = (
+        UniqueConstraint("client_id", name="uq_attendance_ping_client_id"),
+        Index("ix_attendance_ping_tech_time", "tech_id", "captured_at"),
+        Index("ix_attendance_ping_shop_time", "shop_id", "captured_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # WHEN — captured_at is the device clock (analytical axis); received_at is the
+    # server's receipt time (audit). No drift: an offline batch is expected.
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    # WHERE — the same fence verdict a punch/crossing carries, computed in-process.
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    inside_geofence: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_mock_location: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    wifi_bssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    wifi_ssid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    wifi_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class AttendanceShift(Base):
     """One shift per tech. ``working_days`` is a 7-char Mon→Sun bitmask
     (``"1111110"`` = Mon–Sat). The service falls back to a default shift when a

@@ -189,6 +189,45 @@ class ActiveGeofence(BaseModel):
     center_lng: float
     radius_m: int
     is_active: bool
+    # The on-duty ping cadence (minutes), server-tunable without an app release.
+    # The phone caches this and paces its sampling to it; the same value drives
+    # the server's missing-ping (2×) math, so client and server agree.
+    ping_interval_minutes: int
+
+
+# ── Mobile: on-duty pings (interval location samples while clocked in) ────────
+class PingRequest(BaseModel):
+    """One on-duty location sample. ``captured_at`` is the device clock at the
+    sample (the analytical axis — no drift is computed, an offline batch is
+    expected). Idempotent on ``client_id`` like a punch/crossing."""
+
+    client_id: UUID
+    tech_id: str = Field(..., min_length=1, max_length=64)
+    shop_id: str = Field(default=DEFAULT_SHOP_ID, max_length=64)
+    captured_at: datetime
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0)
+    is_mock_location: bool = False
+    wifi_bssid: str | None = Field(default=None, max_length=64)
+    wifi_ssid: str | None = Field(default=None, max_length=128)
+
+
+class PingBatch(BaseModel):
+    """Body for ``POST /api/attendance/pings`` — up to 100 samples per call. The
+    phone drains its queue in batches this size; over 100 is a 422."""
+
+    pings: list[PingRequest] = Field(..., max_length=100)
+
+
+class PingBatchResponse(BaseModel):
+    """``accepted`` = newly stored, ``deduped`` = already-seen client_ids skipped
+    (safe no-ops). ``ping_interval_minutes`` echoes the server cadence so the
+    phone can re-pace without a separate fetch."""
+
+    accepted: int
+    deduped: int
+    ping_interval_minutes: int
 
 
 # ── Manager: board / grid / detail ───────────────────────────────────────────

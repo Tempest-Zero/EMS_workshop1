@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # window, effective_time falls back to the authoritative server_time. The
     # drift flag still surfaces every clock disagreement regardless.
     attendance_device_time_backdate_ceiling_hours: int = 24
+    # On-duty ping cadence (minutes): while clocked in, the phone samples its
+    # location this often. Surfaced on the ActiveGeofence the phone caches, so it
+    # is tunable (5→10→15) without an app release; the same value drives the
+    # server's missing-ping (2×) math so client and server agree.
+    attendance_ping_interval_minutes: int = 5
 
     # ── Jobs / billing ───────────────────────────────────────────────────
     # Labour rate used to auto-generate the bill from time on-site. Integer

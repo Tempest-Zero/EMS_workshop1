@@ -14,7 +14,13 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.storage import SignedUpload
 from app.features.attendance.models import AttendanceEvent, AttendancePresenceEvent
-from app.features.attendance.schemas import AdjustmentRequest, PresenceRequest, PunchRequest
+from app.features.attendance.schemas import (
+    AdjustmentRequest,
+    PingBatch,
+    PingRequest,
+    PresenceRequest,
+    PunchRequest,
+)
 from app.features.attendance.service import (
     AttendanceNotFoundError,
     AttendanceService,
@@ -105,6 +111,8 @@ def svc() -> Iterator[tuple[AttendanceService, MagicMock, MagicMock]]:
     repo.get_presence_by_client_id = AsyncMock(return_value=None)
     repo.create_presence = AsyncMock(side_effect=lambda **kw: _presence(**kw))
     repo.list_presence = AsyncMock(return_value=[])
+    repo.create_pings = AsyncMock(return_value=0)
+    repo.list_pings = AsyncMock(return_value=[])
 
     storage = MagicMock()
     storage.mint_upload_url = MagicMock(
@@ -507,6 +515,97 @@ async def test_presence_confirmed_and_effective_time_round_trip(
     # server_time is a DB default, so it isn't in the create kwargs to compare;
     # assert effective_time landed at "now" instead.)
     assert (datetime.now(UTC) - kwargs["effective_time"]).total_seconds() < 5
+
+
+# ── On-duty pings ─────────────────────────────────────────────────────────────
+async def test_record_pings_computes_per_ping_geofence_verdicts(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The fence is fetched ONCE for the whole batch, then each ping is judged
+    # in-process: one inside the circle, one ~1.4 km out.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=150, wifi_bssids=None
+    )
+    repo.create_pings.return_value = 2
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=now,
+                    lat=24.8601,
+                    lng=67.0001,
+                    accuracy_m=10.0,
+                ),
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=now,
+                    lat=24.8700,
+                    lng=67.0100,
+                    accuracy_m=10.0,
+                ),
+            ]
+        )
+    )
+    repo.get_active_geofence.assert_awaited_once()  # one fence read, not per-ping
+    rows = repo.create_pings.call_args.args[0]
+    assert rows[0]["inside_geofence"] is True
+    assert rows[1]["inside_geofence"] is False
+    assert resp.accepted == 2 and resp.deduped == 0
+    assert resp.ping_interval_minutes == 5
+
+
+async def test_record_pings_coarse_fix_is_uncertain(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Accuracy over the ceiling → inside stays None (never a false verdict), but
+    # the distance is still recorded for forensics.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=80, wifi_bssids=None
+    )
+    repo.create_pings.return_value = 1
+    await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=datetime.now(UTC),
+                    lat=24.8610,
+                    lng=67.0000,
+                    accuracy_m=500.0,
+                ),
+            ]
+        )
+    )
+    row = repo.create_pings.call_args.args[0][0]
+    assert row["inside_geofence"] is None
+    assert row["distance_m"] is not None
+
+
+async def test_record_pings_reports_dedup_counts(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 3 sent, repo reports only 1 newly inserted → the other 2 were already-seen
+    # client_ids (safe no-ops).
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=datetime.now(UTC))
+                for _ in range(3)
+            ]
+        )
+    )
+    assert resp.accepted == 1
+    assert resp.deduped == 2
 
 
 async def test_board_classifies_present_day(

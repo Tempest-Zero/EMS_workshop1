@@ -36,6 +36,8 @@ from app.features.attendance.schemas import (
     Grid,
     PayrollExport,
     PayrollExportFile,
+    PingBatch,
+    PingBatchResponse,
     PresenceRequest,
     PresenceResponse,
     PunchItem,
@@ -79,6 +81,7 @@ def get_service(session: SessionDep, storage: StorageDep) -> AttendanceService:
             settings.attendance_device_time_future_tolerance_seconds
         ),
         device_time_backdate_ceiling_hours=settings.attendance_device_time_backdate_ceiling_hours,
+        ping_interval_minutes=settings.attendance_ping_interval_minutes,
     )
 
 
@@ -135,6 +138,28 @@ async def record_presence(
     # tied to a specific tech and must not be writable for someone else.
     _require_self_or_manager(principal, body.tech_id)
     response = await service.record_presence(body)
+    await session.commit()
+    return response
+
+
+@router.post(
+    "/pings",
+    response_model=PingBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a batch of on-duty location pings (≤100; idempotent on client_id)",
+)
+async def record_pings(
+    body: PingBatch,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> PingBatchResponse:
+    # A tech's phone sends only its OWN pings; a manager may send for any tech.
+    # Guard every distinct tech_id in the batch (same self-or-manager rule as a
+    # punch/crossing). Over-100 batches are rejected by the schema (422).
+    for tech_id in {p.tech_id for p in body.pings}:
+        _require_self_or_manager(principal, tech_id)
+    response = await service.record_pings(body)
     await session.commit()
     return response
 
