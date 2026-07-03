@@ -76,7 +76,17 @@ layout (the same capability is a same-named folder in each runtime).
   or a feature's `index.js` barrel (web). CI enforces this (import-linter + ESLint
   `no-restricted-imports`); a new edge must be added to the allow-list consciously.
 - **The outbox never deletes a write.** Success removes; definitive 4xx → visible "failed" list;
-  anything ambiguous (offline/5xx/timeout) is kept and retried. Don't "simplify" this away.
+  anything ambiguous (offline/5xx/timeout) is kept and retried. Don't "simplify" this away. The
+  attendance **punch and presence** queues carry the *same* contract (see
+  `lib/syncClassification.ts`, shared with the jobs outbox). On-duty **pings are the one
+  exception — deliberately droppable**: a definitive-4xx ping batch is dropped (coverage degrades
+  to an honest `no_data` gap), never parked.
+- **On-duty ping tracking is time-bounded, not just clock-bounded.** Location sampling stops at
+  `config.attendance.maxDutyHours` (14h) even if the tech never clocked out — a forgotten
+  clock-out must not track someone all evening. All privacy layers route through `dutyStatus`
+  (`pingTracker.ts`); don't add a path that samples without it. Ping `captured_at` is likewise
+  trust-windowed server-side (rejected outside ~48h back / 2min forward) so it can't be back-dated
+  to rewrite an attendance day.
 
 ---
 
