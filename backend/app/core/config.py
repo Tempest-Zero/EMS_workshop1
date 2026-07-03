@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     # window, effective_time falls back to the authoritative server_time. The
     # drift flag still surfaces every clock disagreement regardless.
     attendance_device_time_backdate_ceiling_hours: int = 24
+    # Trust window for a ping's captured_at (the axis the away-interval math
+    # buckets on). Unlike a punch, a stale ping is REJECTED, never re-bucketed —
+    # re-bucketing to receipt time would fabricate presence "now". Looser than
+    # the punches' 24h because the phone legitimately queues ≈3.5 days of pings
+    # offline (MAX_UNSENT_PINGS=1000 at 5-min cadence); beyond this, an honest
+    # no_data gap beats late presence. The future side reuses
+    # attendance_device_time_future_tolerance_seconds.
+    attendance_ping_backdate_ceiling_hours: int = 48
     # On-duty ping cadence (minutes): while clocked in, the phone samples its
     # location this often. Surfaced on the ActiveGeofence the phone caches, so it
     # is tunable (5→10→15) without an app release; the same value drives the

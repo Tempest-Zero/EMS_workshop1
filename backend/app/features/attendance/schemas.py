@@ -222,11 +222,14 @@ class PingBatch(BaseModel):
 
 class PingBatchResponse(BaseModel):
     """``accepted`` = newly stored, ``deduped`` = already-seen client_ids skipped
-    (safe no-ops). ``ping_interval_minutes`` echoes the server cadence so the
-    phone can re-pace without a separate fetch."""
+    (safe no-ops), ``rejected`` = captured_at outside the trust window — not
+    stored, and the client should still prune them (the batch is a success).
+    ``ping_interval_minutes`` echoes the server cadence so the phone can re-pace
+    without a separate fetch."""
 
     accepted: int
     deduped: int
+    rejected: int = 0
     ping_interval_minutes: int
 
 

@@ -148,6 +148,9 @@ export interface PingRequest {
 export interface PingBatchResponse {
   accepted: number;
   deduped: number;
+  // Outside the server's captured_at trust window — not stored. Still a
+  // success: the queue prunes these (retrying can never make them fresh).
+  rejected?: number;
   ping_interval_minutes: number;
 }
 

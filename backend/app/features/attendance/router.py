@@ -82,6 +82,7 @@ def get_service(session: SessionDep, storage: StorageDep) -> AttendanceService:
         ),
         device_time_backdate_ceiling_hours=settings.attendance_device_time_backdate_ceiling_hours,
         ping_interval_minutes=settings.attendance_ping_interval_minutes,
+        ping_backdate_ceiling_hours=settings.attendance_ping_backdate_ceiling_hours,
     )
 
 

@@ -637,6 +637,121 @@ async def test_record_pings_reports_dedup_counts(
     assert resp.deduped == 2
 
 
+async def test_record_pings_rejects_stale_backdated_captured_at(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 49h old is past the 48h ping ceiling: dropped (never re-bucketed — that
+    # would fabricate presence "now"), counted as rejected, batch still succeeds.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(hours=49)),
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now),
+            ]
+        )
+    )
+    rows = repo.create_pings.call_args.args[0]
+    assert len(rows) == 1  # only the fresh ping reached the repo
+    assert resp.accepted == 1 and resp.deduped == 0 and resp.rejected == 1
+
+
+async def test_record_pings_rejects_future_captured_at_beyond_tolerance(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 10 min ahead can't be real (tolerance is 120s); 60s ahead is clock skew.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(), tech_id="t1", captured_at=now + timedelta(minutes=10)
+                ),
+                PingRequest(
+                    client_id=uuid4(), tech_id="t1", captured_at=now + timedelta(seconds=60)
+                ),
+            ]
+        )
+    )
+    assert len(repo.create_pings.call_args.args[0]) == 1
+    assert resp.accepted == 1 and resp.rejected == 1
+
+
+async def test_record_pings_accepts_long_offline_backlog_inside_window(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The point of the looser 48h ceiling: a 47h-old ping from a 2-day offline
+    # stretch still lands on the day it happened. A naive (tzless) timestamp is
+    # coerced as UTC, mirroring _effective_time.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 2
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(hours=47)),
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                ),
+            ]
+        )
+    )
+    assert len(repo.create_pings.call_args.args[0]) == 2
+    assert resp.accepted == 2 and resp.rejected == 0
+
+
+async def test_record_pings_all_rejected_skips_repo_and_fence(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # An entirely stale batch stores nothing and reads nothing — but still
+    # returns success so the phone prunes it instead of retrying forever.
+    service, repo, _ = svc
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(days=5 + i)
+                )
+                for i in range(3)
+            ]
+        )
+    )
+    repo.create_pings.assert_not_awaited()
+    repo.get_active_geofence.assert_not_awaited()
+    assert resp.accepted == 0 and resp.deduped == 0 and resp.rejected == 3
+
+
+async def test_record_pings_dedup_math_unaffected_by_rejections(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 3 sent: 1 stale (rejected), 2 fresh of which the repo inserts only 1 —
+    # deduped counts against the FRESH set, not the raw batch size.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(hours=72)),
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now),
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now),
+            ]
+        )
+    )
+    assert resp.accepted == 1 and resp.deduped == 1 and resp.rejected == 1
+
+
 async def test_board_classifies_present_day(
     svc: tuple[AttendanceService, MagicMock, MagicMock],
 ) -> None:

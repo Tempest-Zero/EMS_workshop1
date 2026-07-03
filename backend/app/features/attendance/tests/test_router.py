@@ -128,6 +128,7 @@ async def test_post_pings_returns_201_for_self(
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["accepted"] == 1
+    assert resp.json()["rejected"] == 0  # trust-window field rides on every response
     fake_session.commit.assert_awaited()
 
 

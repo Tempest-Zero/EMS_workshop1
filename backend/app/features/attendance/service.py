@@ -91,6 +91,10 @@ DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS = 24
 # On-duty ping cadence (minutes). Surfaced on ActiveGeofence so the phone paces
 # to it; the same value drives the server's missing-ping (2×) math.
 DEFAULT_PING_INTERVAL_MINUTES = 5
+# Ping captured_at trust window (see _ping_in_window). Looser than the punches'
+# 24h D8 ceiling: the phone queues ≈3.5 days of pings offline. Out-of-window
+# pings are REJECTED (never re-bucketed) — mirrors core.config.
+DEFAULT_PING_BACKDATE_CEILING_HOURS = 48
 # Outside-fence minutes at or above this (on a non-field day) raise the away flag.
 AWAY_FLAG_MINUTES = 30
 # How far back the selfie-gaps reconciliation looks. Bounds the list so punches
@@ -195,6 +199,7 @@ class AttendanceService:
         device_time_future_tolerance_seconds: int = DEFAULT_DEVICE_TIME_FUTURE_TOLERANCE_SECONDS,
         device_time_backdate_ceiling_hours: int = DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS,
         ping_interval_minutes: int = DEFAULT_PING_INTERVAL_MINUTES,
+        ping_backdate_ceiling_hours: int = DEFAULT_PING_BACKDATE_CEILING_HOURS,
     ) -> None:
         self._repo = repo
         self._storage = storage
@@ -205,6 +210,7 @@ class AttendanceService:
         self._device_time_future_tolerance_seconds = device_time_future_tolerance_seconds
         self._device_time_backdate_ceiling_hours = device_time_backdate_ceiling_hours
         self._ping_interval_minutes = ping_interval_minutes
+        self._ping_backdate_ceiling_hours = ping_backdate_ceiling_hours
 
     # ── Commands ─────────────────────────────────────────────────────────
     async def record_punch(self, body: PunchRequest) -> PunchResponse:
@@ -343,14 +349,43 @@ class AttendanceService:
         repository's ``ON CONFLICT DO NOTHING`` — a re-sent (overlapping) batch
         is a safe no-op. The active fence is fetched ONCE and every ping is
         judged in-process (not ``_evaluate_geofence``, which queries per call),
-        so a 100-ping batch is one fence read, not a hundred."""
-        if not body.pings:
-            return PingBatchResponse(
-                accepted=0, deduped=0, ping_interval_minutes=self._ping_interval_minutes
+        so a 100-ping batch is one fence read, not a hundred.
+
+        ``captured_at`` outside the trust window (see ``_ping_in_window``) is
+        REJECTED, not stored: the away-interval math buckets purely on
+        ``captured_at``, so an unbounded backdate would let a valid tech JWT
+        rewrite an outside/no_data day after the fact. Rejection never fails
+        the batch — the phone must prune these, not retry them forever."""
+        server_now = datetime.now(UTC)
+        fresh = [
+            p
+            for p in body.pings
+            if _ping_in_window(
+                p.captured_at,
+                server_now,
+                future_tolerance_seconds=self._device_time_future_tolerance_seconds,
+                backdate_ceiling_hours=self._ping_backdate_ceiling_hours,
             )
-        geofence = await self._repo.get_active_geofence(shop_id=body.pings[0].shop_id)
+        ]
+        rejected = len(body.pings) - len(fresh)
+        if rejected:
+            # A fleet of rejections is a clock-spoofing or very-long-offline
+            # signal — worth a log line even though the batch itself succeeds.
+            logger.warning(
+                "rejected %d ping(s) outside the captured_at trust window (techs: %s)",
+                rejected,
+                sorted({p.tech_id for p in body.pings}),
+            )
+        if not fresh:
+            return PingBatchResponse(
+                accepted=0,
+                deduped=0,
+                rejected=rejected,
+                ping_interval_minutes=self._ping_interval_minutes,
+            )
+        geofence = await self._repo.get_active_geofence(shop_id=fresh[0].shop_id)
         rows: list[dict[str, object]] = []
-        for p in body.pings:
+        for p in fresh:
             inside, distance, wifi_match = self._evaluate_ping(p, geofence)
             rows.append(
                 {
@@ -373,6 +408,7 @@ class AttendanceService:
         return PingBatchResponse(
             accepted=accepted,
             deduped=len(rows) - accepted,
+            rejected=rejected,
             ping_interval_minutes=self._ping_interval_minutes,
         )
 
@@ -1175,6 +1211,24 @@ def _effective_time(
     if backdate_limit <= dt <= future_limit:
         return dt
     return server_now
+
+
+def _ping_in_window(
+    captured_at: datetime,
+    server_now: datetime,
+    *,
+    future_tolerance_seconds: int,
+    backdate_ceiling_hours: int,
+) -> bool:
+    """The ping counterpart of ``_effective_time`` (D8), with one deliberate
+    difference: an out-of-window ping is dropped by the caller, never
+    re-bucketed to ``server_now`` — a punch re-bucketed to receipt time still
+    records a real punch, but a stale ping re-bucketed to receipt time would
+    fabricate presence *now*. Rejection degrades to an honest ``no_data`` gap."""
+    dt = captured_at if captured_at.tzinfo is not None else captured_at.replace(tzinfo=UTC)
+    future_limit = server_now + timedelta(seconds=future_tolerance_seconds)
+    backdate_limit = server_now - timedelta(hours=backdate_ceiling_hours)
+    return backdate_limit <= dt <= future_limit
 
 
 def _wifi_match(bssid: str, configured_csv: str) -> bool:
