@@ -144,6 +144,7 @@ function fmtDuration(start, end) {
 function AwayStrip({ intervals, status }) {
   if (!intervals || intervals.length === 0) return null;
   const field = status === "field";
+  const hasNoData = intervals.some((iv) => iv.kind === "no_data");
   return (
     <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
       <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
@@ -171,6 +172,12 @@ function AwayStrip({ intervals, status }) {
           );
         })}
       </div>
+      {hasNoData && (
+        <p className="mt-2 border-t border-slate-200 pt-2 text-[11px] leading-relaxed text-slate-400">
+          <span className="font-semibold text-slate-500">No location data</span> means the phone
+          stopped reporting (battery saver, reboot, or no signal) — not evidence the tech was away.
+        </p>
+      )}
     </div>
   );
 }

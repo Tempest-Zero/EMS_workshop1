@@ -211,68 +211,88 @@ export default function AttendanceVariance() {
             <EmptyState title={loading ? "Loading…" : "No attendance in this range"} />
           </div>
         ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[1000px] text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-left text-xs font-bold uppercase tracking-wide text-slate-400">
-                  <th className="pb-2">Technician</th>
-                  <th className="pb-2">Date</th>
-                  <th className="pb-2">Status</th>
-                  <th className="pb-2">Arrived</th>
-                  <th className="pb-2">Clock In</th>
-                  <th className="pb-2 text-right">Δ In</th>
-                  <th className="pb-2">Clock Out</th>
-                  <th className="pb-2">Departed</th>
-                  <th className="pb-2 text-right">Δ Out</th>
-                  <th className="pb-2 text-right">Hours</th>
-                  <th className="pb-2 text-right">Coverage</th>
-                  <th className="pb-2 text-right">Away</th>
-                  <th className="pb-2 text-right">Flags</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {rows.map((r) => {
-                  const t = techById[r.tech_id];
-                  return (
-                    <tr key={`${r.tech_id}-${r.date}`}>
-                      <td className="py-2.5">
-                        <div className="flex items-center gap-2.5">
-                          <Avatar name={t?.name || r.tech_id} color={t?.avatar} size="sm" />
-                          <span className="font-bold text-slate-800">{t?.name || r.tech_id}</span>
-                        </div>
-                      </td>
-                      <td className="py-2.5 text-slate-500">{r.date}</td>
-                      <td className="py-2.5">
-                        <PresenceBadge status={r.status} />
-                      </td>
-                      <td className="py-2.5 text-slate-600">{fmtClock(r.first_arrive)}</td>
-                      <td className="py-2.5 text-slate-600">{fmtClock(r.first_clock_in)}</td>
-                      <td className="py-2.5 text-right">
-                        <Delta minutes={r.delta_in_minutes} />
-                      </td>
-                      <td className="py-2.5 text-slate-600">{fmtClock(r.last_clock_out)}</td>
-                      <td className="py-2.5 text-slate-600">{fmtClock(r.last_depart)}</td>
-                      <td className="py-2.5 text-right">
-                        <Delta minutes={r.delta_out_minutes} />
-                      </td>
-                      <td className="py-2.5 text-right font-bold text-slate-700">
-                        {fmtWorked(r.clocked_minutes)}
-                      </td>
-                      <td className="py-2.5 text-right">
-                        <Coverage pct={r.coverage_pct} />
-                      </td>
-                      <td className="py-2.5 text-right">
-                        <Away minutes={r.outside_minutes} flagged={r.flagged_away} />
-                      </td>
-                      <td className="py-2.5 text-right">
-                        <RowFlags row={r} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[1000px] text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-xs font-bold uppercase tracking-wide text-slate-400">
+                    <th className="pb-2">Technician</th>
+                    <th className="pb-2">Date</th>
+                    <th className="pb-2">Status</th>
+                    <th className="pb-2">Arrived</th>
+                    <th className="pb-2">Clock In</th>
+                    <th className="pb-2 text-right">Δ In</th>
+                    <th className="pb-2">Clock Out</th>
+                    <th className="pb-2">Departed</th>
+                    <th className="pb-2 text-right">Δ Out</th>
+                    <th className="pb-2 text-right">Hours</th>
+                    <th
+                      className="pb-2 text-right"
+                      title="Share of the clocked window with usable location data. A low number can mean the phone stopped reporting (battery saver, reboot, no signal) — not that the tech was away."
+                    >
+                      Coverage
+                    </th>
+                    <th
+                      className="pb-2 text-right"
+                      title="Minutes the phone's location put the tech outside the workshop fence."
+                    >
+                      Away
+                    </th>
+                    <th className="pb-2 text-right">Flags</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {rows.map((r) => {
+                    const t = techById[r.tech_id];
+                    return (
+                      <tr key={`${r.tech_id}-${r.date}`}>
+                        <td className="py-2.5">
+                          <div className="flex items-center gap-2.5">
+                            <Avatar name={t?.name || r.tech_id} color={t?.avatar} size="sm" />
+                            <span className="font-bold text-slate-800">{t?.name || r.tech_id}</span>
+                          </div>
+                        </td>
+                        <td className="py-2.5 text-slate-500">{r.date}</td>
+                        <td className="py-2.5">
+                          <PresenceBadge status={r.status} />
+                        </td>
+                        <td className="py-2.5 text-slate-600">{fmtClock(r.first_arrive)}</td>
+                        <td className="py-2.5 text-slate-600">{fmtClock(r.first_clock_in)}</td>
+                        <td className="py-2.5 text-right">
+                          <Delta minutes={r.delta_in_minutes} />
+                        </td>
+                        <td className="py-2.5 text-slate-600">{fmtClock(r.last_clock_out)}</td>
+                        <td className="py-2.5 text-slate-600">{fmtClock(r.last_depart)}</td>
+                        <td className="py-2.5 text-right">
+                          <Delta minutes={r.delta_out_minutes} />
+                        </td>
+                        <td className="py-2.5 text-right font-bold text-slate-700">
+                          {fmtWorked(r.clocked_minutes)}
+                        </td>
+                        <td className="py-2.5 text-right">
+                          <Coverage pct={r.coverage_pct} />
+                        </td>
+                        <td className="py-2.5 text-right">
+                          <Away minutes={r.outside_minutes} flagged={r.flagged_away} />
+                        </td>
+                        <td className="py-2.5 text-right">
+                          <RowFlags row={r} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-slate-400">
+              <span className="font-semibold text-slate-500">Coverage</span> = share of the clocked
+              window with location data · <span className="font-semibold text-slate-500">Away</span>{" "}
+              = minutes the phone read outside the fence ·{" "}
+              <span className="font-semibold text-slate-500">No data</span> = the phone stopped
+              reporting (battery saver, reboot, no signal) —{" "}
+              <span className="font-semibold text-slate-500">not evidence of absence</span>.
+            </p>
+          </>
         )}
       </Card>
     </div>

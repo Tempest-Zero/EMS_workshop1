@@ -61,4 +61,15 @@ describe("<AttendanceVariance />", () => {
     expect(screen.getByText("35m")).toBeInTheDocument(); // outside/away minutes
     expect(screen.getByLabelText("Away from the workshop over 30 min")).toBeInTheDocument();
   });
+
+  it("shows the no-data legend so a coverage gap isn't read as absence", async () => {
+    render(
+      <MemoryRouter>
+        <AttendanceVariance />
+      </MemoryRouter>
+    );
+    await screen.findByText("Imran Ahmed");
+    // The legend spells out that a gap is the phone, not the tech.
+    expect(screen.getByText("not evidence of absence")).toBeInTheDocument();
+  });
 });

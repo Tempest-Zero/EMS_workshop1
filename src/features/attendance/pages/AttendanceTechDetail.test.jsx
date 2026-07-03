@@ -64,6 +64,7 @@ vi.mock("@features/attendance/hooks/useTechDetail", () => ({
         coverage_pct: 82.6,
         away_intervals: [
           { start: "2026-06-11T10:00:00", end: "2026-06-11T10:35:00", kind: "outside" },
+          { start: "2026-06-11T14:00:00", end: "2026-06-11T15:00:00", kind: "no_data" },
         ],
       },
     ],
@@ -105,5 +106,11 @@ describe("<AttendanceTechDetail />", () => {
     renderDetail();
     expect(screen.getByText("On-duty location")).toBeInTheDocument();
     expect(screen.getByText(/Outside fence/)).toBeInTheDocument();
+  });
+
+  it("explains a no-data gap so it isn't read as absence", () => {
+    renderDetail();
+    expect(screen.getByText("No location data")).toBeInTheDocument();
+    expect(screen.getByText(/not evidence the tech was away/i)).toBeInTheDocument();
   });
 });
