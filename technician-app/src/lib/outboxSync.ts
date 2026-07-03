@@ -165,7 +165,15 @@ export async function sendOrQueue(
     return null;
   }
   try {
-    return await call();
+    const fresh = await call();
+    // A successful live send is the authoritative write. Drop any earlier
+    // queued copy of the SAME stable-id write (completion / negotiate /
+    // location / ready) so a later flush can't replay a stale version over
+    // this result — e.g. an offline-queued completion v1 clobbering the v2 the
+    // tech just edited and sent live. Unique-id kinds (payments, notes) never
+    // collide, so this is a no-op for them.
+    await removeItem(item.id);
+    return fresh;
   } catch (e) {
     // A definitive 4xx on a live tap is a validation error the technician is
     // looking at right now — surface it. A 401 means the session just ended —
