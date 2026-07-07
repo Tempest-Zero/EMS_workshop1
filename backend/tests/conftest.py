@@ -31,6 +31,7 @@ from app.core.db import get_session
 from app.core.storage import SignedUpload, get_storage
 from app.features.identity.models import Technician
 from app.features.identity.security import create_access_token, hash_pin
+from app.features.tenancy.models import Shop
 from app.main import app
 from app.registry import Base
 
@@ -109,6 +110,13 @@ async def _engine() -> AsyncIterator[AsyncEngine]:
 async def session(_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     maker = async_sessionmaker(bind=_engine, expire_on_commit=False, class_=AsyncSession)
     async with maker() as sess:
+        # Since 0020 every shop_id column FKs to shop.id, and many tests seed
+        # technician/attendance/job rows straight through this session (not only
+        # via app_client). Seed the 'default' shop here — the lowest-level DB
+        # fixture — so every FK is satisfied. merge() = upsert: covers both the
+        # migration-seeded first test and the post-truncate/create_all cases.
+        await sess.merge(Shop(id="default", name="Test Shop"))
+        await sess.commit()
         yield sess
 
 

@@ -109,6 +109,7 @@ modules = [
   "app.features.media",
   "app.features.notifications",
   "app.features.ops",
+  "app.features.tenancy",
 ]
 ignore_imports = [
   # Jobs' close-gate checks closing media through the media surface.
@@ -139,6 +140,7 @@ forbidden_modules = [
   "app.features.jobs",
   "app.features.media",
   "app.features.notifications",
+  "app.features.tenancy",
 ]
 ignore_imports = [
   "app.features.identity.tests.* -> app.main",

@@ -13,14 +13,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.shared.tenancy import DEFAULT_SHOP_ID as DEFAULT_SHOP_ID  # explicit re-export
+
 PunchKind = Literal["clock_in", "clock_out"]
 PresenceKind = Literal["arrive", "depart"]
 PunchSource = Literal["mobile", "kiosk", "manual"]
 SelfieStatus = Literal["pending", "uploaded"]
 DayStatus = Literal["present", "field", "half", "absent", "holiday", "leave"]
 
-# One shop for now; carried on every record so RLS can switch on later.
-DEFAULT_SHOP_ID = "default"
+# DEFAULT_SHOP_ID moved to the shared kernel (imported above); re-exported here
+# so existing `from .schemas import DEFAULT_SHOP_ID` call sites keep working.
 
 
 # ── Mobile: punch ────────────────────────────────────────────────────────────
