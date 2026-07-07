@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.shared.tenancy import DEFAULT_SHOP_ID
+from app.shared.tenancy import DEFAULT_SHOP_ID as DEFAULT_SHOP_ID  # explicit re-export
 
 PunchKind = Literal["clock_in", "clock_out"]
 PresenceKind = Literal["arrive", "depart"]
