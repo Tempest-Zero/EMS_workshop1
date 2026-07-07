@@ -1,9 +1,12 @@
 /** Presence-sync tests — api, queue, and auth mocked (no network/storage). */
 
+import { ApiError } from "../../lib/api";
 import { attendanceApi } from "../../lib/attendanceApi";
 import { getToken, loadToken } from "../../lib/auth";
 import {
+  bumpPresenceAttempts,
   markPresenceDone,
+  markPresenceFailed,
   pendingPresence,
   removePresence,
   type QueuedPresence,
@@ -21,6 +24,8 @@ jest.mock("./presenceQueue", () => ({
   pendingPresence: jest.fn(),
   markPresenceDone: jest.fn(),
   removePresence: jest.fn(),
+  markPresenceFailed: jest.fn(),
+  bumpPresenceAttempts: jest.fn(),
 }));
 
 const mockedApi = attendanceApi as jest.Mocked<typeof attendanceApi>;
@@ -29,6 +34,11 @@ const mockedLoadToken = loadToken as jest.MockedFunction<typeof loadToken>;
 const mockedPending = pendingPresence as jest.MockedFunction<typeof pendingPresence>;
 const mockedDone = markPresenceDone as jest.MockedFunction<typeof markPresenceDone>;
 const mockedRemove = removePresence as jest.MockedFunction<typeof removePresence>;
+const mockedFailed = markPresenceFailed as jest.MockedFunction<typeof markPresenceFailed>;
+const mockedBump = bumpPresenceAttempts as jest.MockedFunction<typeof bumpPresenceAttempts>;
+
+const apiError = (status: number, detail = "nope") =>
+  new ApiError("POST", "/api/attendance/presence", status, JSON.stringify({ detail }));
 
 const crossing: QueuedPresence = {
   client_id: "c1",
@@ -42,6 +52,7 @@ const crossing: QueuedPresence = {
   is_mock_location: false,
   wifi_bssid: "AA:BB",
   wifi_ssid: "Shop",
+  confirmed: false,
   done: false,
   created_at: "2026-06-03T04:00:00.000Z",
 };
@@ -60,6 +71,8 @@ beforeEach(() => {
   });
   mockedDone.mockResolvedValue(undefined);
   mockedRemove.mockResolvedValue(undefined);
+  mockedFailed.mockResolvedValue(undefined);
+  mockedBump.mockResolvedValue(1);
 });
 
 it("posts each crossing, marks it done, and removes it", async () => {
@@ -68,7 +81,12 @@ it("posts each crossing, marks it done, and removes it", async () => {
   await syncPresence("t1");
 
   expect(mockedApi.recordPresence).toHaveBeenCalledWith(
-    expect.objectContaining({ client_id: "c1", kind: "arrive", wifi_bssid: "AA:BB" }),
+    expect.objectContaining({
+      client_id: "c1",
+      kind: "arrive",
+      wifi_bssid: "AA:BB",
+      confirmed: false,
+    }),
   );
   expect(mockedDone).toHaveBeenCalledWith("c1");
   expect(mockedRemove).toHaveBeenCalledWith(["c1"]);
@@ -90,7 +108,42 @@ it("leaves a crossing queued if the POST fails", async () => {
   await syncPresence("t1");
 
   expect(mockedDone).not.toHaveBeenCalled();
+  expect(mockedFailed).not.toHaveBeenCalled(); // a network error never parks
   expect(mockedRemove).toHaveBeenCalledWith([]); // nothing settled
+});
+
+it("parks a definitively-rejected crossing and drains the rest", async () => {
+  const second: QueuedPresence = { ...crossing, client_id: "c2" };
+  mockedPending.mockResolvedValue([crossing, second]);
+  mockedApi.recordPresence.mockRejectedValueOnce(apiError(422, "bad crossing"));
+
+  await syncPresence("t1");
+
+  expect(mockedFailed).toHaveBeenCalledWith("c1", "bad crossing");
+  expect(mockedApi.recordPresence).toHaveBeenCalledTimes(2); // continued to c2
+  expect(mockedDone).toHaveBeenCalledWith("c2");
+});
+
+it("stops the drain on 401 without parking anything", async () => {
+  const second: QueuedPresence = { ...crossing, client_id: "c2" };
+  mockedPending.mockResolvedValue([crossing, second]);
+  mockedApi.recordPresence.mockRejectedValueOnce(apiError(401));
+
+  await syncPresence("t1");
+
+  expect(mockedFailed).not.toHaveBeenCalled();
+  expect(mockedApi.recordPresence).toHaveBeenCalledTimes(1); // broke out
+});
+
+it("parks a crossing that exhausts its retries on a repeated 5xx", async () => {
+  mockedPending.mockResolvedValue([crossing]);
+  mockedApi.recordPresence.mockRejectedValueOnce(apiError(500));
+  mockedBump.mockResolvedValueOnce(5);
+
+  await syncPresence("t1");
+
+  expect(mockedBump).toHaveBeenCalledWith("c1");
+  expect(mockedFailed).toHaveBeenCalledWith("c1", expect.stringContaining("gave up after 5"));
 });
 
 it("skips another technician's crossings (shared-device protection)", async () => {

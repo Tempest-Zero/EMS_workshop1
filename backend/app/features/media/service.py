@@ -25,8 +25,8 @@ from app.features.media.schemas import (
 logger = logging.getLogger(__name__)
 
 # Fallback ceiling if the caller doesn't pass one (the router passes the value
-# from settings.r2_max_upload_bytes).
-DEFAULT_MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+# from settings.r2_max_upload_bytes). Kept in sync with that setting's default.
+DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 
 class MediaNotFoundError(LookupError):

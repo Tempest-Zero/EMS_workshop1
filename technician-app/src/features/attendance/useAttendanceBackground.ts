@@ -16,6 +16,7 @@ import { navigateToClock } from "../../lib/navigation";
 import type { AttendancePromptData } from "./attendanceNotifications";
 import { setAttendancePrompt } from "./attendancePrompt";
 import { ensureGeofenceMonitoring } from "./geofence";
+import { ensurePingTracking } from "./pingTracker";
 
 function routeFromResponse(response: Notifications.NotificationResponse | null): void {
   const data = response?.notification.request.content.data as
@@ -29,11 +30,17 @@ function routeFromResponse(response: Notifications.NotificationResponse | null):
 export function useAttendanceBackground(): void {
   useEffect(() => {
     void ensureGeofenceMonitoring();
+    // Re-arm the on-duty ping tracker too (recovers after a reboot / app-kill
+    // if the tech was clocked in — same pattern as the geofence).
+    void ensurePingTracking();
     // Cold start: the app was launched by tapping a prompt.
     void Notifications.getLastNotificationResponseAsync().then(routeFromResponse);
     const tap = Notifications.addNotificationResponseReceivedListener(routeFromResponse);
     const app = AppState.addEventListener("change", (s) => {
-      if (s === "active") void ensureGeofenceMonitoring();
+      if (s === "active") {
+        void ensureGeofenceMonitoring();
+        void ensurePingTracking();
+      }
     });
     return () => {
       tap.remove();

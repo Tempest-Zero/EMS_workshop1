@@ -259,23 +259,40 @@ export function JobDetailScreen({ route, navigation }: Props) {
     setBusy("close");
     setError(null);
     try {
-      await uploadMedia({
-        jobId: String(token),
-        phase: "closing",
-        type: "video",
-        uri: asset.uri,
-        filename: asset.fileName ?? `closing-${Date.now()}.mp4`,
-        contentType: asset.mimeType ?? "video/mp4",
-      });
-      setJob(await jobsApi.transition(id, "close"));
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        // The video DID upload; the close itself was refused (e.g. the
-        // completion hasn't synced). Say so — "video didn't upload" here
-        // would send the tech into a re-record loop of orphan clips.
-        setError(apiDetail(e) ?? "The job can't be closed yet — try again after syncing.");
-      } else {
-        setError("Couldn't close — the closing video didn't upload. Try again.");
+      // Upload stage: if the bytes never land, the close is not attempted and
+      // the message names the real upload problem (too large / network).
+      try {
+        await uploadMedia({
+          jobId: String(token),
+          phase: "closing",
+          type: "video",
+          uri: asset.uri,
+          filename: asset.fileName ?? `closing-${Date.now()}.mp4`,
+          contentType: asset.mimeType ?? "video/mp4",
+        });
+      } catch (e) {
+        console.warn("close+video upload failed", e);
+        if (e instanceof ApiError && e.status === 413) {
+          setError("The closing video is too large to upload — try a shorter clip.");
+        } else if (e instanceof ApiError) {
+          setError(apiDetail(e) ?? "Couldn't upload the closing video — try again.");
+        } else {
+          setError("Couldn't upload the closing video — check your connection and try again.");
+        }
+        return;
+      }
+      // Close stage: the video IS saved now. A failure here is a close problem,
+      // not a video one — never send the tech back to re-record an orphan clip.
+      try {
+        setJob(await jobsApi.transition(id, "close"));
+      } catch (e) {
+        console.warn("close+video close failed", e);
+        if (e instanceof ApiError && (e.status === 409 || e.status === 400)) {
+          const detail = apiDetail(e) ?? "try again after syncing.";
+          setError(`Video saved, but the job can't be closed yet: ${detail}`);
+        } else {
+          setError("The closing video uploaded, but the job couldn't be closed — try again.");
+        }
       }
     } finally {
       setBusy(null);
@@ -469,7 +486,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
   }
 
   const statusColor = STATUS_COLOR[job.status] ?? "#64748b";
-  const canReady = job.status !== "ready" && job.status !== "closed";
+  const isReady = job.status === "ready";
   const canClose = job.status !== "closed";
   const open = job.status !== "closed";
   const hasBill = job.bill_original_paisa != null;
@@ -535,19 +552,25 @@ export function JobDetailScreen({ route, navigation }: Props) {
         {info ? <Text style={styles.inlineInfo}>{info}</Text> : null}
 
         <View style={styles.statusRow}>
-          {canReady ? (
+          {canClose ? (
             <Pressable
               style={[
                 styles.btn,
                 styles.btnReady,
-                (busy === "ready" || pendingReady) && styles.btnBusy,
+                (busy === "ready" || pendingReady || isReady) && styles.btnBusy,
                 styles.grow,
               ]}
               onPress={() => void markReady()}
-              disabled={!!busy || pendingReady}
+              disabled={!!busy || pendingReady || isReady}
             >
               <Text style={styles.btnReadyText}>
-                {busy === "ready" ? "…" : pendingReady ? "Ready · syncing…" : "Mark Ready"}
+                {busy === "ready"
+                  ? "…"
+                  : pendingReady
+                    ? "Ready · syncing…"
+                    : isReady
+                      ? "✓ Ready"
+                      : "Mark Ready"}
               </Text>
             </Pressable>
           ) : null}

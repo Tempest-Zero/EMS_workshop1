@@ -122,6 +122,21 @@ describe("sendOrQueue", () => {
     await expect(sendOrQueue(item(), () => Promise.reject(apiError(401)))).rejects.toThrow(/401/);
     expect((await outboxCounts()).queued).toBe(0);
   });
+
+  it("online success supersedes an earlier queued copy of the same write", async () => {
+    // Offline-queue completion v1, then reconnect and send v2 live. The live
+    // write is authoritative — v1 must not linger to be replayed over it.
+    mockNetFetch.mockResolvedValue({ isConnected: false });
+    await sendOrQueue(item({ payload: { body: { v: 1 } } }), () => Promise.resolve(detail));
+    expect((await outboxCounts()).queued).toBe(1);
+
+    mockNetFetch.mockResolvedValue({ isConnected: true });
+    const r = await sendOrQueue(item({ payload: { body: { v: 2 } } }), () =>
+      Promise.resolve(detail),
+    );
+    expect(r).toBe(detail);
+    expect((await outboxCounts()).queued).toBe(0); // v1 dropped — nothing to replay
+  });
 });
 
 describe("flushOutbox classification", () => {

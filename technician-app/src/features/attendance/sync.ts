@@ -7,7 +7,14 @@
  *      then POST /selfie/complete.
  *   3. Mark done once recorded and the selfie has settled (uploaded, rejected,
  *      or absent).
- * A failure on any item leaves it queued for the next pass.
+ *
+ * Failure classification mirrors the jobs outbox (see `lib/syncClassification`):
+ *   401              → the session, not the punch. Stop draining; keep queued.
+ *   400/403/404/409/422 on the punch POST (before the row exists) → definitive:
+ *                      park in the visible "did not sync" list, never retry.
+ *   5xx / 429 (or a post-record error) → count attempts; park after MAX_ATTEMPTS
+ *                      so one poison punch can't head-of-line block the queue.
+ *   network / timeout → keep queued, stop draining, retry next trigger.
  *
  * Only the signed-in technician's punches are flushed: the backend attributes
  * punches to the JWT and 403s anyone else's, so on a shared phone another
@@ -18,8 +25,23 @@
 
 import * as FileSystem from "expo-file-system";
 
+import { ApiError } from "../../lib/api";
+import {
+  failureReason,
+  isAuthFailure,
+  isDefinitiveRejection,
+  MAX_ATTEMPTS,
+} from "../../lib/syncClassification";
 import { attendanceApi } from "../../lib/attendanceApi";
-import { loadQueue, pendingPunches, removePunches, updatePunch, type QueuedPunch } from "./queue";
+import {
+  bumpPunchAttempts,
+  loadQueue,
+  markPunchFailed,
+  pendingPunches,
+  removePunches,
+  updatePunch,
+  type QueuedPunch,
+} from "./queue";
 
 let syncing = false;
 
@@ -31,8 +53,32 @@ export async function syncNow(techId: string | null): Promise<void> {
       if (item.tech_id !== techId) continue; // another tech's — wait for their session
       try {
         await syncOne(item);
-      } catch {
-        // Leave it queued; the next trigger retries.
+      } catch (e) {
+        if (isAuthFailure(e)) break; // token dead; queue survives logout → re-login
+        // A definitive rejection of the punch POST, before the server row
+        // exists, will never succeed on replay — park it visibly (never a
+        // silent forever-retry). Once the punch IS recorded (server_event_id
+        // set) a later definitive error is a selfie-step issue, not the punch,
+        // so it falls through to the attempts path rather than parking a
+        // successfully-recorded punch as "did not sync".
+        if (isDefinitiveRejection(e) && !item.server_event_id) {
+          await markPunchFailed(item.client_id, failureReason(e));
+          continue; // a parked item must not block the ones behind it
+        }
+        // Server reachable but erroring (5xx/429, or a post-record hiccup):
+        // count it so a poison item eventually parks instead of blocking.
+        if (e instanceof ApiError) {
+          const attempts = await bumpPunchAttempts(item.client_id);
+          if (attempts >= MAX_ATTEMPTS) {
+            await markPunchFailed(
+              item.client_id,
+              `gave up after ${attempts} attempts (server ${e.status})`,
+            );
+            continue;
+          }
+          break; // transient — retry the whole queue next trigger, in order
+        }
+        break; // pure connectivity failure — never counts; stop and retry later
       }
     }
     await pruneSettled();
@@ -65,6 +111,24 @@ export async function pruneSettled(): Promise<void> {
     }
   }
   await removePunches(removable);
+}
+
+/**
+ * Permanently drop a failed punch the technician chose to discard, deleting its
+ * local selfie file too (same cleanup as `pruneSettled`). Unlike a settled
+ * punch, this one was NEVER accepted by the server — discarding it is a
+ * deliberate "give up on this record", so it must be user-initiated.
+ */
+export async function discardPunch(clientId: string): Promise<void> {
+  const item = (await loadQueue()).find((i) => i.client_id === clientId);
+  if (item?.selfie_uri) {
+    try {
+      await FileSystem.deleteAsync(item.selfie_uri, { idempotent: true });
+    } catch {
+      // File delete failed — the queue removal below still proceeds.
+    }
+  }
+  await removePunches([clientId]);
 }
 
 async function syncOne(item: QueuedPunch): Promise<void> {

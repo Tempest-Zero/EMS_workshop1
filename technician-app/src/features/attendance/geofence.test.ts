@@ -9,6 +9,7 @@ import * as Location from "expo-location";
 import { attendanceApi } from "../../lib/attendanceApi";
 import { notifyArrived, notifyLeaving } from "./attendanceNotifications";
 import { handleGeofenceEvent } from "./geofence";
+import { getLocation } from "./location";
 import { enqueuePresence } from "./presenceQueue";
 
 jest.mock("@react-native-async-storage/async-storage", () => {
@@ -59,9 +60,13 @@ const mockedToday = attendanceApi.today as jest.MockedFunction<typeof attendance
 const mockedEnqueue = enqueuePresence as jest.MockedFunction<typeof enqueuePresence>;
 const mockedArrived = notifyArrived as jest.MockedFunction<typeof notifyArrived>;
 const mockedLeaving = notifyLeaving as jest.MockedFunction<typeof notifyLeaving>;
+const mockedGetLocation = getLocation as jest.MockedFunction<typeof getLocation>;
 
 const ENTER = Location.GeofencingEventType.Enter;
 const EXIT = Location.GeofencingEventType.Exit;
+
+// The cached-fence key confirmCrossing reads (mirrors geofence.ts).
+const FENCE_CACHE_KEY = "attendance.geofence.cache.v1";
 
 async function signIn(id = "t1") {
   await AsyncStorage.setItem("fixflow_tech", JSON.stringify({ id }));
@@ -71,9 +76,30 @@ function today(clocked_in: boolean) {
   return { tech_id: "t1", clocked_in, last_in: null, last_out: null };
 }
 
+/** A fix ~`m` metres north of the fence centre (0.001 deg lat ≈ 111 m). */
+function fixAtMeters(m: number, accuracy_m = 10) {
+  return { lat: 24.86 + m / 111_190, lng: 67.0, accuracy_m, is_mock_location: false };
+}
+
+async function setFence(radius_m: number) {
+  await AsyncStorage.setItem(
+    FENCE_CACHE_KEY,
+    JSON.stringify({
+      name: "Workshop",
+      center_lat: 24.86,
+      center_lng: 67.0,
+      radius_m,
+      is_active: true,
+    }),
+  );
+}
+
 beforeEach(async () => {
   jest.clearAllMocks();
   await AsyncStorage.clear();
+  // A clean per-test baseline so a prior test's fix override never leaks
+  // (clearAllMocks resets calls, not implementations).
+  mockedGetLocation.mockResolvedValue(fixAtMeters(0));
 });
 
 it("ENTER while signed in & off-duty: logs arrival and prompts clock-in", async () => {
@@ -146,4 +172,103 @@ it("debounces a repeated identical crossing within the window", async () => {
 
   expect(mockedEnqueue).toHaveBeenCalledTimes(1);
   expect(mockedArrived).toHaveBeenCalledTimes(1);
+});
+
+// ── D5 crossing confirmation ──────────────────────────────────────────────
+it("ENTER confirmed by a fix inside the fence records confirmed:true", async () => {
+  await signIn();
+  mockedToday.mockResolvedValue(today(false));
+  await setFence(100);
+  mockedGetLocation.mockResolvedValue(fixAtMeters(0)); // dead centre → inside
+
+  await handleGeofenceEvent(ENTER);
+
+  expect(mockedEnqueue).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: "arrive", confirmed: true }),
+  );
+  expect(mockedArrived).toHaveBeenCalled();
+});
+
+it("a coarse fix can't judge the fence: unknown → records confirmed:null and still notifies", async () => {
+  await signIn();
+  mockedToday.mockResolvedValue(today(false));
+  await setFence(100);
+  mockedGetLocation.mockResolvedValue(fixAtMeters(0, 150)); // accuracy 150 > 100 ceiling
+
+  await handleGeofenceEvent(ENTER);
+
+  expect(mockedEnqueue).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: "arrive", confirmed: null }),
+  );
+  expect(mockedArrived).toHaveBeenCalled(); // unknown trusts the OS event
+});
+
+it("with no cached fence the crossing is unknown (confirmed:null) but still notifies", async () => {
+  await signIn();
+  mockedToday.mockResolvedValue(today(false));
+  // no setFence → nothing to judge against
+  mockedGetLocation.mockResolvedValue(fixAtMeters(0));
+
+  await handleGeofenceEvent(ENTER);
+
+  expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ confirmed: null }));
+  expect(mockedArrived).toHaveBeenCalled();
+});
+
+it("EXIT clearly outside (past the hysteresis band) records confirmed:true and prompts clock-out", async () => {
+  await signIn();
+  mockedToday.mockResolvedValue(today(true));
+  await setFence(100); // exit threshold = max(150, 140) = 150 m
+  mockedGetLocation.mockResolvedValue(fixAtMeters(200)); // 200 ≥ 150 → clearly out
+
+  await handleGeofenceEvent(EXIT);
+
+  expect(mockedEnqueue).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: "depart", confirmed: true }),
+  );
+  expect(mockedLeaving).toHaveBeenCalled();
+});
+
+it("EXIT inside the hysteresis band is contradicted after a dwell re-check: confirmed:false, no nag", async () => {
+  jest.useFakeTimers();
+  try {
+    await signIn();
+    mockedToday.mockResolvedValue(today(true));
+    await setFence(100); // threshold 150 m
+    mockedGetLocation.mockResolvedValue(fixAtMeters(120)); // past radius, inside band → flap
+
+    const p = handleGeofenceEvent(EXIT);
+    await jest.advanceTimersByTimeAsync(20_000); // the 20s dwell re-check
+    await p;
+
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "depart", confirmed: false }),
+    );
+    expect(mockedLeaving).not.toHaveBeenCalled(); // suppressed — flap noise dies
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it("dwell re-check: a second fix that clears the band confirms the EXIT and nags", async () => {
+  jest.useFakeTimers();
+  try {
+    await signIn();
+    mockedToday.mockResolvedValue(today(true));
+    await setFence(100);
+    mockedGetLocation
+      .mockResolvedValueOnce(fixAtMeters(120)) // first fix flaps (inside band)
+      .mockResolvedValueOnce(fixAtMeters(200)); // after dwell: clearly outside
+
+    const p = handleGeofenceEvent(EXIT);
+    await jest.advanceTimersByTimeAsync(20_000);
+    await p;
+
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "depart", confirmed: true }),
+    );
+    expect(mockedLeaving).toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
 });

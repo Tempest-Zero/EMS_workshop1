@@ -11,7 +11,7 @@ import { Login } from "@features/auth";
 import { Dashboard } from "@features/dashboard";
 import { JobsBoard, JobDetail } from "@features/jobs";
 import { Technicians, TechnicianDetail } from "@features/technicians";
-import { Attendance, AttendanceTechDetail } from "@features/attendance";
+import { Attendance, AttendanceTechDetail, AttendanceVariance } from "@features/attendance";
 import { Schedule } from "@features/schedule";
 import { Troubleshooting } from "@features/troubleshooting";
 import { Settings } from "@features/settings";
@@ -33,6 +33,7 @@ export default function App() {
           <Route path="jobs" element={<JobsBoard />} />
           <Route path="jobs/:id" element={<JobDetail />} />
           <Route path="attendance" element={<Attendance />} />
+          <Route path="attendance/variance" element={<AttendanceVariance />} />
           <Route path="attendance/:techId" element={<AttendanceTechDetail />} />
           <Route path="schedule" element={<Schedule />} />
           <Route path="troubleshooting" element={<Troubleshooting />} />

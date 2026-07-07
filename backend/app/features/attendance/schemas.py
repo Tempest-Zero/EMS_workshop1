@@ -84,6 +84,9 @@ class PunchItem(BaseModel):
     kind: PunchKind
     source: PunchSource
     server_time: datetime
+    # The analytical time the rollups bucket on (device_time when it's a sane
+    # offline capture, else server_time). server_time is kept for audit.
+    effective_time: datetime
     device_time: datetime | None = None
     drift_seconds: int | None = None
     lat: float | None = None
@@ -128,6 +131,10 @@ class PresenceRequest(BaseModel):
     is_mock_location: bool = False
     wifi_bssid: str | None = Field(default=None, max_length=64)
     wifi_ssid: str | None = Field(default=None, max_length=128)
+    # The phone's crossing confirmation (D5): True = a fresh fix agreed with the
+    # OS geofence event, False = contradicted (still logged as evidence), None =
+    # unconfirmable / pre-feature. Persisted as-is; never rejected.
+    confirmed: bool | None = None
 
 
 class PresenceResponse(BaseModel):
@@ -155,6 +162,7 @@ class PresenceItem(BaseModel):
     kind: PresenceKind
     source: str
     server_time: datetime
+    effective_time: datetime
     device_time: datetime | None = None
     drift_seconds: int | None = None
     lat: float | None = None
@@ -166,6 +174,8 @@ class PresenceItem(BaseModel):
     wifi_bssid: str | None = None
     wifi_ssid: str | None = None
     wifi_match: bool | None = None
+    # Crossing confirmation (D5): True/False/None — see the model.
+    confirmed: bool | None = None
     created_at: datetime
 
 
@@ -179,6 +189,59 @@ class ActiveGeofence(BaseModel):
     center_lng: float
     radius_m: int
     is_active: bool
+    # The on-duty ping cadence (minutes), server-tunable without an app release.
+    # The phone caches this and paces its sampling to it; the same value drives
+    # the server's missing-ping (2×) math, so client and server agree.
+    ping_interval_minutes: int
+
+
+# ── Mobile: on-duty pings (interval location samples while clocked in) ────────
+class PingRequest(BaseModel):
+    """One on-duty location sample. ``captured_at`` is the device clock at the
+    sample (the analytical axis — no drift is computed, an offline batch is
+    expected). Idempotent on ``client_id`` like a punch/crossing."""
+
+    client_id: UUID
+    tech_id: str = Field(..., min_length=1, max_length=64)
+    shop_id: str = Field(default=DEFAULT_SHOP_ID, max_length=64)
+    captured_at: datetime
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0)
+    is_mock_location: bool = False
+    wifi_bssid: str | None = Field(default=None, max_length=64)
+    wifi_ssid: str | None = Field(default=None, max_length=128)
+
+
+class PingBatch(BaseModel):
+    """Body for ``POST /api/attendance/pings`` — up to 100 samples per call. The
+    phone drains its queue in batches this size; over 100 is a 422."""
+
+    pings: list[PingRequest] = Field(..., max_length=100)
+
+
+class PingBatchResponse(BaseModel):
+    """``accepted`` = newly stored, ``deduped`` = already-seen client_ids skipped
+    (safe no-ops), ``rejected`` = captured_at outside the trust window — not
+    stored, and the client should still prune them (the batch is a success).
+    ``ping_interval_minutes`` echoes the server cadence so the phone can re-pace
+    without a separate fetch."""
+
+    accepted: int
+    deduped: int
+    rejected: int = 0
+    ping_interval_minutes: int
+
+
+class AwayInterval(BaseModel):
+    """A run within the clocked window where the tech's on-duty pings put them
+    OUTSIDE the fence (``outside``) or gave no usable data (``no_data``). The
+    manager-meaningful shape of the ping data — the raw per-ping list is never
+    exposed. Rendered neutrally on ``field`` days (offsite is the job there)."""
+
+    start: datetime  # naive shop-local
+    end: datetime
+    kind: Literal["outside", "no_data"]
 
 
 # ── Manager: board / grid / detail ───────────────────────────────────────────
@@ -199,6 +262,9 @@ class BoardRow(BaseModel):
     # The phone entered the workshop fence (a geofence `arrive` was logged) but
     # the tech never clocked in — the "forgot vs absent" signal at a glance.
     flagged_arrived_not_clocked_in: bool = False
+    # Clock-out before clock-in (or a clock-out with no clock-in). Worked
+    # minutes are clamped to 0; this surfaces the punch oddity to check.
+    flagged_order: bool = False
 
 
 class Board(BaseModel):
@@ -218,6 +284,7 @@ class GridCell(BaseModel):
     flagged_drift: bool = False
     flagged_no_location: bool = False
     flagged_no_selfie: bool = False
+    flagged_order: bool = False
 
 
 class GridRow(BaseModel):
@@ -246,6 +313,15 @@ class TechDay(BaseModel):
     # clocked in. The manager's evidence for adjudicating a missing punch.
     presence: list[PresenceItem] = []
     arrived_not_clocked_in: bool = False
+    flagged_order: bool = False
+    # On-duty ping breakdown over the clocked window (null when there's no closed
+    # window or no pings). The raw ping list is deliberately NOT exposed — the
+    # away intervals are the manager-meaningful shape.
+    inside_minutes: int | None = None
+    outside_minutes: int | None = None
+    no_data_minutes: int | None = None
+    coverage_pct: float | None = None
+    away_intervals: list[AwayInterval] = []
 
 
 class TechDays(BaseModel):
@@ -272,6 +348,7 @@ class PayrollDay(BaseModel):
     flagged_drift: bool = False
     flagged_no_location: bool = False
     flagged_no_selfie: bool = False
+    flagged_order: bool = False
 
 
 class PayrollExport(BaseModel):
@@ -290,6 +367,47 @@ class PayrollExportFile(BaseModel):
     row_count: int
     created_at: datetime
     download_url: str
+
+
+# ── Manager: variance report (system evidence vs manual punches) ─────────────
+class VarianceRow(BaseModel):
+    """One tech-day: the system's evidence (geofence crossings; pings from
+    Step 7) lined up against the manual punches, with the deltas a manager
+    reviews. All times/deltas are on ``effective_time`` (so sync latency never
+    shows up as attendance variance); a delta is null when either side is
+    missing. Ping fields are null until Step 7. Flags are read-time annotations
+    that never block."""
+
+    tech_id: str
+    date: date
+    status: DayStatus
+    # Arrival: first geofence `arrive` vs first clock-in (naive shop-local).
+    first_arrive: datetime | None = None
+    first_clock_in: datetime | None = None
+    # clock_in − arrive, minutes. +ve = clocked in after the phone arrived.
+    delta_in_minutes: int | None = None
+    # Departure: last geofence `depart` vs last clock-out.
+    last_depart: datetime | None = None
+    last_clock_out: datetime | None = None
+    # depart − clock_out, minutes. +ve = phone left after clocking out.
+    delta_out_minutes: int | None = None
+    clocked_minutes: int | None = None
+    # Ping summary — null until Step 7 (on-duty pings).
+    inside_minutes: int | None = None
+    outside_minutes: int | None = None
+    no_data_minutes: int | None = None
+    coverage_pct: float | None = None
+    away_intervals: list[AwayInterval] = []
+    flagged_arrived_not_clocked_in: bool = False
+    flagged_order: bool = False
+    flagged_away: bool = False
+
+
+class VarianceReport(BaseModel):
+    shop_id: str
+    from_date: date
+    to_date: date
+    rows: list[VarianceRow]
 
 
 # ── Selfie evidence reconciliation ───────────────────────────────────────────

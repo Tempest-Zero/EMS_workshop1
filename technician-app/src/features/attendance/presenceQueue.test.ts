@@ -41,6 +41,7 @@ const base: QueuedPresence = {
   is_mock_location: false,
   wifi_bssid: null,
   wifi_ssid: null,
+  confirmed: null,
   done: false,
   created_at: "2026-06-03T04:00:00.000Z",
 };

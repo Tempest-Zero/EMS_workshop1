@@ -172,6 +172,44 @@ async def test_punch_is_idempotent_on_client_id(
     assert second.json()["event_id"] == first.json()["event_id"]
 
 
+async def test_offline_punch_effective_time_tracks_device_capture(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    # A punch captured offline 3h ago and synced now must count from the capture
+    # moment: effective_time == device_time (not server_time), so a punch synced
+    # overnight lands on the day it happened. The clock gap is still flagged.
+    captured = datetime.now(UTC) - timedelta(hours=3)
+    # Z-suffixed (a "+00:00" offset would decode as a space in the query string).
+    captured_z = captured.strftime("%Y-%m-%dT%H:%M:%SZ")
+    client_id = str(uuid4())
+    r = await app_client.post(
+        "/api/attendance/punches",
+        json={
+            "client_id": client_id,
+            "tech_id": "t9",
+            "kind": "clock_in",
+            "device_time": captured_z,
+            "is_mock_location": False,
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["drift_flagged"] is True  # ~3h drift > 120s
+
+    start = (captured - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = (datetime.now(UTC) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    got = await app_client.get(
+        f"/api/attendance/punches?tech_id=t9&start={start}&end={end}", headers=auth_headers
+    )
+    assert got.status_code == 200, got.text
+    items = [i for i in got.json() if i["client_id"] == client_id]
+    assert len(items) == 1
+    eff = datetime.fromisoformat(items[0]["effective_time"])
+    srv = datetime.fromisoformat(items[0]["server_time"])
+    assert abs((eff - captured).total_seconds()) < 2  # effective == capture moment
+    assert (srv - eff).total_seconds() > 3 * 3600 - 120  # server_time is the sync moment
+
+
 async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers: Headers) -> None:
     g = await app_client.put(
         "/api/attendance/geofences",
@@ -208,6 +246,39 @@ async def test_geofence_and_wifi_flagging(app_client: AsyncClient, auth_headers:
     body = r.json()
     assert body["inside_geofence"] is False
     assert body["wifi_match"] is True
+
+
+async def test_pings_batch_is_idempotent(app_client: AsyncClient, auth_headers: Headers) -> None:
+    # A batch re-sent (overlapping sync / retry) stores nothing new: the
+    # ON CONFLICT(client_id) DO NOTHING dedup makes the second call a no-op.
+    cid = str(uuid4())
+    # Keep captured_at inside the 48h ping trust window (_ping_in_window): a
+    # pinned literal ages out of the window and the batch is rejected (accepted=0)
+    # as the wall clock advances, so derive it from now.
+    captured = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    batch = {
+        "pings": [
+            {
+                "client_id": cid,
+                "tech_id": "t7",
+                "captured_at": captured,
+                "lat": 24.86,
+                "lng": 67.0,
+                "accuracy_m": 10.0,
+                "is_mock_location": False,
+            }
+        ]
+    }
+    first = await app_client.post("/api/attendance/pings", json=batch, headers=auth_headers)
+    assert first.status_code == 201, first.text
+    assert first.json()["accepted"] == 1
+    assert first.json()["deduped"] == 0
+    assert first.json()["ping_interval_minutes"] == 5
+
+    second = await app_client.post("/api/attendance/pings", json=batch, headers=auth_headers)
+    assert second.status_code == 201, second.text
+    assert second.json()["accepted"] == 0  # already stored
+    assert second.json()["deduped"] == 1
 
 
 async def test_payroll_export_returns_rows(app_client: AsyncClient, auth_headers: Headers) -> None:

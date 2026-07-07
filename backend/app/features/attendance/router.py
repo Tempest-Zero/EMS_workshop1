@@ -36,6 +36,8 @@ from app.features.attendance.schemas import (
     Grid,
     PayrollExport,
     PayrollExportFile,
+    PingBatch,
+    PingBatchResponse,
     PresenceRequest,
     PresenceResponse,
     PunchItem,
@@ -47,6 +49,7 @@ from app.features.attendance.schemas import (
     ShiftUpdate,
     TechDays,
     TodayStatus,
+    VarianceReport,
 )
 from app.features.attendance.service import (
     AttendanceNotFoundError,
@@ -74,6 +77,12 @@ def get_service(session: SessionDep, storage: StorageDep) -> AttendanceService:
         drift_flag_seconds=settings.attendance_drift_flag_seconds,
         location_accuracy_ceiling_m=settings.attendance_location_accuracy_ceiling_m,
         selfie_grace_hours=settings.attendance_selfie_grace_hours,
+        device_time_future_tolerance_seconds=(
+            settings.attendance_device_time_future_tolerance_seconds
+        ),
+        device_time_backdate_ceiling_hours=settings.attendance_device_time_backdate_ceiling_hours,
+        ping_interval_minutes=settings.attendance_ping_interval_minutes,
+        ping_backdate_ceiling_hours=settings.attendance_ping_backdate_ceiling_hours,
     )
 
 
@@ -130,6 +139,28 @@ async def record_presence(
     # tied to a specific tech and must not be writable for someone else.
     _require_self_or_manager(principal, body.tech_id)
     response = await service.record_presence(body)
+    await session.commit()
+    return response
+
+
+@router.post(
+    "/pings",
+    response_model=PingBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a batch of on-duty location pings (≤100; idempotent on client_id)",
+)
+async def record_pings(
+    body: PingBatch,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> PingBatchResponse:
+    # A tech's phone sends only its OWN pings; a manager may send for any tech.
+    # Guard every distinct tech_id in the batch (same self-or-manager rule as a
+    # punch/crossing). Over-100 batches are rejected by the schema (422).
+    for tech_id in {p.tech_id for p in body.pings}:
+        _require_self_or_manager(principal, tech_id)
+    response = await service.record_pings(body)
     await session.commit()
     return response
 
@@ -262,6 +293,26 @@ async def payroll(
     end_date = end or datetime.now(UTC).date()
     start_date = start or (end_date - timedelta(days=6))
     return await service.payroll(
+        shop_id=shop_id, from_date=start_date, to_date=end_date, tech_ids=tech_ids
+    )
+
+
+@router.get(
+    "/variance",
+    response_model=VarianceReport,
+    dependencies=[Depends(require_manager)],
+    summary="System-vs-manual attendance variance per tech/day (defaults to the last 7 days)",
+)
+async def variance(
+    service: ServiceDep,
+    start: Annotated[date | None, Query()] = None,
+    end: Annotated[date | None, Query()] = None,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+    tech_ids: TechIds = None,
+) -> VarianceReport:
+    end_date = end or datetime.now(UTC).date()
+    start_date = start or (end_date - timedelta(days=6))
+    return await service.variance(
         shop_id=shop_id, from_date=start_date, to_date=end_date, tech_ids=tech_ids
     )
 

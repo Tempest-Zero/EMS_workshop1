@@ -81,6 +81,11 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
           title="Proof you were here"
           sub="Your arrival is logged, so “I forgot to punch” is never your word against the office."
         />
+        <Point
+          icon="battery-charging"
+          title="Allow battery exception"
+          sub="So the phone doesn’t stop reminders to save battery while you work. بیٹری کی اجازت دیں"
+        />
       </View>
 
       <Pressable

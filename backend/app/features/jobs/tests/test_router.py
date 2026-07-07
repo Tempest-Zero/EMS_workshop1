@@ -192,6 +192,16 @@ async def test_assign_rejects_missing_tech(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
 
+async def test_assign_is_manager_only(client: AsyncClient) -> None:
+    # Assignment is a manager prerogative — a technician's token is refused (403).
+    # The fixture installs a manager principal; override it with a tech here.
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t2", role="tech", name="Tech"
+    )
+    resp = await client.post(f"/api/jobs/{uuid4()}/assign", json={"tech_id": "t3"})
+    assert resp.status_code == 403, resp.text
+
+
 async def test_claim_returns_200_and_commits(
     client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
 ) -> None:

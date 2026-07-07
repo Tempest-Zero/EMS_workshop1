@@ -3,8 +3,8 @@
  * unit-test by mocking `api`, `FileSystem`, and `compressVideo`.
  *
  *   1. Compress (videos only).
- *   2. POST  /api/jobs/{id}/media           → backend mints a signed Supabase URL.
- *   3. PUT  signed URL                       → bytes go DIRECT to Storage
+ *   2. POST  /api/jobs/{id}/media           → backend mints a signed R2 URL.
+ *   3. PUT  signed URL                       → bytes go DIRECT to R2 storage
  *                                              (FastAPI never sees them).
  *   4. POST /api/jobs/{id}/media/{m}/complete → backend flips status to uploaded
  *                                               and returns a signed playback URL.

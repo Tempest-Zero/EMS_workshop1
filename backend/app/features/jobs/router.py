@@ -192,6 +192,7 @@ async def transition(
     "/{job_id}/assign",
     response_model=JobDetail,
     summary="Assign a job to a specific technician (manager)",
+    dependencies=[Depends(require_manager)],
 )
 async def assign(
     job_id: UUID,

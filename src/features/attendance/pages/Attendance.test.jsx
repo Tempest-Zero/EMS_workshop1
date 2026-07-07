@@ -40,6 +40,7 @@ vi.mock("@features/attendance/hooks/useAttendanceData", () => ({
           flagged_mock: false,
           flagged_outside: true,
           flagged_drift: false,
+          flagged_order: true,
         },
       ],
     },
@@ -80,5 +81,15 @@ describe("<Attendance />", () => {
     // in an emerald span — assert that count is shown for the first tech.
     expect(screen.getByText("3", { selector: ".text-emerald-600" })).toBeInTheDocument();
     expect(screen.getByText("Jun 2026")).toBeInTheDocument();
+  });
+
+  it("shows the clock-order flag icon when a day has out-before-in punches", () => {
+    render(
+      <MemoryRouter>
+        <Attendance />
+      </MemoryRouter>
+    );
+    // t2's board row carries flagged_order — the amber swap icon surfaces it.
+    expect(screen.getByLabelText("Clock-out before clock-in — check punches")).toBeInTheDocument();
   });
 });

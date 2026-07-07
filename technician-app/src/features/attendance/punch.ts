@@ -9,6 +9,7 @@ import * as Crypto from "expo-crypto";
 
 import { enqueue, type QueuedPunch } from "./queue";
 import { getLocation } from "./location";
+import { startDutyPings, stopDutyPings } from "./pingTracker";
 import { captureSelfie } from "./selfie";
 import { syncNow } from "./sync";
 import { getWifi } from "./wifi";
@@ -48,6 +49,11 @@ export async function punch(input: PunchInput): Promise<QueuedPunch> {
   };
 
   await enqueue(item); // local write = instant success
+  // On-duty ping tracking follows the clock: start interval sampling on
+  // clock-in; on clock-out AWAIT the stop first — the privacy hard-stop must
+  // take effect before anything else (even the sync) proceeds.
+  if (input.kind === "clock_in") void startDutyPings(input.techId);
+  else await stopDutyPings(input.techId);
   void syncNow(input.techId); // fire-and-forget background sync
   return item;
 }

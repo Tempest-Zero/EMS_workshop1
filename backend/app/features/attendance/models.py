@@ -82,6 +82,10 @@ class AttendanceEvent(Base):
         UniqueConstraint("client_id", name="uq_attendance_event_client_id"),
         Index("ix_attendance_event_tech_time", "tech_id", "server_time"),
         Index("ix_attendance_event_shop_time", "shop_id", "server_time"),
+        # The analytical axis (D8) — every rollup reads effective_time, so the
+        # per-tech day/variance queries want an index on it too. The server_time
+        # indexes above stay: receipt-side audit queries still key on receipt.
+        Index("ix_attendance_event_tech_effective", "tech_id", "effective_time"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -103,6 +107,12 @@ class AttendanceEvent(Base):
     )
     device_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     drift_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # WHEN (analytical) — the D8 "when it actually happened" axis: device_time
+    # when it's a sane offline capture (inside the config window around receipt),
+    # else server_time. Day bucketing, worked-minutes, board/grid/payroll and the
+    # variance report all read THIS, so a punch captured offline counts on the day
+    # it happened, not the day it synced. The service computes it at ingestion.
+    effective_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # WHERE — captured + flagged, never used to block.
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -156,6 +166,7 @@ class AttendancePresenceEvent(Base):
         UniqueConstraint("client_id", name="uq_attendance_presence_client_id"),
         Index("ix_attendance_presence_tech_time", "tech_id", "server_time"),
         Index("ix_attendance_presence_shop_time", "shop_id", "server_time"),
+        Index("ix_attendance_presence_tech_effective", "tech_id", "effective_time"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -179,8 +190,73 @@ class AttendancePresenceEvent(Base):
     )
     device_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     drift_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # WHEN (analytical) — same D8 axis as a punch (see AttendanceEvent), so a
+    # crossing batched offline buckets onto the day it happened, not the sync day.
+    effective_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # WHERE — the geofence verdict, captured + flagged exactly like a punch.
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    inside_geofence: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_mock_location: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    wifi_bssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    wifi_ssid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    wifi_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Crossing confirmation (D5, set by the phone from Step 3): the OS geofence
+    # event was cross-checked against a fresh fix. True = a fresh fix agreed,
+    # False = it contradicted (kept as evidence, but the phone suppresses the
+    # notification to kill flap noise), NULL = pre-feature / unconfirmable.
+    confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class AttendancePing(Base):
+    """One on-duty location ping. The phone samples its location on an interval
+    *only while clocked in* (a privacy hard-stop, not continuous tracking) so a
+    manager can later see whether a tech stayed on-site through the shift.
+
+    ``captured_at`` (the device clock at the sample) is the analytical time axis:
+    a batch synced hours later must still land each ping on the minute it was
+    taken, or a day would collapse onto the sync instant. ``received_at`` records
+    when the server got it (audit). Deliberately **no drift column** — every
+    offline batch would false-flag it; the device clock is trusted for the axis
+    and corroborated by the punches/crossings whose own timestamps agree.
+
+    Append-only and idempotent on ``client_id`` (batches overlap / retry). A
+    dropped ping degrades to a "no data" gap server-side — it can never fabricate
+    presence — so the phone queue may cap+drop these (unlike punches/crossings).
+    Retention: ~240k rows/yr at 6 techs × 5-min pings; a purge job is future work,
+    not built here."""
+
+    __tablename__ = "attendance_ping"
+    __table_args__ = (
+        UniqueConstraint("client_id", name="uq_attendance_ping_client_id"),
+        Index("ix_attendance_ping_tech_time", "tech_id", "captured_at"),
+        Index("ix_attendance_ping_shop_time", "shop_id", "captured_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # WHEN — captured_at is the device clock (analytical axis); received_at is the
+    # server's receipt time (audit). No drift: an offline batch is expected.
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    # WHERE — the same fence verdict a punch/crossing carries, computed in-process.
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)

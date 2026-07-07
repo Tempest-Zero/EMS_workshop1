@@ -9,6 +9,7 @@ import {
   Plus,
   ShieldAlert,
   Wifi,
+  WifiOff,
 } from "lucide-react";
 import { Button, Card, EmptyState, Field, SectionHeader, inputClass } from "@shared/ui/primitives";
 import Avatar from "@shared/ui/Avatar";
@@ -132,6 +133,55 @@ function PresenceTimeline({ presence }) {
   );
 }
 
+function fmtDuration(start, end) {
+  const mins = Math.max(0, Math.round((new Date(end) - new Date(start)) / 60000));
+  return `${mins}m`;
+}
+
+/** The day's on-duty ping coverage as away/no-data intervals. Outside time reads
+ * amber (a concern) EXCEPT on `field` days — offsite IS the job there, so it's
+ * neutral; missing coverage is always neutral (a gap, not an accusation). */
+function AwayStrip({ intervals, status }) {
+  if (!intervals || intervals.length === 0) return null;
+  const field = status === "field";
+  const hasNoData = intervals.some((iv) => iv.kind === "no_data");
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+        On-duty location
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {intervals.map((iv, i) => {
+          const noData = iv.kind === "no_data";
+          const amber = iv.kind === "outside" && !field;
+          const Icon = noData ? WifiOff : MapPinOff;
+          const label = noData ? "No location data" : field ? "Off-site" : "Outside fence";
+          return (
+            <div
+              key={`${iv.start}-${i}`}
+              className={`flex flex-wrap items-center gap-2 text-xs ${amber ? "text-amber-700" : "text-slate-500"}`}
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0" />
+              <span className="font-semibold">
+                {fmtClock(iv.start)} → {fmtClock(iv.end)}
+              </span>
+              <span>
+                · {fmtDuration(iv.start, iv.end)} · {label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {hasNoData && (
+        <p className="mt-2 border-t border-slate-200 pt-2 text-[11px] leading-relaxed text-slate-400">
+          <span className="font-semibold text-slate-500">No location data</span> means the phone
+          stopped reporting (battery saver, reboot, or no signal) — not evidence the tech was away.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ArrivedNotClockedInBanner() {
   return (
     <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-xs font-bold text-amber-800">
@@ -139,6 +189,17 @@ function ArrivedNotClockedInBanner() {
       <span>
         The phone reached the workshop but no clock-in was recorded — evidence the tech was on-site
         (a forgotten punch, not an absence).
+      </span>
+    </div>
+  );
+}
+
+function OrderViolationBanner() {
+  return (
+    <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-xs font-bold text-amber-800">
+      <AlertTriangle className="h-4 w-4 shrink-0" />
+      <span>
+        Clock-out before clock-in — check punches. Worked minutes were clamped to zero for this day.
       </span>
     </div>
   );
@@ -334,6 +395,7 @@ export default function AttendanceTechDetail() {
             action={<PresenceBadge status={day.status} />}
           />
           {day.arrived_not_clocked_in ? <ArrivedNotClockedInBanner /> : null}
+          {day.flagged_order ? <OrderViolationBanner /> : null}
           {day.punches.length > 0 ? (
             <div className="mt-3 space-y-3">
               {day.punches.map((p) => (
@@ -342,6 +404,7 @@ export default function AttendanceTechDetail() {
             </div>
           ) : null}
           <PresenceTimeline presence={day.presence} />
+          <AwayStrip intervals={day.away_intervals} status={day.status} />
         </Card>
       ))}
     </div>

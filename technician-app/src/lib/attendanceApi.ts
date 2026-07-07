@@ -106,6 +106,8 @@ export interface PresenceRequest {
   is_mock_location?: boolean;
   wifi_bssid?: string | null;
   wifi_ssid?: string | null;
+  // Crossing confirmation (D5): true/false/null. Backend persists it verbatim.
+  confirmed?: boolean | null;
 }
 
 export interface PresenceResponse {
@@ -125,6 +127,31 @@ export interface ActiveGeofence {
   center_lng: number;
   radius_m: number;
   is_active: boolean;
+  // The on-duty ping cadence (minutes) the phone paces its sampling to.
+  ping_interval_minutes: number;
+}
+
+// ── On-duty pings (interval location samples while clocked in) ────────────────
+export interface PingRequest {
+  client_id: string;
+  tech_id: string;
+  shop_id?: string;
+  captured_at: string; // ISO — the device clock at the sample (the analytical axis)
+  lat?: number | null;
+  lng?: number | null;
+  accuracy_m?: number | null;
+  is_mock_location?: boolean;
+  wifi_bssid?: string | null;
+  wifi_ssid?: string | null;
+}
+
+export interface PingBatchResponse {
+  accepted: number;
+  deduped: number;
+  // Outside the server's captured_at trust window — not stored. Still a
+  // success: the queue prunes these (retrying can never make them fresh).
+  rejected?: number;
+  ping_interval_minutes: number;
 }
 
 const q = (v: string) => encodeURIComponent(v);
@@ -149,6 +176,14 @@ export const attendanceApi = {
     request<PresenceResponse>("/api/attendance/presence", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+
+  // A batch of on-duty pings (≤100). The server dedups on client_id, so a
+  // re-sent (overlapping) batch is a safe no-op.
+  recordPings: (pings: PingRequest[]) =>
+    request<PingBatchResponse>("/api/attendance/pings", {
+      method: "POST",
+      body: JSON.stringify({ pings }),
     }),
 
   // Readable by any signed-in tech (not manager-gated) so the phone can monitor.

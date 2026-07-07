@@ -20,9 +20,12 @@ from app.features.attendance.schemas import (
     Board,
     PayrollDay,
     PayrollExport,
+    PingBatchResponse,
     PresenceResponse,
     PunchResponse,
     TodayStatus,
+    VarianceReport,
+    VarianceRow,
 )
 from app.features.attendance.service import (
     AttendanceNotFoundError,
@@ -109,6 +112,51 @@ async def test_post_presence_returns_201_and_commits(
     fake_session.commit.assert_awaited()
 
 
+async def test_post_pings_returns_201_for_self(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.record_pings.return_value = PingBatchResponse(
+        accepted=1, deduped=0, ping_interval_minutes=5
+    )
+    resp = await client.post(
+        "/api/attendance/pings",
+        json={
+            "pings": [
+                {"client_id": str(uuid4()), "tech_id": "t1", "captured_at": "2026-06-03T04:00:00Z"}
+            ]
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["accepted"] == 1
+    assert resp.json()["rejected"] == 0  # trust-window field rides on every response
+    fake_session.commit.assert_awaited()
+
+
+async def test_pings_reject_cross_tech(client: AsyncClient) -> None:
+    # A tech may only send their OWN pings; a batch carrying another tech_id → 403.
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Imran"
+    )
+    resp = await client.post(
+        "/api/attendance/pings",
+        json={
+            "pings": [
+                {"client_id": str(uuid4()), "tech_id": "t9", "captured_at": "2026-06-03T04:00:00Z"}
+            ]
+        },
+    )
+    assert resp.status_code == 403
+
+
+async def test_pings_reject_batch_over_100(client: AsyncClient) -> None:
+    pings = [
+        {"client_id": str(uuid4()), "tech_id": "t1", "captured_at": "2026-06-03T04:00:00Z"}
+        for _ in range(101)
+    ]
+    resp = await client.post("/api/attendance/pings", json={"pings": pings})
+    assert resp.status_code == 422
+
+
 async def test_post_presence_rejects_invalid_kind(client: AsyncClient) -> None:
     resp = await client.post(
         "/api/attendance/presence",
@@ -136,11 +184,17 @@ async def test_active_geofence_readable_by_tech(
         tech_id="t5", role="tech", name="Imran"
     )
     fake_service.active_geofence.return_value = ActiveGeofence(
-        name="Workshop", center_lat=24.86, center_lng=67.0, radius_m=80, is_active=True
+        name="Workshop",
+        center_lat=24.86,
+        center_lng=67.0,
+        radius_m=80,
+        is_active=True,
+        ping_interval_minutes=5,
     )
     resp = await client.get("/api/attendance/geofence/active")
     assert resp.status_code == 200
     assert resp.json()["radius_m"] == 80
+    assert resp.json()["ping_interval_minutes"] == 5
 
 
 async def test_post_punch_rejects_invalid_kind(client: AsyncClient) -> None:
@@ -312,9 +366,24 @@ async def test_manager_endpoint_rejects_technician(client: AsyncClient) -> None:
         "/api/attendance/payroll/exports",
         "/api/attendance/grid?month=2026-06",
         "/api/attendance/selfie-gaps",
+        "/api/attendance/variance?start=2026-06-02&end=2026-06-09",
     ):
         resp = await client.get(path)
         assert resp.status_code == 403, path
+
+
+async def test_variance_returns_200_for_manager(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.variance.return_value = VarianceReport(
+        shop_id="default",
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 7),
+        rows=[VarianceRow(tech_id="t1", date=date(2026, 6, 3), status="present")],
+    )
+    resp = await client.get("/api/attendance/variance")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rows"][0]["tech_id"] == "t1"
 
 
 async def test_selfie_gaps_returns_200_for_manager(

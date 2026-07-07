@@ -2,8 +2,9 @@
  * On-device video compression.
  *
  * Why on-device (not server-side): mobile data in Pakistan is slow and
- * metered, Supabase free tier rejects files > 50 MB, and the compressed
- * 720p clip is plenty to see whether an appliance is running correctly.
+ * metered, the backend rejects oversized uploads at finalize (see
+ * `r2_max_upload_bytes`), and the compressed 720p clip is plenty to see
+ * whether an appliance is running correctly.
  * Targets come from `config.compress` so we can dial them up on a paid tier
  * without touching this file.
  *

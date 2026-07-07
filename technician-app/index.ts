@@ -1,9 +1,10 @@
 import { registerRootComponent } from "expo";
 
 import App from "./App";
-// Side-effect import: registers the background geofence TaskManager task at JS
-// load, BEFORE render, so it's defined even when the OS spins up a headless
-// context to deliver a geofence crossing while the app is closed.
+// Side-effect imports: register the background TaskManager tasks at JS load,
+// BEFORE render, so they're defined even when the OS spins up a headless context
+// (a geofence crossing, or an on-duty location ping) while the app is closed.
 import "./src/features/attendance/geofence";
+import "./src/features/attendance/pingTracker";
 
 registerRootComponent(App);

@@ -28,9 +28,16 @@ export interface QueuedPresence {
   is_mock_location: boolean;
   wifi_bssid: string | null;
   wifi_ssid: string | null;
+  // Crossing confirmation (D5): true = a fresh fix agreed with the OS event,
+  // false = it contradicted (kept as evidence), null = unconfirmable.
+  confirmed: boolean | null;
   // ── sync state ──
   done: boolean;
   created_at: string;
+  // ── failure state (mirrors the punch queue / jobs outbox) ──
+  attempts?: number;
+  failed_reason?: string;
+  failed_at?: string;
 }
 
 const KEY = "attendance.presence.queue.v1";
@@ -79,5 +86,49 @@ export async function removePresence(clientIds: string[]): Promise<void> {
 }
 
 export async function pendingPresence(): Promise<QueuedPresence[]> {
-  return (await loadPresenceQueue()).filter((i) => !i.done);
+  return (await loadPresenceQueue()).filter((i) => !i.done && i.failed_reason === undefined);
+}
+
+/** Crossings parked in the visible "did not sync" list. */
+export async function failedPresence(): Promise<QueuedPresence[]> {
+  return (await loadPresenceQueue()).filter((i) => i.failed_reason !== undefined && !i.done);
+}
+
+export async function markPresenceFailed(clientId: string, reason: string): Promise<void> {
+  await mutate((items) =>
+    items.map((i) =>
+      i.client_id === clientId
+        ? { ...i, failed_reason: reason, failed_at: new Date().toISOString() }
+        : i,
+    ),
+  );
+}
+
+/** Bump the server-error attempt counter and return the new total. */
+export async function bumpPresenceAttempts(clientId: string): Promise<number> {
+  let next = 0;
+  await mutate((items) =>
+    items.map((i) => {
+      if (i.client_id !== clientId) return i;
+      next = (i.attempts ?? 0) + 1;
+      return { ...i, attempts: next };
+    }),
+  );
+  return next;
+}
+
+/** Clear the failed state so the next sync retries the crossing. */
+export async function retryPresence(clientId: string): Promise<void> {
+  await mutate((items) =>
+    items.map((i) =>
+      i.client_id === clientId
+        ? { ...i, failed_reason: undefined, failed_at: undefined, attempts: 0 }
+        : i,
+    ),
+  );
+}
+
+/** Permanently drop a discarded crossing (no local files to clean, unlike a punch). */
+export async function discardPresence(clientId: string): Promise<void> {
+  await removePresence([clientId]);
 }

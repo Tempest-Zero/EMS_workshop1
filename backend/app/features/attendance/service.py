@@ -26,12 +26,17 @@ from app.features.attendance.derive import (
     DEFAULT_SHIFT,
     DEFAULT_TIMEZONE,
     LocalPunch,
+    PingSample,
     ShiftSpec,
     classify_day,
+    duty_intervals,
+    duty_summary,
     geofence_flags,
 )
 from app.features.attendance.models import (
     AttendanceEvent,
+    AttendanceGeofence,
+    AttendancePing,
     AttendancePresenceEvent,
     AttendanceShift,
     PayrollExportRecord,
@@ -42,6 +47,7 @@ from app.features.attendance.schemas import (
     AdjustmentItem,
     AdjustmentRequest,
     AdjustmentResponse,
+    AwayInterval,
     Board,
     BoardRow,
     Geofence,
@@ -52,6 +58,9 @@ from app.features.attendance.schemas import (
     PayrollDay,
     PayrollExport,
     PayrollExportFile,
+    PingBatch,
+    PingBatchResponse,
+    PingRequest,
     PresenceItem,
     PresenceRequest,
     PresenceResponse,
@@ -65,6 +74,8 @@ from app.features.attendance.schemas import (
     TechDay,
     TechDays,
     TodayStatus,
+    VarianceReport,
+    VarianceRow,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +84,19 @@ DEFAULT_MAX_SELFIE_BYTES = 5 * 1024 * 1024
 DEFAULT_DRIFT_FLAG_SECONDS = 120
 DEFAULT_ACCURACY_CEILING_M = 200.0
 DEFAULT_SELFIE_GRACE_HOURS = 24
+# D8 device-clock trust window (see _effective_time). Defaults mirror
+# core.config; the migration 0018 backfill hard-codes the same literals.
+DEFAULT_DEVICE_TIME_FUTURE_TOLERANCE_SECONDS = 120
+DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS = 24
+# On-duty ping cadence (minutes). Surfaced on ActiveGeofence so the phone paces
+# to it; the same value drives the server's missing-ping (2×) math.
+DEFAULT_PING_INTERVAL_MINUTES = 5
+# Ping captured_at trust window (see _ping_in_window). Looser than the punches'
+# 24h D8 ceiling: the phone queues ≈3.5 days of pings offline. Out-of-window
+# pings are REJECTED (never re-bucketed) — mirrors core.config.
+DEFAULT_PING_BACKDATE_CEILING_HOURS = 48
+# Outside-fence minutes at or above this (on a non-field day) raise the away flag.
+AWAY_FLAG_MINUTES = 30
 # How far back the selfie-gaps reconciliation looks. Bounds the list so punches
 # from before the selfie-evidence policy don't surface forever.
 SELFIE_GAP_LOOKBACK_DAYS = 14
@@ -137,6 +161,7 @@ def payroll_csv(export: PayrollExport, tech_names: dict[str, str] | None = None)
             "flag_clock_drift",
             "flag_no_location",
             "flag_no_selfie",
+            "flag_order",
         ]
     )
     for row in export.rows:
@@ -155,6 +180,7 @@ def payroll_csv(export: PayrollExport, tech_names: dict[str, str] | None = None)
                 int(row.flagged_drift),
                 int(row.flagged_no_location),
                 int(row.flagged_no_selfie),
+                int(row.flagged_order),
             ]
         )
     return buf.getvalue()
@@ -170,6 +196,10 @@ class AttendanceService:
         drift_flag_seconds: int = DEFAULT_DRIFT_FLAG_SECONDS,
         location_accuracy_ceiling_m: float = DEFAULT_ACCURACY_CEILING_M,
         selfie_grace_hours: int = DEFAULT_SELFIE_GRACE_HOURS,
+        device_time_future_tolerance_seconds: int = DEFAULT_DEVICE_TIME_FUTURE_TOLERANCE_SECONDS,
+        device_time_backdate_ceiling_hours: int = DEFAULT_DEVICE_TIME_BACKDATE_CEILING_HOURS,
+        ping_interval_minutes: int = DEFAULT_PING_INTERVAL_MINUTES,
+        ping_backdate_ceiling_hours: int = DEFAULT_PING_BACKDATE_CEILING_HOURS,
     ) -> None:
         self._repo = repo
         self._storage = storage
@@ -177,6 +207,10 @@ class AttendanceService:
         self._drift_flag_seconds = drift_flag_seconds
         self._accuracy_ceiling_m = location_accuracy_ceiling_m
         self._selfie_grace_hours = selfie_grace_hours
+        self._device_time_future_tolerance_seconds = device_time_future_tolerance_seconds
+        self._device_time_backdate_ceiling_hours = device_time_backdate_ceiling_hours
+        self._ping_interval_minutes = ping_interval_minutes
+        self._ping_backdate_ceiling_hours = ping_backdate_ceiling_hours
 
     # ── Commands ─────────────────────────────────────────────────────────
     async def record_punch(self, body: PunchRequest) -> PunchResponse:
@@ -193,6 +227,7 @@ class AttendanceService:
 
         server_now = datetime.now(UTC)
         drift = _compute_drift(server_now, body.device_time)
+        effective = self._effective(body.device_time, server_now)
 
         inside, distance, wifi_match = await self._evaluate_geofence(
             shop_id=body.shop_id,
@@ -216,6 +251,7 @@ class AttendanceService:
                 source="mobile",
                 server_time=server_now,
                 device_time=body.device_time,
+                effective_time=effective,
                 drift_seconds=drift,
                 lat=body.lat,
                 lng=body.lng,
@@ -269,6 +305,7 @@ class AttendanceService:
 
         server_now = datetime.now(UTC)
         drift = _compute_drift(server_now, body.device_time)
+        effective = self._effective(body.device_time, server_now)
         inside, distance, wifi_match = await self._evaluate_geofence(
             shop_id=body.shop_id,
             lat=body.lat,
@@ -284,6 +321,7 @@ class AttendanceService:
                 tech_id=body.tech_id,
                 kind=body.kind,
                 device_time=body.device_time,
+                effective_time=effective,
                 drift_seconds=drift,
                 lat=body.lat,
                 lng=body.lng,
@@ -294,6 +332,7 @@ class AttendanceService:
                 wifi_bssid=body.wifi_bssid,
                 wifi_ssid=body.wifi_ssid,
                 wifi_match=wifi_match,
+                confirmed=body.confirmed,
             )
         except IntegrityError:
             # Same race the punch path guards: a concurrent insert won the
@@ -304,6 +343,74 @@ class AttendanceService:
                 raise
             return self._presence_response(raced, deduped=True)
         return self._presence_response(event, deduped=False)
+
+    async def record_pings(self, body: PingBatch) -> PingBatchResponse:
+        """Store a batch of on-duty pings. Idempotent per ``client_id`` via the
+        repository's ``ON CONFLICT DO NOTHING`` — a re-sent (overlapping) batch
+        is a safe no-op. The active fence is fetched ONCE and every ping is
+        judged in-process (not ``_evaluate_geofence``, which queries per call),
+        so a 100-ping batch is one fence read, not a hundred.
+
+        ``captured_at`` outside the trust window (see ``_ping_in_window``) is
+        REJECTED, not stored: the away-interval math buckets purely on
+        ``captured_at``, so an unbounded backdate would let a valid tech JWT
+        rewrite an outside/no_data day after the fact. Rejection never fails
+        the batch — the phone must prune these, not retry them forever."""
+        server_now = datetime.now(UTC)
+        fresh = [
+            p
+            for p in body.pings
+            if _ping_in_window(
+                p.captured_at,
+                server_now,
+                future_tolerance_seconds=self._device_time_future_tolerance_seconds,
+                backdate_ceiling_hours=self._ping_backdate_ceiling_hours,
+            )
+        ]
+        rejected = len(body.pings) - len(fresh)
+        if rejected:
+            # A fleet of rejections is a clock-spoofing or very-long-offline
+            # signal — worth a log line even though the batch itself succeeds.
+            logger.warning(
+                "rejected %d ping(s) outside the captured_at trust window (techs: %s)",
+                rejected,
+                sorted({p.tech_id for p in body.pings}),
+            )
+        if not fresh:
+            return PingBatchResponse(
+                accepted=0,
+                deduped=0,
+                rejected=rejected,
+                ping_interval_minutes=self._ping_interval_minutes,
+            )
+        geofence = await self._repo.get_active_geofence(shop_id=fresh[0].shop_id)
+        rows: list[dict[str, object]] = []
+        for p in fresh:
+            inside, distance, wifi_match = self._evaluate_ping(p, geofence)
+            rows.append(
+                {
+                    "client_id": p.client_id,
+                    "shop_id": p.shop_id,
+                    "tech_id": p.tech_id,
+                    "captured_at": p.captured_at,
+                    "lat": p.lat,
+                    "lng": p.lng,
+                    "accuracy_m": p.accuracy_m,
+                    "inside_geofence": inside,
+                    "distance_m": distance,
+                    "is_mock_location": p.is_mock_location,
+                    "wifi_bssid": p.wifi_bssid,
+                    "wifi_ssid": p.wifi_ssid,
+                    "wifi_match": wifi_match,
+                }
+            )
+        accepted = await self._repo.create_pings(rows)
+        return PingBatchResponse(
+            accepted=accepted,
+            deduped=len(rows) - accepted,
+            rejected=rejected,
+            ping_interval_minutes=self._ping_interval_minutes,
+        )
 
     async def complete_selfie(
         self, *, tech_id: str, event_id: UUID, size_bytes: int | None
@@ -349,6 +456,9 @@ class AttendanceService:
             kind=body.kind,
             source="manual",
             server_time=body.server_time,
+            # A manager correction asserts *when it happened*; there is no device
+            # clock to reconcile, so the corrected time is the effective time.
+            effective_time=body.server_time,
             device_time=None,
             drift_seconds=None,
             lat=None,
@@ -409,13 +519,13 @@ class AttendanceService:
         last_in = _latest(events, "clock_in")
         last_out = _latest(events, "clock_out")
         clocked_in = last_in is not None and (
-            last_out is None or last_in.server_time > last_out.server_time
+            last_out is None or last_in.effective_time > last_out.effective_time
         )
         return TodayStatus(
             tech_id=tech_id,
             clocked_in=clocked_in,
-            last_in=last_in.server_time if last_in else None,
-            last_out=last_out.server_time if last_out else None,
+            last_in=last_in.effective_time if last_in else None,
+            last_out=last_out.effective_time if last_out else None,
         )
 
     async def list_punches(
@@ -462,6 +572,7 @@ class AttendanceService:
                     flagged_no_location=flags.no_location,
                     flagged_no_selfie=flags.no_selfie,
                     flagged_arrived_not_clocked_in=arrived_not_in,
+                    flagged_order=roll.order_violation,
                 )
             )
         return Board(shop_id=shop_id, date=day, rows=rows)
@@ -490,6 +601,7 @@ class AttendanceService:
                         flagged_drift=flags.drift,
                         flagged_no_location=flags.no_location,
                         flagged_no_selfie=flags.no_selfie,
+                        flagged_order=roll.order_violation,
                     )
                 )
                 if roll.status != "holiday":
@@ -514,6 +626,9 @@ class AttendanceService:
         pbucket = await self._presence_by_tech(
             shop_id=shop_id, start=start, end=end, tz=tz, tech_id=tech_id
         )
+        ping_bucket = await self._pings_by_tech(
+            shop_id=shop_id, start=start, end=end, tz=tz, tech_id=tech_id
+        )
         shift = _shift_for(tech_id, shifts)
         days: list[TechDay] = []
         for d in _date_range(from_date, to_date):
@@ -522,6 +637,9 @@ class AttendanceService:
             roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
             arrived = any(p.kind == "arrive" for p in day_presence)
             clocked_in = any(e.kind == "clock_in" for e in events)
+            inside_m, outside_m, no_data_m, coverage, away = self._duty_breakdown(
+                ping_bucket.get(tech_id, {}).get(d, []), roll.first_in, roll.last_out, tz
+            )
             days.append(
                 TechDay(
                     day=d,
@@ -533,6 +651,12 @@ class AttendanceService:
                     punches=[self._to_item(e) for e in events],
                     presence=[PresenceItem.model_validate(p) for p in day_presence],
                     arrived_not_clocked_in=arrived and not clocked_in,
+                    flagged_order=roll.order_violation,
+                    inside_minutes=inside_m,
+                    outside_minutes=outside_m,
+                    no_data_minutes=no_data_m,
+                    coverage_pct=coverage,
+                    away_intervals=away,
                 )
             )
         return TechDays(tech_id=tech_id, from_date=from_date, to_date=to_date, days=days)
@@ -572,9 +696,86 @@ class AttendanceService:
                         flagged_drift=flags.drift,
                         flagged_no_location=flags.no_location,
                         flagged_no_selfie=flags.no_selfie,
+                        flagged_order=roll.order_violation,
                     )
                 )
         return PayrollExport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)
+
+    # ── Variance report (system evidence vs manual punches) ──────────────
+    async def variance(
+        self,
+        *,
+        shop_id: str,
+        from_date: date,
+        to_date: date,
+        tech_ids: list[str] | None = None,
+    ) -> VarianceReport:
+        """Per tech/day, line the system's geofence crossings (and Step 7 pings)
+        up against the manual punches, exposing the arrival/departure deltas a
+        manager reviews. All times/deltas are on ``effective_time`` so sync
+        latency never masquerades as attendance variance; a delta is null when
+        either side is missing. Holiday rows are omitted; ``to_date`` is clamped
+        to today like the payroll export."""
+        tz, shifts = await self._tz_and_shifts(shop_id)
+        today = datetime.now(UTC).astimezone(tz).date()
+        if to_date > today:  # classify_day would mislabel a future day
+            to_date = today
+        bucket, roster = await self._window(shop_id, from_date, to_date, tz, tech_ids, set(shifts))
+        start, _ = _local_day_window_utc(from_date, tz)
+        _, end = _local_day_window_utc(to_date, tz)
+        pbucket = await self._presence_by_tech(shop_id=shop_id, start=start, end=end, tz=tz)
+        ping_bucket = await self._pings_by_tech(shop_id=shop_id, start=start, end=end, tz=tz)
+        rows: list[VarianceRow] = []
+        for tech_id in roster:
+            shift = _shift_for(tech_id, shifts)
+            for d in _date_range(from_date, to_date):
+                events = bucket.get(tech_id, {}).get(d, [])
+                day_presence = pbucket.get(tech_id, {}).get(d, [])
+                roll = classify_day(day=d, punches=_local_punches(events, tz), shift=shift)
+                if roll.status == "holiday":
+                    continue  # a non-working day carries no variance to review
+                arrivals = [
+                    _local_naive(p.effective_time, tz) for p in day_presence if p.kind == "arrive"
+                ]
+                departures = [
+                    _local_naive(p.effective_time, tz) for p in day_presence if p.kind == "depart"
+                ]
+                first_arrive = min(arrivals) if arrivals else None
+                last_depart = max(departures) if departures else None
+                inside_m, outside_m, no_data_m, coverage, away = self._duty_breakdown(
+                    ping_bucket.get(tech_id, {}).get(d, []), roll.first_in, roll.last_out, tz
+                )
+                # Away time is only a FLAG off a `field` day — offsite is the job
+                # there, so it's shown but never raised as a concern.
+                flagged_away = (
+                    outside_m is not None
+                    and outside_m >= AWAY_FLAG_MINUTES
+                    and roll.status != "field"
+                )
+                rows.append(
+                    VarianceRow(
+                        tech_id=tech_id,
+                        date=d,
+                        status=roll.status,  # type: ignore[arg-type]
+                        first_arrive=first_arrive,
+                        first_clock_in=roll.first_in,
+                        delta_in_minutes=_delta_minutes(roll.first_in, first_arrive),
+                        last_depart=last_depart,
+                        last_clock_out=roll.last_out,
+                        delta_out_minutes=_delta_minutes(last_depart, roll.last_out),
+                        clocked_minutes=roll.worked_minutes,
+                        inside_minutes=inside_m,
+                        outside_minutes=outside_m,
+                        no_data_minutes=no_data_m,
+                        coverage_pct=coverage,
+                        away_intervals=away,
+                        flagged_arrived_not_clocked_in=bool(arrivals)
+                        and not any(e.kind == "clock_in" for e in events),
+                        flagged_order=roll.order_violation,
+                        flagged_away=flagged_away,
+                    )
+                )
+        return VarianceReport(shop_id=shop_id, from_date=from_date, to_date=to_date, rows=rows)
 
     # ── Selfie evidence reconciliation ───────────────────────────────────
     async def selfie_gaps(self, *, shop_id: str) -> list[SelfieGap]:
@@ -645,6 +846,7 @@ class AttendanceService:
             center_lng=row.center_lng,
             radius_m=row.radius_m,
             is_active=row.is_active,
+            ping_interval_minutes=self._ping_interval_minutes,
         )
 
     async def upsert_geofence(self, *, shop_id: str, body: GeofenceUpdate) -> Geofence:
@@ -696,6 +898,33 @@ class AttendanceService:
                     wifi_match = _wifi_match(wifi_bssid, geofence.wifi_bssids)
         return inside, distance, wifi_match
 
+    def _evaluate_ping(
+        self, ping: PingRequest, geofence: AttendanceGeofence | None
+    ) -> tuple[bool | None, float | None, bool | None]:
+        """Judge one ping against a PRE-FETCHED fence — the batch fetches the
+        fence once and evaluates every ping in-process. Same rules as
+        ``_evaluate_geofence``: overlap-aware inside/outside, the accuracy
+        ceiling collapses a coarse fix to ``None``, wifi corroboration."""
+        inside: bool | None = None
+        distance: float | None = None
+        wifi_match: bool | None = None
+        if geofence is None:
+            return inside, distance, wifi_match
+        if ping.lat is not None and ping.lng is not None:
+            inside, distance = geofence_flags(
+                ping.lat,
+                ping.lng,
+                center_lat=geofence.center_lat,
+                center_lng=geofence.center_lng,
+                radius_m=geofence.radius_m,
+                accuracy_m=ping.accuracy_m or 0.0,
+            )
+            if ping.accuracy_m is None or ping.accuracy_m > self._accuracy_ceiling_m:
+                inside = None
+        if ping.wifi_bssid is not None and geofence.wifi_bssids:
+            wifi_match = _wifi_match(ping.wifi_bssid, geofence.wifi_bssids)
+        return inside, distance, wifi_match
+
     def _presence_response(
         self, event: AttendancePresenceEvent, *, deduped: bool
     ) -> PresenceResponse:
@@ -728,8 +957,58 @@ class AttendanceService:
             lambda: defaultdict(list)
         )
         for p in rows:
-            bucket[p.tech_id][p.server_time.astimezone(tz).date()].append(p)
+            bucket[p.tech_id][p.effective_time.astimezone(tz).date()].append(p)
         return bucket
+
+    async def _pings_by_tech(
+        self,
+        *,
+        shop_id: str,
+        start: datetime,
+        end: datetime,
+        tz: ZoneInfo,
+        tech_id: str | None = None,
+    ) -> dict[str, dict[date, list[AttendancePing]]]:
+        """Load + bucket on-duty pings by (tech, local day) on ``captured_at`` —
+        the input to the away-interval math."""
+        rows = await self._repo.list_pings(shop_id=shop_id, start=start, end=end, tech_id=tech_id)
+        bucket: dict[str, dict[date, list[AttendancePing]]] = defaultdict(lambda: defaultdict(list))
+        for p in rows:
+            bucket[p.tech_id][p.captured_at.astimezone(tz).date()].append(p)
+        return bucket
+
+    def _duty_breakdown(
+        self,
+        day_pings: list[AttendancePing],
+        first_in: datetime | None,
+        last_out: datetime | None,
+        tz: ZoneInfo,
+    ) -> tuple[int | None, int | None, int | None, float | None, list[AwayInterval]]:
+        """Fold a day's pings into (inside, outside, no_data) minutes, coverage %,
+        and the away intervals over the clocked window. Null/empty when there is
+        no closed window to measure against (open shift / no clock-out) OR no
+        pings at all — a day with zero pings has nothing to report, not "0%
+        coverage" noise; a day with a coverage GAP still surfaces it as no_data."""
+        if first_in is None or last_out is None or last_out <= first_in or not day_pings:
+            return None, None, None, None, []
+        samples = [
+            PingSample(p.captured_at.astimezone(tz).replace(tzinfo=None), p.inside_geofence)
+            for p in day_pings
+        ]
+        intervals = duty_intervals(samples, first_in, last_out, self._ping_interval_minutes)
+        summary = duty_summary(intervals)
+        away = [
+            AwayInterval(start=iv.start, end=iv.end, kind=iv.kind)  # type: ignore[arg-type]
+            for iv in intervals
+            if iv.kind != "inside"
+        ]
+        return (
+            summary.inside_minutes,
+            summary.outside_minutes,
+            summary.no_data_minutes,
+            summary.coverage_pct,
+            away,
+        )
 
     async def _load_owned(self, tech_id: str, event_id: UUID) -> AttendanceEvent:
         event = await self._repo.get_event(event_id)
@@ -779,6 +1058,15 @@ class AttendanceService:
 
     def _drift_flagged(self, drift_seconds: int | None) -> bool:
         return drift_seconds is not None and abs(drift_seconds) > self._drift_flag_seconds
+
+    def _effective(self, device_time: datetime | None, server_now: datetime) -> datetime:
+        """D8 effective_time with this service's configured trust window."""
+        return _effective_time(
+            device_time,
+            server_now,
+            future_tolerance_seconds=self._device_time_future_tolerance_seconds,
+            backdate_ceiling_hours=self._device_time_backdate_ceiling_hours,
+        )
 
     def _location_unreliable(self, event: AttendanceEvent) -> bool:
         """No usable fix: coords absent (GPS off / permission denied) or the
@@ -830,7 +1118,7 @@ class AttendanceService:
             lambda: defaultdict(list)
         )
         for e in events:
-            local_day = e.server_time.astimezone(tz).date()
+            local_day = e.effective_time.astimezone(tz).date()
             bucket[e.tech_id][local_day].append(e)
 
         if tech_ids is not None:
@@ -897,6 +1185,52 @@ def _compute_drift(server_now: datetime, device_time: datetime | None) -> int | 
     return int((server_now - device_time).total_seconds())
 
 
+def _effective_time(
+    device_time: datetime | None,
+    server_now: datetime,
+    *,
+    future_tolerance_seconds: int,
+    backdate_ceiling_hours: int,
+) -> datetime:
+    """D8 — the analytical "when it happened" time, trusting the device clock
+    only within a sane window around receipt.
+
+    Returns ``device_time`` when it is present and sits inside
+    ``[server_now - backdate_ceiling, server_now + future_tolerance]`` — an
+    offline capture synced hours later is legitimate and must count on the day
+    it happened. Otherwise (no device time, a future timestamp that can't be
+    real, or a stale backdate that smells of spoofing) it falls back to the
+    authoritative ``server_now``. The separate ``drift_seconds`` flag still
+    surfaces every clock disagreement to the manager — this only decides which
+    timestamp the rollups bucket on, never hides the mismatch."""
+    if device_time is None:
+        return server_now
+    dt = device_time if device_time.tzinfo is not None else device_time.replace(tzinfo=UTC)
+    future_limit = server_now + timedelta(seconds=future_tolerance_seconds)
+    backdate_limit = server_now - timedelta(hours=backdate_ceiling_hours)
+    if backdate_limit <= dt <= future_limit:
+        return dt
+    return server_now
+
+
+def _ping_in_window(
+    captured_at: datetime,
+    server_now: datetime,
+    *,
+    future_tolerance_seconds: int,
+    backdate_ceiling_hours: int,
+) -> bool:
+    """The ping counterpart of ``_effective_time`` (D8), with one deliberate
+    difference: an out-of-window ping is dropped by the caller, never
+    re-bucketed to ``server_now`` — a punch re-bucketed to receipt time still
+    records a real punch, but a stale ping re-bucketed to receipt time would
+    fabricate presence *now*. Rejection degrades to an honest ``no_data`` gap."""
+    dt = captured_at if captured_at.tzinfo is not None else captured_at.replace(tzinfo=UTC)
+    future_limit = server_now + timedelta(seconds=future_tolerance_seconds)
+    backdate_limit = server_now - timedelta(hours=backdate_ceiling_hours)
+    return backdate_limit <= dt <= future_limit
+
+
 def _wifi_match(bssid: str, configured_csv: str) -> bool:
     """Case-insensitive membership of a BSSID in the shop's configured AP list."""
     configured = {b.strip().lower() for b in configured_csv.split(",") if b.strip()}
@@ -927,11 +1261,25 @@ def _shift_for(tech_id: str, shifts: dict[str, AttendanceShift]) -> ShiftSpec:
     )
 
 
+def _local_naive(dt: datetime, tz: ZoneInfo) -> datetime:
+    """A UTC instant projected to shop-local wall-clock (naive), matching how
+    ``classify_day`` reports ``first_in``/``last_out`` so deltas subtract cleanly."""
+    return dt.astimezone(tz).replace(tzinfo=None)
+
+
+def _delta_minutes(later: datetime | None, earlier: datetime | None) -> int | None:
+    """Signed minutes between two naive-local times, truncated toward zero; null
+    when either side is missing. Both come from ``effective_time``."""
+    if later is None or earlier is None:
+        return None
+    return int((later - earlier).total_seconds() / 60)
+
+
 def _local_punches(events: list[AttendanceEvent], tz: ZoneInfo) -> list[LocalPunch]:
     return [
         LocalPunch(
             kind=e.kind,
-            local_dt=e.server_time.astimezone(tz).replace(tzinfo=None),
+            local_dt=e.effective_time.astimezone(tz).replace(tzinfo=None),
             inside_geofence=e.inside_geofence,
         )
         for e in events
@@ -940,7 +1288,7 @@ def _local_punches(events: list[AttendanceEvent], tz: ZoneInfo) -> list[LocalPun
 
 def _latest(events: list[AttendanceEvent], kind: str) -> AttendanceEvent | None:
     matches = [e for e in events if e.kind == kind]
-    return max(matches, key=lambda e: e.server_time) if matches else None
+    return max(matches, key=lambda e: e.effective_time) if matches else None
 
 
 def _local_day_window_utc(day: date, tz: ZoneInfo) -> tuple[datetime, datetime]:

@@ -13,8 +13,18 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.core.storage import SignedUpload
-from app.features.attendance.models import AttendanceEvent, AttendancePresenceEvent
-from app.features.attendance.schemas import AdjustmentRequest, PresenceRequest, PunchRequest
+from app.features.attendance.models import (
+    AttendanceEvent,
+    AttendancePing,
+    AttendancePresenceEvent,
+)
+from app.features.attendance.schemas import (
+    AdjustmentRequest,
+    PingBatch,
+    PingRequest,
+    PresenceRequest,
+    PunchRequest,
+)
 from app.features.attendance.service import (
     AttendanceNotFoundError,
     AttendanceService,
@@ -52,6 +62,10 @@ def _event(**overrides: object) -> AttendanceEvent:
     )
     for key, value in overrides.items():
         setattr(event, key, value)
+    # effective_time (D8) defaults to mirror server_time so the rollup tests read
+    # the times they set; a test that cares about the offline case overrides it.
+    if "effective_time" not in overrides:
+        event.effective_time = event.server_time
     return event
 
 
@@ -76,11 +90,39 @@ def _presence(**overrides: object) -> AttendancePresenceEvent:
         wifi_bssid=None,
         wifi_ssid=None,
         wifi_match=None,
+        confirmed=None,
         created_at=NINE_AM_PKT,
     )
     for key, value in overrides.items():
         setattr(event, key, value)
+    if "effective_time" not in overrides:
+        event.effective_time = event.server_time
     return event
+
+
+def _ping(**overrides: object) -> AttendancePing:
+    """Build an in-memory on-duty ping without SQLAlchemy defaults."""
+    ping = AttendancePing(
+        id=uuid4(),
+        client_id=uuid4(),
+        shop_id="default",
+        tech_id="t1",
+        captured_at=NINE_AM_PKT,
+        received_at=NINE_AM_PKT,
+        lat=None,
+        lng=None,
+        accuracy_m=None,
+        inside_geofence=None,
+        distance_m=None,
+        is_mock_location=False,
+        wifi_bssid=None,
+        wifi_ssid=None,
+        wifi_match=None,
+        created_at=NINE_AM_PKT,
+    )
+    for key, value in overrides.items():
+        setattr(ping, key, value)
+    return ping
 
 
 @pytest.fixture
@@ -98,6 +140,8 @@ def svc() -> Iterator[tuple[AttendanceService, MagicMock, MagicMock]]:
     repo.get_presence_by_client_id = AsyncMock(return_value=None)
     repo.create_presence = AsyncMock(side_effect=lambda **kw: _presence(**kw))
     repo.list_presence = AsyncMock(return_value=[])
+    repo.create_pings = AsyncMock(return_value=0)
+    repo.list_pings = AsyncMock(return_value=[])
 
     storage = MagicMock()
     storage.mint_upload_url = MagicMock(
@@ -418,8 +462,294 @@ async def test_create_adjustment_appends_manual_event_and_audit(
     )
     repo.create_event.assert_awaited_once()
     assert repo.create_event.await_args.kwargs["source"] == "manual"
+    # A manual correction's effective_time is the corrected time it asserts.
+    assert repo.create_event.await_args.kwargs["effective_time"] == SIX_PM_PKT
     repo.create_adjustment.assert_awaited_once()
     assert resp.new_event_id is not None
+
+
+# ── D8: effective_time (bounded trust of the device clock) ────────────────────
+async def test_offline_punch_uses_device_time_as_effective_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Captured offline 3h ago, synced now: effective_time is the capture moment
+    # (so it buckets on the day it happened), and the clock gap is still flagged.
+    service, repo, _ = svc
+    captured = datetime.now(UTC) - timedelta(hours=3)
+    resp = await service.record_punch(
+        PunchRequest(client_id=uuid4(), tech_id="t1", kind="clock_in", device_time=captured)
+    )
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == captured
+    assert kwargs["effective_time"] != kwargs["server_time"]
+    assert resp.drift_flagged is True  # ~3h drift > 120s ceiling
+
+
+async def test_future_device_time_falls_back_to_server_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # A device clock 10 min ahead can't be a real capture time (2 min tolerance)
+    # — fall back to the authoritative server_time.
+    service, repo, _ = svc
+    await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            device_time=datetime.now(UTC) + timedelta(minutes=10),
+        )
+    )
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == kwargs["server_time"]
+
+
+async def test_stale_backdated_device_time_falls_back_to_server_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 30h in the past exceeds the 24h backdate ceiling → server_time wins.
+    service, repo, _ = svc
+    await service.record_punch(
+        PunchRequest(
+            client_id=uuid4(),
+            tech_id="t1",
+            kind="clock_in",
+            device_time=datetime.now(UTC) - timedelta(hours=30),
+        )
+    )
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == kwargs["server_time"]
+
+
+async def test_missing_device_time_uses_server_time(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    await service.record_punch(PunchRequest(client_id=uuid4(), tech_id="t1", kind="clock_in"))
+    kwargs = repo.create_event.await_args.kwargs
+    assert kwargs["effective_time"] == kwargs["server_time"]
+
+
+async def test_presence_confirmed_and_effective_time_round_trip(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The phone's crossing confirmation is persisted verbatim (evidence, never
+    # rejected), and a presence crossing gets an effective_time like a punch.
+    service, repo, _ = svc
+    await service.record_presence(
+        PresenceRequest(client_id=uuid4(), tech_id="t1", kind="arrive", confirmed=False)
+    )
+    kwargs = repo.create_presence.await_args.kwargs
+    assert kwargs["confirmed"] is False
+    # No device_time given → effective_time is the receipt moment. (Presence
+    # server_time is a DB default, so it isn't in the create kwargs to compare;
+    # assert effective_time landed at "now" instead.)
+    assert (datetime.now(UTC) - kwargs["effective_time"]).total_seconds() < 5
+
+
+# ── On-duty pings ─────────────────────────────────────────────────────────────
+async def test_record_pings_computes_per_ping_geofence_verdicts(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The fence is fetched ONCE for the whole batch, then each ping is judged
+    # in-process: one inside the circle, one ~1.4 km out.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=150, wifi_bssids=None
+    )
+    repo.create_pings.return_value = 2
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=now,
+                    lat=24.8601,
+                    lng=67.0001,
+                    accuracy_m=10.0,
+                ),
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=now,
+                    lat=24.8700,
+                    lng=67.0100,
+                    accuracy_m=10.0,
+                ),
+            ]
+        )
+    )
+    repo.get_active_geofence.assert_awaited_once()  # one fence read, not per-ping
+    rows = repo.create_pings.call_args.args[0]
+    assert rows[0]["inside_geofence"] is True
+    assert rows[1]["inside_geofence"] is False
+    assert resp.accepted == 2 and resp.deduped == 0
+    assert resp.ping_interval_minutes == 5
+
+
+async def test_record_pings_coarse_fix_is_uncertain(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Accuracy over the ceiling → inside stays None (never a false verdict), but
+    # the distance is still recorded for forensics.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = MagicMock(
+        center_lat=24.8600, center_lng=67.0000, radius_m=80, wifi_bssids=None
+    )
+    repo.create_pings.return_value = 1
+    await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=datetime.now(UTC),
+                    lat=24.8610,
+                    lng=67.0000,
+                    accuracy_m=500.0,
+                ),
+            ]
+        )
+    )
+    row = repo.create_pings.call_args.args[0][0]
+    assert row["inside_geofence"] is None
+    assert row["distance_m"] is not None
+
+
+async def test_record_pings_reports_dedup_counts(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 3 sent, repo reports only 1 newly inserted → the other 2 were already-seen
+    # client_ids (safe no-ops).
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=datetime.now(UTC))
+                for _ in range(3)
+            ]
+        )
+    )
+    assert resp.accepted == 1
+    assert resp.deduped == 2
+
+
+async def test_record_pings_rejects_stale_backdated_captured_at(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 49h old is past the 48h ping ceiling: dropped (never re-bucketed — that
+    # would fabricate presence "now"), counted as rejected, batch still succeeds.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(hours=49)),
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now),
+            ]
+        )
+    )
+    rows = repo.create_pings.call_args.args[0]
+    assert len(rows) == 1  # only the fresh ping reached the repo
+    assert resp.accepted == 1 and resp.deduped == 0 and resp.rejected == 1
+
+
+async def test_record_pings_rejects_future_captured_at_beyond_tolerance(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 10 min ahead can't be real (tolerance is 120s); 60s ahead is clock skew.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(), tech_id="t1", captured_at=now + timedelta(minutes=10)
+                ),
+                PingRequest(
+                    client_id=uuid4(), tech_id="t1", captured_at=now + timedelta(seconds=60)
+                ),
+            ]
+        )
+    )
+    assert len(repo.create_pings.call_args.args[0]) == 1
+    assert resp.accepted == 1 and resp.rejected == 1
+
+
+async def test_record_pings_accepts_long_offline_backlog_inside_window(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # The point of the looser 48h ceiling: a 47h-old ping from a 2-day offline
+    # stretch still lands on the day it happened. A naive (tzless) timestamp is
+    # coerced as UTC, mirroring _effective_time.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 2
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(hours=47)),
+                PingRequest(
+                    client_id=uuid4(),
+                    tech_id="t1",
+                    captured_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+                ),
+            ]
+        )
+    )
+    assert len(repo.create_pings.call_args.args[0]) == 2
+    assert resp.accepted == 2 and resp.rejected == 0
+
+
+async def test_record_pings_all_rejected_skips_repo_and_fence(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # An entirely stale batch stores nothing and reads nothing — but still
+    # returns success so the phone prunes it instead of retrying forever.
+    service, repo, _ = svc
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(
+                    client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(days=5 + i)
+                )
+                for i in range(3)
+            ]
+        )
+    )
+    repo.create_pings.assert_not_awaited()
+    repo.get_active_geofence.assert_not_awaited()
+    assert resp.accepted == 0 and resp.deduped == 0 and resp.rejected == 3
+
+
+async def test_record_pings_dedup_math_unaffected_by_rejections(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # 3 sent: 1 stale (rejected), 2 fresh of which the repo inserts only 1 —
+    # deduped counts against the FRESH set, not the raw batch size.
+    service, repo, _ = svc
+    repo.get_active_geofence.return_value = None
+    repo.create_pings.return_value = 1
+    now = datetime.now(UTC)
+    resp = await service.record_pings(
+        PingBatch(
+            pings=[
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now - timedelta(hours=72)),
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now),
+                PingRequest(client_id=uuid4(), tech_id="t1", captured_at=now),
+            ]
+        )
+    )
+    assert resp.accepted == 1 and resp.deduped == 1 and resp.rejected == 1
 
 
 async def test_board_classifies_present_day(
@@ -438,6 +768,22 @@ async def test_board_classifies_present_day(
     assert row.tech_id == "t1"
     assert row.status == "present"
     assert row.late is False
+
+
+async def test_board_flags_clock_out_before_clock_in(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Clock-out (09:00) precedes clock-in (18:00) on the same local day — the
+    # ordering flag must ride onto the board row for a manager to check.
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(kind="clock_out", server_time=NINE_AM_PKT),
+        _event(kind="clock_in", server_time=SIX_PM_PKT),
+    ]
+
+    board = await service.board(shop_id="default", day=date(2026, 6, 3), tech_ids=["t1"])
+
+    assert board.rows[0].flagged_order is True
 
 
 async def test_board_flags_missing_location_and_selfie(
@@ -495,6 +841,7 @@ async def test_board_clean_punch_has_no_evidence_flags(
     row = board.rows[0]
     assert row.flagged_no_location is False
     assert row.flagged_no_selfie is False
+    assert row.flagged_order is False
 
 
 async def test_grid_and_payroll_carry_evidence_flags(
@@ -519,6 +866,126 @@ async def test_grid_and_payroll_carry_evidence_flags(
     assert row.flagged_mock is True
     assert row.flagged_no_location is True
     assert row.flagged_no_selfie is True
+
+
+# ── Variance report ───────────────────────────────────────────────────────────
+async def test_variance_computes_arrival_and_departure_deltas(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # clock-in 09:00 / clock-out 18:00; geofence arrive 08:50, depart 18:10 →
+    # the tech clocked in 10 min after arriving and left 10 min after clocking out.
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT),
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_presence.return_value = [
+        _presence(kind="arrive", server_time=datetime(2026, 6, 3, 3, 50, tzinfo=UTC)),
+        _presence(kind="depart", server_time=datetime(2026, 6, 3, 13, 10, tzinfo=UTC)),
+    ]
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = next(r for r in report.rows if r.date == day)
+    assert row.delta_in_minutes == 10  # clock-in 09:00 − arrive 08:50
+    assert row.delta_out_minutes == 10  # depart 18:10 − clock-out 18:00
+    assert row.clocked_minutes == 9 * 60
+    assert row.inside_minutes is None  # ping fields stay null until Step 7
+    assert row.away_intervals == []
+
+
+async def test_variance_deltas_null_when_presence_missing(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # No geofence crossings: the manual side stands alone, the deltas are null
+    # (not zero — there is nothing to compare against).
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT),
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_presence.return_value = []
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = report.rows[0]
+    assert row.first_clock_in is not None
+    assert row.first_arrive is None
+    assert row.delta_in_minutes is None
+    assert row.delta_out_minutes is None
+
+
+async def test_variance_flags_order_and_omits_holidays(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Out-before-in on Wed 06-03 → flagged_order rides along. The range runs
+    # through Sun 06-07 (a holiday under the default Mon–Sat mask), which must be
+    # omitted — a non-working day carries no variance.
+    service, repo, _ = svc
+    repo.list_events.return_value = [
+        _event(kind="clock_out", server_time=NINE_AM_PKT),
+        _event(kind="clock_in", server_time=SIX_PM_PKT),
+    ]
+
+    report = await service.variance(
+        shop_id="default", from_date=date(2026, 6, 3), to_date=date(2026, 6, 7), tech_ids=["t1"]
+    )
+
+    wed = next(r for r in report.rows if r.date == date(2026, 6, 3))
+    assert wed.flagged_order is True
+    assert all(r.date != date(2026, 6, 7) for r in report.rows)  # Sunday omitted
+
+
+def _outside_pings() -> list[AttendancePing]:
+    # Eight outside pings at 5-min spacing (10:00–10:35 PKT = 05:00–05:35 UTC), so
+    # the step function reads ~35 min outside within the clocked 09:00–18:00 window.
+    return [
+        _ping(captured_at=datetime(2026, 6, 3, 5, m, tzinfo=UTC), inside_geofence=False)
+        for m in range(0, 40, 5)
+    ]
+
+
+async def test_variance_away_flag_fires_on_a_present_day(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT),  # inside/uncertain → present
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_pings.return_value = _outside_pings()
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = report.rows[0]
+    assert row.status == "present"
+    assert row.outside_minutes is not None and row.outside_minutes >= 30
+    assert row.flagged_away is True
+    assert any(iv.kind == "outside" for iv in row.away_intervals)
+
+
+async def test_variance_away_flag_suppressed_on_field_days(
+    svc: tuple[AttendanceService, MagicMock, MagicMock],
+) -> None:
+    # Same away time, but the first clock-in is OUTSIDE the fence → a field day,
+    # where offsite IS the job: the intervals still show, the flag does not fire.
+    service, repo, _ = svc
+    day = date(2026, 6, 3)
+    repo.list_events.return_value = [
+        _event(kind="clock_in", server_time=NINE_AM_PKT, inside_geofence=False),
+        _event(kind="clock_out", server_time=SIX_PM_PKT),
+    ]
+    repo.list_pings.return_value = _outside_pings()
+
+    report = await service.variance(shop_id="default", from_date=day, to_date=day, tech_ids=["t1"])
+
+    row = report.rows[0]
+    assert row.status == "field"
+    assert row.outside_minutes is not None and row.outside_minutes >= 30
+    assert row.flagged_away is False  # suppressed on a field day
 
 
 async def test_selfie_gaps_maps_events_and_applies_grace_window(

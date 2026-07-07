@@ -36,6 +36,12 @@ import {
   type OutboxKind,
 } from "./outbox";
 import { jobsApi, type JobDetail, type LocationInput } from "./jobsApi";
+import {
+  failureReason,
+  isAuthFailure,
+  isDefinitiveRejection,
+  MAX_ATTEMPTS,
+} from "./syncClassification";
 
 interface CompletionPayload {
   body: Parameters<typeof jobsApi.submitCompletion>[1];
@@ -84,33 +90,6 @@ async function send(item: OutboxItem): Promise<JobDetail> {
     case "note":
       return jobsApi.addNote(item.jobId, (item.payload as NotePayload).text);
   }
-}
-
-/** Statuses that will never succeed on replay. 401 is NOT here — that's the
- * session, not the write. Unknown/5xx/429 default to retry: with a visible
- * failed list the cost of a wrong "fail" is technician attention, but the cost
- * of a wrong "drop" was silent cash loss — bias every ambiguity toward keeping
- * the record. */
-const DEFINITIVE_4XX = new Set([400, 403, 404, 409, 422]);
-
-/** A server-reachable error (5xx/429) that recurs this many times is treated as
- * a poison item: parked in the visible failed list so one bad write can't
- * head-of-line block the whole queue forever. A real deploy blip clears well
- * before this — only a write the server keeps erroring on reaches the cap. */
-const MAX_ATTEMPTS = 5;
-
-function isDefinitiveRejection(e: unknown): e is ApiError {
-  return e instanceof ApiError && DEFINITIVE_4XX.has(e.status);
-}
-
-function isAuthFailure(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 401;
-}
-
-/** Trim the server's error body down to something a human can read in a list. */
-function failureReason(e: ApiError): string {
-  const detail = /"detail"\s*:\s*"([^"]+)"/.exec(e.message)?.[1];
-  return detail ?? `rejected (${e.status})`;
 }
 
 let syncing = false;
@@ -186,7 +165,15 @@ export async function sendOrQueue(
     return null;
   }
   try {
-    return await call();
+    const fresh = await call();
+    // A successful live send is the authoritative write. Drop any earlier
+    // queued copy of the SAME stable-id write (completion / negotiate /
+    // location / ready) so a later flush can't replay a stale version over
+    // this result — e.g. an offline-queued completion v1 clobbering the v2 the
+    // tech just edited and sent live. Unique-id kinds (payments, notes) never
+    // collide, so this is a no-op for them.
+    await removeItem(item.id);
+    return fresh;
   } catch (e) {
     // A definitive 4xx on a live tap is a validation error the technician is
     // looking at right now — surface it. A 401 means the session just ended —

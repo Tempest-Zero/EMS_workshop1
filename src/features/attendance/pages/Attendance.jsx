@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  ArrowDownUp,
   CameraOff,
   ChevronLeft,
   ChevronRight,
@@ -9,6 +10,7 @@ import {
   FileSpreadsheet,
   LocateOff,
   MapPinOff,
+  Scale,
   ShieldAlert,
   Upload,
   Wifi,
@@ -58,6 +60,12 @@ function Flags({ row }) {
       {row.flagged_no_selfie && (
         <CameraOff className="h-4 w-4 text-amber-500" aria-label="No selfie" />
       )}
+      {row.flagged_order && (
+        <ArrowDownUp
+          className="h-4 w-4 text-amber-500"
+          aria-label="Clock-out before clock-in — check punches"
+        />
+      )}
       {row.wifi_match === true && (
         <Wifi className="h-4 w-4 text-emerald-500" aria-label="On workshop WiFi" />
       )}
@@ -73,6 +81,7 @@ function cellFlags(c) {
   if (c.flagged_drift) out.push("clock drift");
   if (c.flagged_no_location) out.push("no location");
   if (c.flagged_no_selfie) out.push("no selfie");
+  if (c.flagged_order) out.push("clock order");
   return out;
 }
 
@@ -153,6 +162,7 @@ export default function Attendance() {
         "Clock Drift",
         "No Location",
         "No Selfie",
+        "Clock Order",
       ];
       const body = (data.rows || []).map((r) => [
         techById[r.tech_id]?.name ?? r.tech_id,
@@ -168,6 +178,7 @@ export default function Attendance() {
         flag(r.flagged_drift),
         flag(r.flagged_no_location),
         flag(r.flagged_no_selfie),
+        flag(r.flagged_order),
       ]);
       const csv = [header, ...body]
         .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -204,6 +215,12 @@ export default function Attendance() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               <LiveBadge />
+              <Link
+                to="/attendance/variance"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50"
+              >
+                <Scale className="h-4 w-4" /> Variance
+              </Link>
               <input
                 type="date"
                 className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-600"
@@ -290,6 +307,9 @@ export default function Attendance() {
           </span>
           <span className="flex items-center gap-1">
             <CameraOff className="h-3.5 w-3.5 text-amber-500" /> No selfie
+          </span>
+          <span className="flex items-center gap-1">
+            <ArrowDownUp className="h-3.5 w-3.5 text-amber-500" /> Clock order
           </span>
           <span className="flex items-center gap-1">
             <Wifi className="h-3.5 w-3.5 text-emerald-500" /> On workshop WiFi

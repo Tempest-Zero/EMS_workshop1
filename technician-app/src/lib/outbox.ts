@@ -172,7 +172,14 @@ export function makeItem(
 }
 
 export async function removeItem(id: string): Promise<void> {
-  await mutate((items) => items.filter((i) => i.id !== id));
+  // Only persist + notify when something actually left the queue. This keeps a
+  // live-send supersede (sendOrQueue dropping a stale duplicate) from firing a
+  // spurious change event — and reload — on the common no-duplicate path.
+  await locked(async () => {
+    const items = await loadUnlocked();
+    const next = items.filter((i) => i.id !== id);
+    if (next.length !== items.length) await save(next);
+  });
 }
 
 export async function bumpAttempts(id: string): Promise<number> {

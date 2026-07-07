@@ -3,10 +3,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
+  bumpPunchAttempts,
   enqueue,
+  failedPunches,
   loadQueue,
+  markPunchFailed,
   pendingPunches,
   removePunches,
+  retryPunch,
   updatePunch,
   type QueuedPunch,
 } from "./queue";
@@ -105,5 +109,35 @@ describe("queue", () => {
     await enqueue({ ...base, client_id: "old", done: true });
     await Promise.all([removePunches(["old"]), enqueue({ ...base, client_id: "fresh" })]);
     expect((await loadQueue()).map((i) => i.client_id)).toEqual(["fresh"]);
+  });
+
+  it("parks a punch as failed and excludes it from pending, surfaces it in failed", async () => {
+    await enqueue(base);
+    await enqueue({ ...base, client_id: "c2" });
+    await markPunchFailed("c1", "rejected (422)");
+
+    expect((await pendingPunches()).map((i) => i.client_id)).toEqual(["c2"]);
+    const failed = await failedPunches();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.client_id).toBe("c1");
+    expect(failed[0]?.failed_reason).toBe("rejected (422)");
+    expect(failed[0]?.failed_at).toBeDefined();
+  });
+
+  it("retryPunch clears the failed state so it becomes pending again", async () => {
+    await enqueue(base);
+    await markPunchFailed("c1", "rejected (422)");
+    await retryPunch("c1");
+
+    expect(await failedPunches()).toHaveLength(0);
+    expect((await pendingPunches()).map((i) => i.client_id)).toEqual(["c1"]);
+    expect((await loadQueue())[0]?.attempts).toBe(0);
+  });
+
+  it("bumpPunchAttempts increments and returns the running total", async () => {
+    await enqueue(base);
+    expect(await bumpPunchAttempts("c1")).toBe(1);
+    expect(await bumpPunchAttempts("c1")).toBe(2);
+    expect((await loadQueue())[0]?.attempts).toBe(2);
   });
 });

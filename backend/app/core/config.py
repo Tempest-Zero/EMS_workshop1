@@ -36,8 +36,11 @@ class Settings(BaseSettings):
     r2_secret_access_key: str = ""
     r2_bucket: str = "job-media"
     # Hard ceiling enforced at finalize: oversized uploads are rejected + purged.
-    # 30 MB comfortably fits a 60s 720p clip while blocking abuse.
-    r2_max_upload_bytes: int = 30 * 1024 * 1024
+    # The closing video is the app's longest clip (up to 60s); 64 MB leaves
+    # headroom for a high-motion 720p clip (~20-40 MB after compression, VBR)
+    # so a legitimate closure isn't rejected, while still blocking abuse. R2 has
+    # no free-tier size cap (the old 30 MB / "Supabase 50 MB" limit is obsolete).
+    r2_max_upload_bytes: int = 64 * 1024 * 1024
 
     # ── Attendance ───────────────────────────────────────────────────────
     # A selfie is a single still — far smaller than a 720p video clip.
@@ -53,6 +56,30 @@ class Settings(BaseSettings):
     # surfaces on the manager's selfie-gaps reconciliation list (the punch
     # itself stays valid — evidence is flagged, never blocking).
     attendance_selfie_grace_hours: int = 24
+    # Bounded trust of the device clock for the analytical time axis (D8). A
+    # punch/crossing captured offline carries a device timestamp; the server
+    # honours it as "when it happened" (effective_time) only when it sits within
+    # a sane window around receipt — at most this many seconds into the future
+    # (a punch can't legitimately predate its own arrival; clocks skew a little)…
+    attendance_device_time_future_tolerance_seconds: int = 120
+    # …and no further back than this many hours (an offline batch synced next
+    # morning is legitimate; a week-old backdate smells of spoofing). Outside the
+    # window, effective_time falls back to the authoritative server_time. The
+    # drift flag still surfaces every clock disagreement regardless.
+    attendance_device_time_backdate_ceiling_hours: int = 24
+    # Trust window for a ping's captured_at (the axis the away-interval math
+    # buckets on). Unlike a punch, a stale ping is REJECTED, never re-bucketed —
+    # re-bucketing to receipt time would fabricate presence "now". Looser than
+    # the punches' 24h because the phone legitimately queues ≈3.5 days of pings
+    # offline (MAX_UNSENT_PINGS=1000 at 5-min cadence); beyond this, an honest
+    # no_data gap beats late presence. The future side reuses
+    # attendance_device_time_future_tolerance_seconds.
+    attendance_ping_backdate_ceiling_hours: int = 48
+    # On-duty ping cadence (minutes): while clocked in, the phone samples its
+    # location this often. Surfaced on the ActiveGeofence the phone caches, so it
+    # is tunable (5→10→15) without an app release; the same value drives the
+    # server's missing-ping (2×) math so client and server agree.
+    attendance_ping_interval_minutes: int = 5
 
     # ── Jobs / billing ───────────────────────────────────────────────────
     # Labour rate used to auto-generate the bill from time on-site. Integer

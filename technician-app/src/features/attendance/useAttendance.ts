@@ -17,9 +17,16 @@ import { AppState, Vibration } from "react-native";
 import { attendanceApi, type PunchItem, type Shift } from "../../lib/attendanceApi";
 import { useAuth } from "../auth/AuthContext";
 import { clearAttendancePrompt } from "./attendancePrompt";
-import { loadQueue, type QueuedPunch } from "./queue";
+import { failedPunches, loadQueue, retryPunch, type QueuedPunch } from "./queue";
+import {
+  discardPresence,
+  failedPresence,
+  retryPresence,
+  type QueuedPresence,
+} from "./presenceQueue";
 import { punch } from "./punch";
-import { syncNow } from "./sync";
+import { discardPunch, syncNow } from "./sync";
+import { syncPresence } from "./presenceSync";
 
 // Retry-while-pending backoff: 3s → 60s. The effect re-runs (resetting to base)
 // whenever pendingCount changes, so a stuck punch backs off instead of polling
@@ -38,11 +45,30 @@ export interface PunchRow {
   selfieFailed: boolean;
 }
 
+/** A punch or crossing the server definitively rejected (or that exhausted its
+ * retries) — parked for the technician to Retry or Discard, mirroring the jobs
+ * outbox's visible failed list. */
+export interface FailedSyncRow {
+  key: string; // client_id
+  source: "punch" | "presence";
+  label: string; // human kind, e.g. "Clock in", "Arrived"
+  at: string; // created_at ISO
+  reason: string;
+}
+
+const KIND_LABELS: Record<string, string> = {
+  clock_in: "Clock in",
+  clock_out: "Clock out",
+  arrive: "Arrived at site",
+  depart: "Left site",
+};
+
 export function useAttendance() {
   const { technician } = useAuth();
   const techId = technician?.id ?? null;
 
   const [all, setAll] = useState<QueuedPunch[]>([]);
+  const [failedRows, setFailedRows] = useState<FailedSyncRow[]>([]);
   const [serverPunches, setServerPunches] = useState<PunchItem[]>([]);
   const [serverClockedIn, setServerClockedIn] = useState<boolean | null>(null);
   const [shift, setShift] = useState<Shift | null>(null);
@@ -51,7 +77,28 @@ export function useAttendance() {
 
   const refresh = useCallback(async () => {
     setAll(await loadQueue());
-    if (!techId) return;
+    if (!techId) {
+      setFailedRows([]);
+      return;
+    }
+    // Parked punches + crossings for THIS tech (another login's stay hidden).
+    const [fp, fpr] = await Promise.all([failedPunches(), failedPresence()]);
+    const toRow = (
+      source: "punch" | "presence",
+      i: QueuedPunch | QueuedPresence,
+    ): FailedSyncRow => ({
+      key: i.client_id,
+      source,
+      label: KIND_LABELS[i.kind] ?? i.kind,
+      at: i.created_at,
+      reason: i.failed_reason ?? "did not sync",
+    });
+    setFailedRows(
+      [
+        ...fp.filter((p) => p.tech_id === techId).map((p) => toRow("punch", p)),
+        ...fpr.filter((p) => p.tech_id === techId).map((p) => toRow("presence", p)),
+      ].sort((a, b) => b.at.localeCompare(a.at)),
+    );
     // Authoritative status + recent history (best-effort; offline keeps stale).
     try {
       const end = new Date();
@@ -94,14 +141,23 @@ export function useAttendance() {
   // phone is their session's business — counting it here would show a
   // "pending sync" this login can never clear.
   const pendingCount = useMemo(
-    () => all.filter((p) => p.tech_id === techId && !p.done).length,
+    () =>
+      all.filter((p) => p.tech_id === techId && !p.done && p.failed_reason === undefined).length,
     [all, techId],
   );
 
   // My local punches that haven't reached the server yet (shown optimistically).
+  // A failed (parked) punch is excluded — it shows in the "did not sync" card,
+  // not as an in-flight pending row.
   const localPending = useMemo(() => {
     const serverIds = new Set(serverPunches.map((p) => p.client_id));
-    return all.filter((p) => p.tech_id === techId && !p.done && !serverIds.has(p.client_id));
+    return all.filter(
+      (p) =>
+        p.tech_id === techId &&
+        !p.done &&
+        p.failed_reason === undefined &&
+        !serverIds.has(p.client_id),
+    );
   }, [all, techId, serverPunches]);
 
   // Merge optimistic local-pending + authoritative server history, newest first.
@@ -186,12 +242,40 @@ export function useAttendance() {
     [techId, refresh],
   );
 
+  // Clear a parked item's failed flag and re-drive its queue's sync. The
+  // discard path deletes the record for good (a punch also drops its selfie).
+  const retryFailed = useCallback(
+    async (row: FailedSyncRow) => {
+      if (row.source === "punch") {
+        await retryPunch(row.key);
+        await syncNow(techId);
+      } else {
+        await retryPresence(row.key);
+        await syncPresence(techId);
+      }
+      await refresh();
+    },
+    [techId, refresh],
+  );
+
+  const discardFailed = useCallback(
+    async (row: FailedSyncRow) => {
+      if (row.source === "punch") await discardPunch(row.key);
+      else await discardPresence(row.key);
+      await refresh();
+    },
+    [refresh],
+  );
+
   return {
     techId,
     technicianName: technician?.name ?? "",
     clockedIn,
     pendingCount,
     punches,
+    failed: failedRows,
+    retryFailed,
+    discardFailed,
     busy,
     error,
     clockIn: () => doPunch("clock_in"),
