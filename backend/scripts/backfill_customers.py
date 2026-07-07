@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from collections import defaultdict
 
 from sqlalchemy import select
@@ -129,6 +130,10 @@ async def run(*, apply: bool) -> None:
 
 
 def main() -> None:
+    # The report prints DB strings (Urdu area/customer names, the '→' glyph) — force
+    # UTF-8 so a Windows cp1252 console can't crash the run on an unencodable char.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Backfill customer identities from jobs.")
     parser.add_argument("--apply", action="store_true", help="write (default: dry-run)")
     args = parser.parse_args()
