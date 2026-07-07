@@ -104,6 +104,7 @@ name = "Feature slices stay independent (cross-slice only via deps/service)"
 type = "independence"
 modules = [
   "app.features.attendance",
+  "app.features.customers",
   "app.features.health",
   "app.features.jobs",
   "app.features.media",
@@ -115,6 +116,8 @@ ignore_imports = [
   # Jobs' close-gate checks closing media through the media surface.
   "app.features.jobs.router -> app.features.media.deps",
   "app.features.jobs.service -> app.features.media.service",
+  # Jobs' intake best-effort links a new job to an existing customer by phone.
+  "app.features.jobs.service -> app.features.customers.service",
   # Manager-assign pushes through the notifications surface.
   "app.features.jobs.router -> app.features.notifications.deps",
   # Media's delete policy asks jobs for the job's status (evidence freezes at
@@ -136,6 +139,7 @@ type = "forbidden"
 source_modules = ["app.features.identity"]
 forbidden_modules = [
   "app.features.attendance",
+  "app.features.customers",
   "app.features.health",
   "app.features.jobs",
   "app.features.media",

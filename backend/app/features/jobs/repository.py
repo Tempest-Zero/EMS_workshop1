@@ -26,6 +26,12 @@ class JobRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @property
+    def session(self) -> AsyncSession:
+        """The bound session — used by the service to invoke cross-slice reads
+        (e.g. customers' phone match) that don't belong in the jobs repository."""
+        return self._session
+
     async def get(self, job_id: UUID) -> Job | None:
         return await self._session.get(Job, job_id)
 
