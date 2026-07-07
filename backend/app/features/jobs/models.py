@@ -93,7 +93,7 @@ class Job(Base):
     )
     token: Mapped[int] = mapped_column(Integer, nullable=False)
     shop_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, server_default=sa_text("'default'")
+        String(64), ForeignKey("shop.id"), nullable=False, server_default=sa_text("'default'")
     )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=sa_text("'open'")

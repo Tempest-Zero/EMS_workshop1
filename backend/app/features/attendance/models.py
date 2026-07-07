@@ -96,7 +96,7 @@ class AttendanceEvent(Base):
     # Client-generated UUID: the offline idempotency / dedup key. A re-synced
     # punch carries the same client_id, so the server treats it as a no-op.
     client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
-    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
     tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     source: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'mobile'"))
@@ -177,7 +177,7 @@ class AttendancePresenceEvent(Base):
     # Client-generated UUID: the offline idempotency / dedup key, exactly like a
     # punch — a re-synced crossing carries the same client_id and is a no-op.
     client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
-    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
     tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     source: Mapped[str] = mapped_column(
@@ -246,7 +246,7 @@ class AttendancePing(Base):
         PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
-    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
     tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # WHEN — captured_at is the device clock (analytical axis); received_at is the
@@ -285,7 +285,7 @@ class AttendanceShift(Base):
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
     tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
     start_local: Mapped[time] = mapped_column(Time, nullable=False)
     end_local: Mapped[time] = mapped_column(Time, nullable=False)
@@ -314,7 +314,7 @@ class AttendanceGeofence(Base):
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    shop_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
     name: Mapped[str] = mapped_column(
         String(128), nullable=False, server_default=text("'Workshop'")
     )
@@ -369,7 +369,9 @@ class PayrollExportRecord(Base):
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    shop_id: Mapped[str] = mapped_column(String(64), nullable=False, server_default="default")
+    shop_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("shop.id"), nullable=False, server_default="default"
+    )
     from_date: Mapped[date_type] = mapped_column(Date, nullable=False)
     to_date: Mapped[date_type] = mapped_column(Date, nullable=False)
     storage_path: Mapped[str] = mapped_column(String(512), nullable=False)

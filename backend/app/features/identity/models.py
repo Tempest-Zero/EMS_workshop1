@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -35,6 +35,16 @@ class Technician(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    # ── Tenancy + preferences (migration 0020) ──────────────────────────────
+    # FK to shop.id; all rows are 'default' today (single-tenant).
+    shop_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("shop.id"), nullable=False, server_default=text("'default'")
+    )
+    # Preferred UI/notification language; 'ur' (Urdu) for the Karachi shop.
+    language_pref: Mapped[str] = mapped_column(
+        String(8), nullable=False, server_default=text("'ur'")
     )
 
     # ── Login throttle state (migration 0013) ───────────────────────────────
