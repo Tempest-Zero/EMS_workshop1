@@ -86,6 +86,7 @@ class Job(Base):
         UniqueConstraint("token", name="uq_job_token"),
         Index("ix_job_shop_status", "shop_id", "status"),
         Index("ix_job_assigned_tech", "assigned_tech_id"),
+        Index("ix_job_customer", "customer_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -94,6 +95,14 @@ class Job(Base):
     token: Mapped[int] = mapped_column(Integer, nullable=False)
     shop_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("shop.id"), nullable=False, server_default=sa_text("'default'")
+    )
+    # ── Linked identity + geography (nullable; migrations 0021/0022) ─────────
+    # Best-effort phone match at intake (0021): NULL when 0 or >1 customers match.
+    customer_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("customer.id"), nullable=True
+    )
+    area_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("area.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=sa_text("'open'")

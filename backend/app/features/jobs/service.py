@@ -3,12 +3,14 @@ for other slices (never reach past this from another feature)."""
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
+from app.features.customers.service import match_customer_by_phone
 from app.features.jobs.models import Job as JobRow
 from app.features.jobs.models import (
     JobCompletion,
@@ -36,6 +38,8 @@ from app.features.jobs.schemas import (
 )
 from app.features.media.service import MediaService
 from app.shared.geo import haversine_m
+
+logger = logging.getLogger(__name__)
 
 
 def _materials_total_paisa(materials: list[MaterialIn]) -> int:
@@ -147,6 +151,7 @@ class JobService:
             shop_id=body.shop_id,
             status="open",
             job_type=body.job_type,
+            customer_id=await self._match_customer(body),
             customer_name=body.customer_name.strip(),
             customer_phone=body.customer_phone,
             customer_address=body.customer_address if is_visit else None,
@@ -159,6 +164,18 @@ class JobService:
             time_window=body.time_window if is_visit else None,
         )
         return await self._repo.create(row)
+
+    async def _match_customer(self, body: JobCreate) -> UUID | None:
+        """Best-effort link to an existing customer by phone. Intake must never
+        fail on this: a match error degrades to an unlinked job (customer_id
+        NULL). Returns NULL until backfill populates customers to match against."""
+        try:
+            return await match_customer_by_phone(
+                self._repo.session, body.customer_phone, body.shop_id
+            )
+        except Exception:
+            logger.exception("customer phone match failed at job intake; leaving customer_id NULL")
+            return None
 
     async def add_note(
         self, *, job_id: UUID, shop_id: str, text: str, actor: str | None, kind: str = "note"
