@@ -252,12 +252,16 @@ async def test_pings_batch_is_idempotent(app_client: AsyncClient, auth_headers: 
     # A batch re-sent (overlapping sync / retry) stores nothing new: the
     # ON CONFLICT(client_id) DO NOTHING dedup makes the second call a no-op.
     cid = str(uuid4())
+    # Keep captured_at inside the 48h ping trust window (_ping_in_window): a
+    # pinned literal ages out of the window and the batch is rejected (accepted=0)
+    # as the wall clock advances, so derive it from now.
+    captured = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     batch = {
         "pings": [
             {
                 "client_id": cid,
                 "tech_id": "t7",
-                "captured_at": "2026-07-01T04:00:00Z",
+                "captured_at": captured,
                 "lat": 24.86,
                 "lng": 67.0,
                 "accuracy_m": 10.0,
