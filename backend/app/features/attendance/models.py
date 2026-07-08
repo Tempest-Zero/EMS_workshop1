@@ -97,7 +97,7 @@ class AttendanceEvent(Base):
     # punch carries the same client_id, so the server treats it as a no-op.
     client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
-    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tech_id: Mapped[str] = mapped_column(String(64), ForeignKey("technician.id"), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     source: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'mobile'"))
 
@@ -178,7 +178,7 @@ class AttendancePresenceEvent(Base):
     # punch — a re-synced crossing carries the same client_id and is a no-op.
     client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
-    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tech_id: Mapped[str] = mapped_column(String(64), ForeignKey("technician.id"), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=text("'geofence'")
@@ -247,7 +247,7 @@ class AttendancePing(Base):
     )
     client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
-    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tech_id: Mapped[str] = mapped_column(String(64), ForeignKey("technician.id"), nullable=False)
 
     # WHEN — captured_at is the device clock (analytical axis); received_at is the
     # server's receipt time (audit). No drift: an offline batch is expected.
@@ -286,7 +286,7 @@ class AttendanceShift(Base):
         PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     shop_id: Mapped[str] = mapped_column(String(64), ForeignKey("shop.id"), nullable=False)
-    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tech_id: Mapped[str] = mapped_column(String(64), ForeignKey("technician.id"), nullable=False)
     start_local: Mapped[time] = mapped_column(Time, nullable=False)
     end_local: Mapped[time] = mapped_column(Time, nullable=False)
     working_days: Mapped[str] = mapped_column(
@@ -349,7 +349,9 @@ class AttendanceAdjustment(Base):
     new_event_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("attendance_event.id"), nullable=False
     )
-    manager_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    manager_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("technician.id"), nullable=False
+    )
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")

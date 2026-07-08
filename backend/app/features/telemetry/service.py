@@ -14,7 +14,7 @@ a poisoned outbox event past the cursor (called from the composition root).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +66,24 @@ async def record_dead_letter(
             actor_id=None,
             name="outbox_dead_letter",
             props={"consumer": consumer, "seq": seq},
+            server_time=datetime.now(UTC),
+        )
+    )
+
+
+async def record_media_orphan(
+    session: AsyncSession, *, shop_id: str, completion_id: UUID, media_id: UUID
+) -> None:
+    """Emit a system ``media_orphan`` event (UUIDs only — no PII) when the
+    nightly sweep finds a completion whose voice note never materialised."""
+    session.add(
+        AppEvent(
+            client_id=uuid4(),
+            shop_id=shop_id,
+            actor_kind="system",
+            actor_id=None,
+            name="media_orphan",
+            props={"completion_id": str(completion_id), "media_id": str(media_id)},
             server_time=datetime.now(UTC),
         )
     )

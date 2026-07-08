@@ -57,7 +57,8 @@ class DeviceToken(Base):
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
-    tech_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # FK → technician added NOT VALID in 0032, VALIDATE in 0033 (human data).
+    tech_id: Mapped[str] = mapped_column(String(64), ForeignKey("technician.id"), nullable=False)
     token: Mapped[str] = mapped_column(String(256), nullable=False)
     platform: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=sa_text("'android'")

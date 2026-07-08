@@ -123,10 +123,10 @@ async def test_tech_cannot_read_anothers_punches(
 ) -> None:
     # A technician token reading a colleague's punch log → 403; the log carries
     # GPS + selfie URLs. Reading their own stays fine. The tech row is seeded
-    # here (the auth dependency verifies callers against the live table);
-    # "t8" is unused by the other integration suites, so it can't collide
-    # with their own seeds.
-    session.add(
+    # here (the auth dependency verifies callers against the live table).
+    # merge (not add): the conftest roster pre-seeds t8 since 0032's tech FK, so
+    # this upserts it to the exact role/name this authz test needs.
+    await session.merge(
         Technician(
             id="t8",
             name="Authz Tech",

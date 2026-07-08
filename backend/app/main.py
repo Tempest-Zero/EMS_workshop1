@@ -13,6 +13,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import sentry_sdk
@@ -39,12 +40,20 @@ from app.features.health.router import router as health_router
 from app.features.identity.router import router as identity_router
 from app.features.jobs.models import JobEvent
 from app.features.jobs.router import router as jobs_router
-from app.features.jobs.service import run_dispatch_once, run_outcome_auto_link_scan
+from app.features.jobs.service import (
+    run_dispatch_once,
+    run_media_orphan_sweep,
+    run_outcome_auto_link_scan,
+)
 from app.features.media.router import router as media_router
 from app.features.notifications.router import router as notifications_router
 from app.features.ops.router import router as ops_router
 from app.features.telemetry.router import router as telemetry_router
-from app.features.telemetry.service import MetricRollup, record_dead_letter
+from app.features.telemetry.service import (
+    MetricRollup,
+    record_dead_letter,
+    record_media_orphan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +122,26 @@ async def _run_outcome_scan() -> None:
             raise
 
 
+async def _run_media_orphan_sweep() -> None:
+    """The daily job: flag completions whose voice note never materialised
+    (the one loose ref the model keeps). Emits a ``media_orphan`` app_event per
+    orphan; the composition root is the seam so jobs stays decoupled from
+    telemetry."""
+    async with SessionLocal() as session:
+
+        async def _on_orphan(completion_id: UUID, media_id: UUID) -> None:
+            await record_media_orphan(
+                session, shop_id=DEFAULT_SHOP_ID, completion_id=completion_id, media_id=media_id
+            )
+
+        try:
+            n = await run_media_orphan_sweep(session, on_orphan=_on_orphan)
+            logger.info("media-orphan sweep: %s orphan(s) flagged", n)
+        except Exception:
+            await session.rollback()
+            raise
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Exposed on app.state so the ops health probe can report the scheduler's
@@ -143,6 +172,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             hour=3,
             minute=0,
             name="outcome-auto-link-scan",
+        )
+        add_daily_job(
+            scheduler,
+            _run_media_orphan_sweep,
+            hour=3,
+            minute=30,
+            name="media-orphan-sweep",
         )
         add_interval_job(
             scheduler,

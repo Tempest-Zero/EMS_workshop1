@@ -20,8 +20,9 @@ Headers = dict[str, str]
 
 async def _tech_headers(session: AsyncSession, tech_id: str) -> Headers:
     """A second authenticated identity, with its row seeded — the auth
-    dependency verifies callers against the live technician table."""
-    session.add(
+    dependency verifies callers against the live technician table. merge (not
+    add): the conftest roster pre-seeds t1..t9 since 0032's tech FK."""
+    await session.merge(
         Technician(
             id=tech_id,
             name=f"Tech {tech_id}",

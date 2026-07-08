@@ -56,6 +56,11 @@ _CATEGORY_IDS = (
     "other",
 )
 
+# Since 0032 every tech_id/manager_id FKs to technician.id. Tests reference a
+# handful of tech ids (t1..t9) — often via punch/event bodies that never seed
+# the tech — so seed the whole roster at the lowest-level DB fixture.
+_ROSTER_TECH_IDS = tuple(f"t{i}" for i in range(1, 10))
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip integration tests unless a real test database is configured."""
@@ -136,6 +141,15 @@ async def session(_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         # seeded. Migration seeds these in prod; create_all tests re-seed here.
         for _cat_id in _CATEGORY_IDS:
             await sess.merge(ApplianceCategory(id=_cat_id))
+        # Since 0032 tech-ref FKs are enforced in the create_all schema. merge =
+        # upsert, so a test that also seeds a specific tech just refreshes it
+        # (app_client re-merges t1 as a manager, for one).
+        for _tid in _ROSTER_TECH_IDS:
+            await sess.merge(
+                Technician(
+                    id=_tid, name=f"Tech {_tid}", role="tech", pin_hash=_TEST_PIN_HASH, active=True
+                )
+            )
         await sess.commit()
         yield sess
 

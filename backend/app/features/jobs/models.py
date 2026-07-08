@@ -156,7 +156,10 @@ class Job(Base):
     appliance_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     problem: Mapped[str] = mapped_column(String(2048), nullable=False, server_default=sa_text("''"))
-    assigned_tech_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # FK → technician added NOT VALID in 0032, VALIDATE in 0033 (human data).
+    assigned_tech_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("technician.id"), nullable=True
+    )
 
     # ── Intake / power / warranty (W9; all nullable — additive) ──────────────
     # How the complaint arrived (CHECKed above).
