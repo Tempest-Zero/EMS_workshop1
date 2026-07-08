@@ -154,3 +154,52 @@ class ActionCode(Base):
     icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sort: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+
+
+_PART_QUALITY = "quality IN ('genuine', 'aftermarket', 'refurb')"
+
+
+class Part(Base):
+    """Canonical part identity (W6). Prices are NOT stored here — every
+    ``job_material`` row is a dated, located price observation, so the price
+    index is a query, not a column. ``category_id`` NULL = cross-category
+    (capacitors, wire). ``quality``/``source_market`` are the default
+    expectation; per-line truth lives on ``job_material``."""
+
+    __tablename__ = "part"
+    __table_args__ = (
+        UniqueConstraint("name_canonical", "category_id", name="uq_part_name_category"),
+        CheckConstraint(_PART_QUALITY, name="part_quality_check"),
+        CheckConstraint(_REVIEW_STATUS, name="part_status_check"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    name_canonical: Mapped[str] = mapped_column(String(128), nullable=False)
+    category_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("appliance_category.id"), nullable=True
+    )
+    quality: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_market: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'active'"))
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+
+
+class PartAlias(Base):
+    """Alias → canonical part (W6). Same shape as brand/model aliases: a manager
+    approving a misspelling creates one, so the mistake auto-resolves after."""
+
+    __tablename__ = "part_alias"
+    __table_args__ = (
+        UniqueConstraint("alias_norm", "part_id", name="uq_part_alias_norm_part"),
+        Index("ix_part_alias_norm", "alias_norm"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    alias_norm: Mapped[str] = mapped_column(String(64), nullable=False)
+    part_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("part.id"), nullable=False
+    )

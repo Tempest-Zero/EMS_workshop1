@@ -225,7 +225,13 @@ class JobMaterial(Base):
     """A part/material line on a completion. Money is integer paisa."""
 
     __tablename__ = "job_material"
-    __table_args__ = (Index("ix_job_material_completion", "completion_id"),)
+    __table_args__ = (
+        CheckConstraint(
+            "quality IS NULL OR quality IN ('genuine', 'aftermarket', 'refurb')",
+            name="job_material_quality_check",
+        ),
+        Index("ix_job_material_completion", "completion_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
@@ -233,7 +239,17 @@ class JobMaterial(Base):
     completion_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("job_completion.id"), nullable=False
     )
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # W6 (C7 raw+resolved): the DB column is ``name_raw`` — the human's free
+    # text is preserved verbatim while ``part_id`` carries the resolved FK. The
+    # ORM attribute stays ``name`` so the wire contract is unchanged.
+    name: Mapped[str] = mapped_column("name_raw", String(128), nullable=False)
+    # Resolved part identity — written by the parts picker (a named deferral);
+    # NULL until then. The raw corpus above trains the future matcher.
+    part_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("part.id"), nullable=True
+    )
+    quality: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_market: Mapped[str | None] = mapped_column(String(64), nullable=True)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("1"))
     unit_paisa: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa_text("0"))
 
