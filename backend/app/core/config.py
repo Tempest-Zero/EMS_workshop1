@@ -96,6 +96,28 @@ class Settings(BaseSettings):
     # FCM — no Expo relay, so nothing needs uploading to EAS. Empty = push off.
     fcm_service_account_b64: str = ""
 
+    # ── WhatsApp (Meta Cloud API) — customer messaging ───────────────────
+    # All empty by default = Cloud sending OFF. Click-to-chat (wa.me) preview/
+    # send-log endpoints work regardless; the Cloud path (POST …/send + the
+    # outbox dispatcher consumer) activates only when the token AND phone
+    # number id are both set. Business-initiated messages must use Meta-
+    # approved *templates* — the names below are placeholders until the
+    # client's templates clear review (a known Phase-2 blocker).
+    whatsapp_access_token: str = ""
+    # The sending number's id on the WhatsApp Business Account (not the E.164).
+    whatsapp_phone_number_id: str = ""
+    # Verifies webhook payloads (X-Hub-Signature-256) — the Meta app secret.
+    # Empty = webhook endpoints fail closed (403 for everyone).
+    whatsapp_app_secret: str = ""
+    # Echoed back in Meta's one-time GET verification handshake.
+    whatsapp_webhook_verify_token: str = ""
+    whatsapp_api_version: str = "v21.0"
+    # Template language code as registered with Meta ("en", "ur", "en_US"…).
+    whatsapp_template_lang: str = "en"
+    whatsapp_template_intake_ack: str = "fixflow_intake_ack"
+    whatsapp_template_bill: str = "fixflow_bill"
+    whatsapp_template_ready: str = "fixflow_ready"
+
     # ── Auth (Name + PIN → JWT) ──────────────────────────────────────────
     # HS256 signing secret. The default is for local dev only — production
     # MUST override it via FIXFLOW_JWT_SECRET (a long random string).
@@ -132,8 +154,10 @@ class Settings(BaseSettings):
     # Default: every Sunday at 18:00 Asia/Karachi (the client's payroll cycle).
     scheduler_timezone: str = "Asia/Karachi"
     # Outbox dispatcher (W7): drains job_event → consumers on an interval. Ships
-    # OFF — the v0 whatsapp consumer is log-only, so flip this on only once a
-    # real delivery handler exists. Requires enable_scheduler.
+    # OFF. The whatsapp consumer (customer_messaging) sends via the Cloud API
+    # when the FIXFLOW_WHATSAPP_* settings above are configured, and degrades to
+    # log-only while they're empty — so flipping this on is harmless either way.
+    # Requires enable_scheduler.
     enable_dispatcher: bool = False
     dispatcher_interval_seconds: int = 60
 
@@ -156,6 +180,12 @@ class Settings(BaseSettings):
         "http://localhost:5174",  # ops console (separate Vite dev server)
         "http://localhost:8081",  # Expo dev server (Metro)
     ]
+
+    @property
+    def whatsapp_cloud_enabled(self) -> bool:
+        """True when the Cloud API sender is configured. Gates the dispatcher
+        consumer and the ``…/send`` endpoint — never the click-to-chat surface."""
+        return bool(self.whatsapp_access_token and self.whatsapp_phone_number_id)
 
     @property
     def is_production(self) -> bool:

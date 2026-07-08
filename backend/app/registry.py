@@ -17,6 +17,7 @@ from __future__ import annotations
 from app.core.db import Base
 from app.features.attendance import models as _attendance_models  # noqa: F401
 from app.features.catalog import models as _catalog_models  # noqa: F401
+from app.features.customer_messaging import models as _customer_messaging_models  # noqa: F401
 from app.features.customers import models as _customers_models  # noqa: F401
 from app.features.identity import models as _identity_models  # noqa: F401
 from app.features.jobs import models as _jobs_models  # noqa: F401
