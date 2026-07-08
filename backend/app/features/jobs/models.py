@@ -206,6 +206,15 @@ class JobCompletion(Base):
     # Loose reference to a job_media row (type=audio) — no hard FK so the voice
     # note can upload after the form submits (offline-friendly).
     remarks_audio_media_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    # W5 tap-pickers: one primary fault + one primary action (0025). Nullable
+    # forever — flag-never-block extends to data completeness; the completeness
+    # score, not a constraint, drives fill-rate.
+    fault_code_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("fault_code.id"), nullable=True
+    )
+    action_code_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("action_code.id"), nullable=True
+    )
     submitted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")

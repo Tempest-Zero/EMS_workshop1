@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.features.catalog.models import ActionCode, FaultCode
 from app.features.identity.models import Technician
 from app.features.identity.security import create_access_token, hash_pin
 
@@ -203,6 +204,43 @@ async def test_completion_generates_bill_then_negotiate(
     assert neg.json()["bill_original_paisa"] == 800000
     assert neg.json()["bill_negotiated_paisa"] == 700000
     assert neg.json()["bill_status"] == "negotiated"
+
+
+async def test_completion_persists_optional_fault_and_action_codes(
+    app_client: AsyncClient, session: AsyncSession, auth_headers: Headers
+) -> None:
+    """W5 tap-pickers: optional vocabulary slugs persist and round-trip; a
+    resubmit without them clears them (the completion is a full upsert)."""
+    # Self-seed the vocabulary rows (create_all tests never see migration
+    # seeds; the 'ac' category itself comes from conftest).
+    await session.merge(FaultCode(id="ac_gas_low", category_id="ac"))
+    await session.merge(ActionCode(id="ac_gas_recharge", category_id="ac"))
+    await session.commit()
+
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+
+    comp = await app_client.post(
+        f"/api/jobs/{job_id}/completion",
+        json={
+            "time_spent_mins": 30,
+            "fault_code_id": "ac_gas_low",
+            "action_code_id": "ac_gas_recharge",
+        },
+        headers=auth_headers,
+    )
+    assert comp.status_code == 200, comp.text
+    assert comp.json()["completion"]["fault_code_id"] == "ac_gas_low"
+    assert comp.json()["completion"]["action_code_id"] == "ac_gas_recharge"
+
+    # Codes stay optional (flag-never-block): omitting them on a resubmit
+    # clears them, like every other completion field.
+    comp2 = await app_client.post(
+        f"/api/jobs/{job_id}/completion", json={"time_spent_mins": 30}, headers=auth_headers
+    )
+    assert comp2.status_code == 200, comp2.text
+    assert comp2.json()["completion"]["fault_code_id"] is None
+    assert comp2.json()["completion"]["action_code_id"] is None
 
 
 async def test_negotiate_without_completion_is_400(

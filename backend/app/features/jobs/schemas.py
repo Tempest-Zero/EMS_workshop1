@@ -73,6 +73,10 @@ class CompletionRequest(BaseModel):
     fuel_paisa: int = Field(default=0, ge=0)
     remarks_text: str | None = Field(default=None, max_length=2048)
     remarks_audio_media_id: UUID | None = None
+    # W5 tap-pickers (optional forever — flag-never-block): seeded vocabulary
+    # slugs like "ac_gas_low" / "ac_gas_recharge".
+    fault_code_id: str | None = Field(default=None, max_length=64)
+    action_code_id: str | None = Field(default=None, max_length=64)
 
 
 class NegotiateRequest(BaseModel):
@@ -123,6 +127,8 @@ class CompletionOut(BaseModel):
     labour_rate_paisa: int
     remarks_text: str | None = None
     remarks_audio_media_id: UUID | None = None
+    fault_code_id: str | None = None
+    action_code_id: str | None = None
     submitted_at: datetime
     materials: list[MaterialOut] = []
 

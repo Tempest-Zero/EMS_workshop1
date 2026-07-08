@@ -1,0 +1,394 @@
+erDiagram
+    %% ============================================================
+    %% FixFlow Target ERD v1.0  (from Alembic head 0017 -> target)
+    %% Solid edges = enforced FK. Dashed = deliberate loose ref.
+    %% shop_id exists on every tenant-scoped table; only the four
+    %% anchor edges are drawn to keep the diagram readable.
+    %% Key columns only - full dictionary in the companion spec.
+    %% ============================================================
+
+    %% ---------- TENANCY & GEOGRAPHY ----------
+    shop {
+        string id PK
+        string name
+        string timezone
+        string currency
+        bool active
+    }
+    area {
+        uuid id PK
+        string city
+        string name
+        string power_quality
+        bool active
+    }
+
+    %% ---------- IDENTITY ----------
+    technician {
+        string id PK
+        string shop_id FK
+        string name
+        string role
+        string pin_hash
+        int token_version
+        bool active
+    }
+
+    %% ---------- CUSTOMER & CONSENT ----------
+    customer {
+        uuid id PK
+        string shop_id FK
+        string full_name
+        uuid area_id FK
+        string address_default
+        string source
+        timestamptz whatsapp_opt_in_at
+        uuid merged_into_customer_id FK
+    }
+    customer_phone {
+        uuid id PK
+        uuid customer_id FK
+        string phone_e164
+        string label
+        bool is_primary
+    }
+    customer_consent_event {
+        uuid id PK
+        uuid customer_id FK
+        string kind
+        string scope
+        string channel
+        string recorded_by
+        timestamptz created_at
+    }
+
+    %% ---------- APPLIANCE ASSET ----------
+    appliance_unit {
+        uuid id PK
+        string shop_id FK
+        uuid customer_id FK
+        string category_id FK
+        uuid model_id FK
+        string brand_raw
+        string model_raw
+        string serial_number
+        int purchase_year
+        jsonb attrs
+    }
+
+    %% ---------- CATALOG & TAXONOMY ----------
+    appliance_category {
+        string id PK
+        string name_en
+        string name_ur
+        string icon
+        bool active
+    }
+    appliance_brand {
+        uuid id PK
+        string name_canonical
+        string status
+        bool active
+    }
+    appliance_model {
+        uuid id PK
+        uuid brand_id FK
+        string category_id FK
+        string model_norm
+        int launch_year
+        jsonb attrs
+        string status
+    }
+    brand_alias {
+        uuid id PK
+        string alias_norm
+        uuid brand_id FK
+    }
+    model_alias {
+        uuid id PK
+        string alias_norm
+        uuid model_id FK
+    }
+    fault_code {
+        string id PK
+        string category_id FK
+        string label_en
+        string label_ur
+        bool is_surge_related
+        bool active
+    }
+    action_code {
+        string id PK
+        string category_id FK
+        string label_en
+        string label_ur
+        bool active
+    }
+    part {
+        uuid id PK
+        string name_canonical
+        string category_id FK
+        string quality
+        string source_market
+        string status
+        bool active
+    }
+    part_alias {
+        uuid id PK
+        string alias_norm
+        uuid part_id FK
+    }
+
+    %% ---------- JOBS CORE ----------
+    job {
+        uuid id PK
+        int token UK
+        string shop_id FK
+        string status
+        string job_type
+        string intake_channel
+        string type_reason
+        uuid customer_id FK
+        uuid appliance_unit_id FK
+        string category_id FK
+        uuid area_id FK
+        string customer_name
+        string customer_phone
+        string appliance_brand
+        string appliance_model
+        string problem
+        string assigned_tech_id FK
+        string power_protection
+        bool suspected_surge
+        bool in_warranty_claimed
+        bigint bill_original_paisa
+        bigint bill_negotiated_paisa
+    }
+    job_event {
+        uuid id PK
+        uuid job_id FK
+        bigint seq UK
+        string kind
+        string text
+        jsonb payload
+        string actor
+        timestamptz created_at
+    }
+    job_completion {
+        uuid id PK
+        uuid job_id FK
+        string fault_code_id FK
+        string action_code_id FK
+        int time_spent_mins
+        bigint fuel_paisa
+        bigint labour_rate_paisa
+        string remarks_text
+        uuid remarks_audio_media_id
+    }
+    job_material {
+        uuid id PK
+        uuid completion_id FK
+        uuid part_id FK
+        string name_raw
+        int qty
+        bigint unit_paisa
+        string quality
+        string source_market
+    }
+    job_location {
+        uuid id PK
+        uuid job_id FK
+        uuid client_id UK
+        string kind
+        float lat
+        float lng
+        bool is_mock
+    }
+    job_payment {
+        uuid id PK
+        uuid job_id FK
+        uuid client_id UK
+        bigint amount_paisa
+        string method
+        bool voided
+    }
+    job_outcome {
+        uuid id PK
+        uuid job_id FK
+        timestamptz checked_at
+        string channel
+        string result
+        string refail_fault_code_id FK
+        uuid refail_job_id FK
+        string recorded_by
+    }
+
+    %% ---------- MEDIA ----------
+    job_media {
+        uuid id PK
+        uuid job_id FK
+        string phase
+        string type
+        string storage_path
+        string status
+        string created_by
+    }
+
+    %% ---------- FLEET & NOTIFICATIONS ----------
+    device {
+        uuid id PK
+        string installation_id UK
+        string tech_id FK
+        string platform
+        string os_version
+        string app_version
+        timestamptz last_seen_at
+    }
+    device_token {
+        uuid id PK
+        string tech_id FK
+        uuid device_id FK
+        string token UK
+        string platform
+    }
+
+    %% ---------- ATTENDANCE & PAYROLL ----------
+    attendance_event {
+        uuid id PK
+        uuid client_id UK
+        string shop_id FK
+        string tech_id FK
+        string kind
+        string source
+        timestamptz server_time
+        bool inside_geofence
+        bool is_mock_location
+    }
+    attendance_presence_event {
+        uuid id PK
+        uuid client_id UK
+        string shop_id FK
+        string tech_id FK
+        string kind
+        timestamptz server_time
+    }
+    attendance_shift {
+        uuid id PK
+        string shop_id FK
+        string tech_id FK
+        time start_local
+        time end_local
+        string working_days
+    }
+    attendance_geofence {
+        uuid id PK
+        string shop_id FK
+        float center_lat
+        float center_lng
+        int radius_m
+        string wifi_bssids
+    }
+    attendance_adjustment {
+        uuid id PK
+        uuid original_event_id FK
+        uuid new_event_id FK
+        string manager_id FK
+        string reason
+    }
+    payroll_export {
+        uuid id PK
+        string shop_id FK
+        date from_date
+        date to_date
+        string storage_path
+    }
+
+    %% ---------- TELEMETRY & DISPATCH ----------
+    app_event {
+        uuid id PK
+        uuid client_id UK
+        string shop_id FK
+        string actor_kind
+        string actor_id
+        string name
+        jsonb props
+        uuid device_id FK
+        timestamptz server_time
+    }
+    ops_metric_rollup {
+        uuid id PK
+        timestamptz captured_at
+        int window_seconds
+        string route
+        int count
+        int error_count
+        int p95_ms
+    }
+    dispatch_cursor {
+        string consumer PK
+        bigint last_seq
+        timestamptz updated_at
+    }
+
+    %% ============================================================
+    %% RELATIONSHIPS
+    %% ============================================================
+
+    %% Tenancy anchors (shop_id on all tenant tables; 4 edges drawn)
+    shop ||--o{ technician : employs
+    shop ||--o{ customer : serves
+    shop ||--o{ job : owns
+    shop ||--o{ attendance_geofence : defines
+
+    %% Customer & consent
+    customer ||--o{ customer_phone : has
+    customer ||--o{ customer_consent_event : logs
+    customer ||--o{ appliance_unit : owns
+    customer ||--o{ job : places
+    customer |o--o{ customer : merged_into
+    area |o--o{ customer : located_in
+    area |o--o{ job : located_in
+
+    %% Asset & catalog
+    appliance_category ||--o{ appliance_unit : classifies
+    appliance_category ||--o{ appliance_model : classifies
+    appliance_category ||--o{ fault_code : scopes
+    appliance_category ||--o{ action_code : scopes
+    appliance_category |o--o{ part : scopes
+    appliance_category ||--o{ job : classifies
+    appliance_brand ||--o{ appliance_model : makes
+    appliance_brand ||--o{ brand_alias : known_as
+    appliance_model ||--o{ model_alias : known_as
+    appliance_model |o--o{ appliance_unit : identifies
+    part ||--o{ part_alias : known_as
+
+    %% Jobs core
+    appliance_unit |o--o{ job : repaired_in
+    technician |o--o{ job : assigned
+    job ||--o{ job_event : timeline
+    job ||--o| job_completion : completed_by
+    job_completion ||--o{ job_material : lines
+    job ||--o{ job_location : route
+    job ||--o{ job_payment : ledger
+    job ||--o{ job_media : evidence
+    job ||--o{ job_outcome : verified_by
+    job |o--o{ job_outcome : refail_target
+    fault_code |o--o{ job_completion : diagnosed
+    action_code |o--o{ job_completion : fixed_by
+    fault_code |o--o{ job_outcome : refail_fault
+    part |o--o{ job_material : resolves
+    job_media |o..o| job_completion : remarks_audio
+
+    %% Fleet, notifications, telemetry
+    technician ||--o{ device : uses
+    technician ||--o{ device_token : registered
+    device |o--o{ device_token : issues
+    device |o--o{ app_event : emits
+
+    %% Attendance
+    technician ||--o{ attendance_event : punches
+    technician ||--o{ attendance_presence_event : crosses
+    technician ||--o| attendance_shift : scheduled
+    technician ||--o{ attendance_adjustment : corrected_by
+    attendance_event |o--o{ attendance_adjustment : original
+    attendance_event ||--o{ attendance_adjustment : replacement
