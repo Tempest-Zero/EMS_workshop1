@@ -10,7 +10,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 JobStatus = Literal["open", "waiting", "ready", "closed"]
-JobType = Literal["carry-in", "home-visit"]
+JobType = Literal["carry-in", "home-visit", "pickup-delivery"]
+IntakeChannel = Literal["walk_in", "whatsapp", "phone", "online_form", "email"]
+PowerProtection = Literal["none", "stabilizer", "ups", "solar_hybrid", "unknown"]
 
 DEFAULT_SHOP_ID = "default"
 
@@ -33,6 +35,12 @@ class JobCreate(BaseModel):
     assigned_tech_id: str | None = Field(default=None, max_length=64)
     preferred_date: date | None = None
     time_window: str | None = Field(default=None, max_length=64)
+    # W9 intake / power / warranty — all optional, additive.
+    intake_channel: IntakeChannel | None = None
+    type_reason: str | None = Field(default=None, max_length=256)
+    power_protection: PowerProtection | None = None
+    suspected_surge: bool | None = None
+    in_warranty_claimed: bool | None = None
     shop_id: str = Field(default=DEFAULT_SHOP_ID, max_length=64)
 
 
@@ -134,7 +142,14 @@ class CompletionOut(BaseModel):
 
 
 # ── GPS route (Phase 3) ───────────────────────────────────────────────────────
-LocationKind = Literal["depart_workshop", "arrive_customer"]
+LocationKind = Literal[
+    "depart_workshop",
+    "arrive_customer",
+    "depart_customer",
+    "arrive_workshop",
+    "depart_workshop_delivery",
+    "arrive_customer_delivery",
+]
 
 
 class LocationRequest(BaseModel):

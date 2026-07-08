@@ -84,6 +84,8 @@ class JobStatus(StrEnum):
 class JobType(StrEnum):
     CARRY_IN = "carry-in"
     HOME_VISIT = "home-visit"
+    # W9: workshop-B "we transport" pickup+delivery becomes a first-class type.
+    PICKUP_DELIVERY = "pickup-delivery"
 
 
 class Job(Base):
@@ -92,7 +94,18 @@ class Job(Base):
         CheckConstraint(
             "status IN ('open', 'waiting', 'ready', 'closed')", name="job_status_check"
         ),
-        CheckConstraint("job_type IN ('carry-in', 'home-visit')", name="job_type_check"),
+        CheckConstraint(
+            "job_type IN ('carry-in', 'home-visit', 'pickup-delivery')", name="job_type_check"
+        ),
+        # W9 intake fields — nullable, so NULL passes each IN check.
+        CheckConstraint(
+            "intake_channel IN ('walk_in', 'whatsapp', 'phone', 'online_form', 'email')",
+            name="job_intake_channel_check",
+        ),
+        CheckConstraint(
+            "power_protection IN ('none', 'stabilizer', 'ups', 'solar_hybrid', 'unknown')",
+            name="job_power_protection_check",
+        ),
         UniqueConstraint("token", name="uq_job_token"),
         Index("ix_job_shop_status", "shop_id", "status"),
         Index("ix_job_assigned_tech", "assigned_tech_id"),
@@ -144,6 +157,16 @@ class Job(Base):
 
     problem: Mapped[str] = mapped_column(String(2048), nullable=False, server_default=sa_text("''"))
     assigned_tech_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # ── Intake / power / warranty (W9; all nullable — additive) ──────────────
+    # How the complaint arrived (CHECKed above).
+    intake_channel: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Free-text note on why this job type was chosen (carry-in vs visit vs pickup).
+    type_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Mains protection at the customer site (CHECKed above) — feeds surge analysis.
+    power_protection: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    suspected_surge: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    in_warranty_claimed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     # Scheduling / lifecycle dates (set on intake or by later status actions).
     preferred_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -277,10 +300,16 @@ class JobMaterial(Base):
 
 
 class JobLocationKind(StrEnum):
-    """The two GPS punches that bound a home-visit route (Phase 3)."""
+    """GPS punches on a job's route. The first two bound a home-visit (Phase 3);
+    W9 adds the return leg + the pickup-delivery transport legs, which reuse the
+    same punch rail instead of a new table."""
 
     DEPART_WORKSHOP = "depart_workshop"
     ARRIVE_CUSTOMER = "arrive_customer"
+    DEPART_CUSTOMER = "depart_customer"
+    ARRIVE_WORKSHOP = "arrive_workshop"
+    DEPART_WORKSHOP_DELIVERY = "depart_workshop_delivery"
+    ARRIVE_CUSTOMER_DELIVERY = "arrive_customer_delivery"
 
 
 class JobLocation(Base):
@@ -292,7 +321,9 @@ class JobLocation(Base):
     __tablename__ = "job_location"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('depart_workshop', 'arrive_customer')", name="job_location_kind_check"
+            "kind IN ('depart_workshop', 'arrive_customer', 'depart_customer', "
+            "'arrive_workshop', 'depart_workshop_delivery', 'arrive_customer_delivery')",
+            name="job_location_kind_check",
         ),
         UniqueConstraint("client_id", name="uq_job_location_client"),
         Index("ix_job_location_job", "job_id"),

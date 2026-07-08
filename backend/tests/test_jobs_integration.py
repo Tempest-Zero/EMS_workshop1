@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.features.catalog.models import ActionCode, FaultCode
 from app.features.identity.models import Technician
 from app.features.identity.security import create_access_token, hash_pin
+from app.features.jobs.models import Job
 
 pytestmark = pytest.mark.integration
 
@@ -241,6 +242,33 @@ async def test_completion_persists_optional_fault_and_action_codes(
     assert comp2.status_code == 200, comp2.text
     assert comp2.json()["completion"]["fault_code_id"] is None
     assert comp2.json()["completion"]["action_code_id"] is None
+
+
+async def test_intake_power_warranty_fields_persist(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    """W9: the new intake/power/warranty fields round-trip, and the widened
+    job_type CHECK accepts the new pickup-delivery type."""
+    body = {
+        **_INTAKE,
+        "job_type": "pickup-delivery",
+        "intake_channel": "whatsapp",
+        "type_reason": "customer can't transport a 2-door fridge",
+        "power_protection": "stabilizer",
+        "suspected_surge": True,
+        "in_warranty_claimed": False,
+    }
+    created = await app_client.post("/api/jobs", json=body, headers=auth_headers)
+    assert created.status_code == 201, created.text
+
+    job = await session.get(Job, created.json()["id"])
+    assert job is not None
+    assert job.job_type == "pickup-delivery"
+    assert job.intake_channel == "whatsapp"
+    assert job.type_reason == "customer can't transport a 2-door fridge"
+    assert job.power_protection == "stabilizer"
+    assert job.suspected_surge is True
+    assert job.in_warranty_claimed is False
 
 
 async def test_negotiate_without_completion_is_400(
