@@ -20,9 +20,10 @@ import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import app.registry  # noqa: F401 — register the FULL ORM schema in Base.metadata.
 from app.core.backup import run_db_backup
 from app.core.config import settings
-from app.core.db import SessionLocal
+from app.core.db import Base, SessionLocal
 from app.core.metrics import MetricsMiddleware
 from app.core.request_id import RequestIdMiddleware, configure_logging
 from app.core.scheduler import (
@@ -211,6 +212,14 @@ def create_app() -> FastAPI:
     # Fail-closed before anything else: a production process must not boot with
     # the insecure dev JWT secret (forgeable tokens). No-op in dev.
     settings.assert_safe_for_production()
+
+    # Fail-fast on a structurally broken ORM graph. Accessing ``sorted_tables``
+    # forces the same whole-metadata topological sort a ``session.flush`` does,
+    # so a missing model registration (an FK whose target table isn't in the
+    # metadata) crashes the boot — which ``start.sh`` treats as fail-safe —
+    # instead of 500ing every write at runtime. Guards the ``import app.registry``
+    # above against ever being dropped again.
+    _ = Base.metadata.sorted_tables
 
     configure_logging()
 

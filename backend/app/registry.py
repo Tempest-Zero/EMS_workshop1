@@ -1,8 +1,13 @@
 """ORM model registry.
 
 Side-effect imports every feature's `models` module so SQLAlchemy populates
-`Base.metadata` with the full schema. Both Alembic (`alembic/env.py`) and any
-test fixture that needs to create the schema import from here.
+`Base.metadata` with the full schema. Imported by Alembic (`alembic/env.py`),
+the test fixtures (`tests/conftest.py`), the `scripts/`, **and the running app
+itself** (`app/main.py`) — the app entrypoint MUST import this, or models only
+reached transitively via routers register while `tenancy`/`catalog` don't,
+leaving dangling cross-slice FKs (e.g. `technician.shop_id` → `shop`) that make
+every `session.flush()` raise `NoReferencedTableError`. `create_app()` accesses
+`Base.metadata.sorted_tables` at boot to fail-fast if this import is ever lost.
 
 **Add a line below when a feature adds new ORM models.**
 """
