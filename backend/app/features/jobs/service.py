@@ -23,13 +23,17 @@ from app.features.jobs.catalog_map import category_for_appliance_type
 from app.features.jobs.models import (
     DispatchCursor,
     JobCompletion,
-    JobEvent,
     JobLocation,
     JobMaterial,
     JobOutcome,
     JobPayment,
 )
 from app.features.jobs.models import Job as JobRow
+
+# Explicit re-export: JobEvent is the payload type of the dispatch contract
+# (``DispatchHandler`` below) — outbox consumers type their handlers against
+# it through this surface instead of reaching into jobs.models.
+from app.features.jobs.models import JobEvent as JobEvent
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     CompletionOut,
