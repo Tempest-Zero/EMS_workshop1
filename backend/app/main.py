@@ -24,7 +24,12 @@ from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.metrics import MetricsMiddleware
 from app.core.request_id import RequestIdMiddleware, configure_logging
-from app.core.scheduler import add_daily_job, add_weekly_sunday_job, create_scheduler
+from app.core.scheduler import (
+    add_daily_job,
+    add_interval_job,
+    add_weekly_sunday_job,
+    create_scheduler,
+)
 from app.core.storage import get_storage
 from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.router import router as attendance_router
@@ -32,7 +37,9 @@ from app.features.attendance.schemas import DEFAULT_SHOP_ID
 from app.features.attendance.service import AttendanceService
 from app.features.health.router import router as health_router
 from app.features.identity.router import router as identity_router
+from app.features.jobs.models import JobEvent
 from app.features.jobs.router import router as jobs_router
+from app.features.jobs.service import run_dispatch_once
 from app.features.media.router import router as media_router
 from app.features.notifications.router import router as notifications_router
 from app.features.ops.router import router as ops_router
@@ -54,6 +61,20 @@ async def _run_payroll_export() -> None:
             raise
 
 
+async def _log_whatsapp_event(event: JobEvent) -> None:
+    """v0 outbox consumer: log-only. A real WhatsApp delivery handler replaces
+    this; until then flipping ``enable_dispatcher`` on just advances the cursor
+    and records what *would* have been sent (UUIDs/slugs only — no PII)."""
+    logger.info("dispatch[whatsapp] seq=%s kind=%s job=%s", event.seq, event.kind, event.job_id)
+
+
+async def _run_whatsapp_dispatch() -> None:
+    """The interval job: drain new job_event rows into the whatsapp consumer.
+    Owns its session; ``run_dispatch_once`` commits its own cursor progress."""
+    async with SessionLocal() as session:
+        await run_dispatch_once(session, "whatsapp", _log_whatsapp_event)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Exposed on app.state so the ops health probe can report the scheduler's
@@ -71,14 +92,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 minute=settings.backup_minute,
                 name="db-backup-nightly",
             )
+        if settings.enable_dispatcher:
+            add_interval_job(
+                scheduler,
+                _run_whatsapp_dispatch,
+                seconds=settings.dispatcher_interval_seconds,
+                name="outbox-dispatch-whatsapp",
+            )
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(
-            "scheduler started (payroll export: Sundays 18:00 %s; db backup: %s daily %02d:%02d)",
+            "scheduler started (payroll: Sundays 18:00 %s; backup: %s daily %02d:%02d; "
+            "dispatcher: %s)",
             settings.scheduler_timezone,
             "on" if settings.backup_enabled else "OFF",
             settings.backup_hour,
             settings.backup_minute,
+            f"every {settings.dispatcher_interval_seconds}s"
+            if settings.enable_dispatcher
+            else "OFF",
         )
     try:
         yield
