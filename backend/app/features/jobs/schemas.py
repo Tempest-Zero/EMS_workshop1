@@ -26,6 +26,9 @@ class JobCreate(BaseModel):
     appliance_type: str = Field(..., min_length=1, max_length=64)
     appliance_brand: str | None = Field(default=None, max_length=64)
     appliance_model: str | None = Field(default=None, max_length=64)
+    # Optional explicit category; if omitted the writer derives it from
+    # appliance_type (0023). Must be a seeded appliance_category id.
+    category_id: str | None = Field(default=None, max_length=32)
     problem: str = Field(default="", max_length=2048)
     assigned_tech_id: str | None = Field(default=None, max_length=64)
     preferred_date: date | None = None

@@ -104,6 +104,7 @@ name = "Feature slices stay independent (cross-slice only via deps/service)"
 type = "independence"
 modules = [
   "app.features.attendance",
+  "app.features.catalog",
   "app.features.customers",
   "app.features.health",
   "app.features.jobs",
@@ -139,6 +140,7 @@ type = "forbidden"
 source_modules = ["app.features.identity"]
 forbidden_modules = [
   "app.features.attendance",
+  "app.features.catalog",
   "app.features.customers",
   "app.features.health",
   "app.features.jobs",

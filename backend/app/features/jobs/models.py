@@ -87,6 +87,7 @@ class Job(Base):
         Index("ix_job_shop_status", "shop_id", "status"),
         Index("ix_job_assigned_tech", "assigned_tech_id"),
         Index("ix_job_customer", "customer_id"),
+        Index("ix_job_shop_category_status", "shop_id", "category_id", "status"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -103,6 +104,10 @@ class Job(Base):
     )
     area_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("area.id"), nullable=True
+    )
+    # Appliance category (0023): dual-written at intake from appliance_type.
+    category_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("appliance_category.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=sa_text("'open'")

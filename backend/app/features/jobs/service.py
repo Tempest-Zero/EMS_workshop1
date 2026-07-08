@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
 from app.features.customers.service import match_customer_by_phone
+from app.features.jobs.catalog_map import category_for_appliance_type
 from app.features.jobs.models import Job as JobRow
 from app.features.jobs.models import (
     JobCompletion,
@@ -158,6 +159,7 @@ class JobService:
             appliance_type=body.appliance_type,
             appliance_brand=body.appliance_brand,
             appliance_model=body.appliance_model,
+            category_id=body.category_id or category_for_appliance_type(body.appliance_type),
             problem=body.problem.strip(),
             assigned_tech_id=body.assigned_tech_id,
             preferred_date=body.preferred_date if is_visit else None,
