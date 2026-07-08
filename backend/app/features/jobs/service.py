@@ -321,6 +321,10 @@ class JobService:
         completion.fuel_paisa = body.fuel_paisa
         completion.remarks_text = body.remarks_text
         completion.remarks_audio_media_id = body.remarks_audio_media_id
+        # W5: persist-if-present, flag-never-block. The FK to the seeded
+        # vocabulary is the only guard — pickers send seeded slugs or nothing.
+        completion.fault_code_id = body.fault_code_id
+        completion.action_code_id = body.action_code_id
         completion.submitted_by = actor
         completion.submitted_at = datetime.now(UTC)
         for m in body.materials:
@@ -535,6 +539,8 @@ class JobService:
                 labour_rate_paisa=completion.labour_rate_paisa,
                 remarks_text=completion.remarks_text,
                 remarks_audio_media_id=completion.remarks_audio_media_id,
+                fault_code_id=completion.fault_code_id,
+                action_code_id=completion.action_code_id,
                 submitted_at=completion.submitted_at,
                 materials=[MaterialOut.model_validate(m) for m in materials],
             )

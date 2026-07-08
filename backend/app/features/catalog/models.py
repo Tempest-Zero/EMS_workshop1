@@ -115,3 +115,42 @@ class ModelAlias(Base):
     model_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("appliance_model.id"), nullable=False
     )
+
+
+class FaultCode(Base):
+    """Diagnosis vocabulary, per category (W5). String PK slugs keep the
+    reliability index legible (``ac / ac_gas_low / ac_gas_recharge``, C1).
+    ``active=false`` retires a code — never delete: history references it."""
+
+    __tablename__ = "fault_code"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    category_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("appliance_category.id"), nullable=False
+    )
+    label_en: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    label_ur: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # §4.6 — surge codes are just flagged members of the same vocabulary.
+    is_surge_related: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+
+
+class ActionCode(Base):
+    """Fix vocabulary, per category (W5) — same shape as fault_code minus the
+    surge flag."""
+
+    __tablename__ = "action_code"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    category_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("appliance_category.id"), nullable=False
+    )
+    label_en: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    label_ur: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
