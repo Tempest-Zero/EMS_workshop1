@@ -86,9 +86,9 @@ async def create_job(
     body: JobCreate,
     service: ServiceDep,
     session: SessionDep,
-    _principal: CurrentPrincipal,
+    principal: CurrentPrincipal,
 ) -> Job:
-    job = await service.create_job(body)
+    job = await service.create_job(body, actor=principal.tech_id)
     await session.commit()
     return job
 
