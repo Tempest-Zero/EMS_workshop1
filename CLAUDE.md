@@ -26,7 +26,7 @@ layout (the same capability is a same-named folder in each runtime).
 | **Web manager** (`src/`)                           | React 19 + Vite 6 + Tailwind 4 + React Router 7; Vitest + Testing Library; state in one React Context (`src/app/providers/AppContext.jsx`)                                                                                                                                                                                                   | —                                                                                                         |
 | **Ops console** (`src/ops/` + `src/features/ops/`) | Standalone **read-only** monitoring app — a SECOND Vite build (`vite.ops.config.js` → `ops.html` → `dist-ops/`, `Dockerfile.ops`) deployed as its own Railway service (`ops`, `ops-server.mjs`). Surfaces **backend-proxied** deep-health + in-app API metrics (the two surfaces only the backend can produce), plus **ops-server-proxied** Railway logs/deploys/metrics + Sentry issues. Gated by a shared **proxy token** (`X-Ops-Proxy-Token`), not a DB role | NOT bundled into the manager app; the manager backend never holds Railway/Sentry tokens — the ops server does |
 | **Mobile** (`technician-app/`)                     | Expo **SDK 52**, React Native 0.76.9, **Android-only**, TypeScript strict, Jest (`jest-expo`); needs an **EAS dev build** (not Expo Go). **Background geofencing** (`expo-task-manager` + `ACCESS_BACKGROUND_LOCATION`) drives the attendance arrival/exit prompts                                                                           | not iOS, not Expo Go                                                                                      |
-| **Backend** (`backend/`)                           | **FastAPI** (Python 3.12), SQLAlchemy 2.0 **async** + asyncpg, **Alembic** migrations (head = **0019**), Pytest + pytest-asyncio, Ruff, Mypy strict, import-linter                                                                                                                                                                           | not Django, not sync SQLAlchemy                                                                           |
+| **Backend** (`backend/`)                           | **FastAPI** (Python 3.12), SQLAlchemy 2.0 **async** + asyncpg, **Alembic** migrations (head = **0033**; 36 tables), Pytest + pytest-asyncio, Ruff, Mypy strict, import-linter                                                                                                                                                                | not Django, not sync SQLAlchemy                                                                           |
 | **Database**                                       | **Supabase = managed Postgres ONLY**, via the IPv4 **session pooler**; schema owned by **Alembic**                                                                                                                                                                                                                                           | **NOT** Supabase-native: no RLS, no GoTrue, no PostgREST, no Edge Functions, no pgTAP, no `supabase/` dir |
 | **Auth**                                           | **Custom FastAPI JWT** — name/PIN login, PBKDF2-hashed PIN, `token_version` revocation, per-IP throttle + lockout (`backend/app/features/identity/`). Authorization enforced in the **service layer** (`CurrentPrincipal`/`CurrentManager`). Roles: `tech`, `manager`. (The ops console is gated separately by a shared proxy token, not a DB role.)                                    | **NOT** Supabase GoTrue                                                                                   |
 | **Media bytes**                                    | **Cloudflare R2**, signed PUT, private bucket + signed GET ($0 egress). Phone never holds R2 creds                                                                                                                                                                                                                                           | **NOT** Supabase Storage                                                                                  |
@@ -66,12 +66,19 @@ layout (the same capability is a same-named folder in each runtime).
 
 ## Invariants you must respect when changing code
 
-- **Money is integer paisa** (1 Rs = 100 paisa), never floats. Convert at the UI edge.
+- **Money is integer minor units** (1 Rs = 100 paisa), never floats. Convert at the UI edge.
+  Existing columns keep their `*_paisa` names (no churn on a live ledger); **new** money columns
+  are named `*_minor` (the unit is `shop.currency`; seed `PKR` ⇒ paisa).
 - **Mobile mutations go through the outbox** (`sendOrQueue`) and carry an idempotency
   `client_id`. Never `fetch` a write directly from a screen — that loses data offline and risks
   double-charging on retry.
 - **Any `models.py` change needs a matching Alembic migration.** CI runs `alembic check` (drift)
-  and `alembic upgrade head` against real Postgres.
+  and `alembic upgrade head` against real Postgres. **FKs on populated tables** ship as
+  `NOT VALID` then `VALIDATE CONSTRAINT` — same migration when the column is provably clean
+  (seed precedes it / all-NULL new column), a **separate PR/deploy** when months of human data
+  could hold orphans (`start.sh` runs all pending migrations at boot, so a same-deploy VALIDATE
+  leaves no window to audit orphans). Seeds go in migrations; fuzzy backfills are idempotent
+  dry-run-default scripts in `backend/scripts/` (run deliberately via `railway run`).
 - **Respect slice boundaries.** Cross-slice access goes through `service.py`/`deps.py` (backend)
   or a feature's `index.js` barrel (web). CI enforces this (import-linter + ESLint
   `no-restricted-imports`); a new edge must be added to the allow-list consciously.
@@ -97,6 +104,20 @@ Each capability is a same-named folder per runtime:
 `backend/app/features/<x>/` (backend). Backend slice = `router → service → repository`, with
 `schemas.py`/`models.py`/`deps.py`/`tests/`. For the full lookup table ("feature X lives
 where?") and an end-to-end trace, see **`docs/CODE-MAP.md`** (Part 3 + Part 6).
+
+**Backend slices** (migrations 0020–0033 grew the operational store into a 36-table data
+asset — spec: `docs/fixflow-erd-specification.md`): `identity`, `jobs`, `media`, `attendance`,
+`notifications`, `ops`, `health`, plus the ERD additions **`tenancy`** (`shop`/`area`),
+**`customers`** (`customer`/`customer_phone`/`consent`/`appliance_unit`), **`catalog`**
+(`appliance_category/brand/model` + aliases, `fault_code`/`action_code`, `part`/`part_alias`),
+and **`telemetry`** (`app_event`/`ops_metric_rollup`, the `POST /api/events` ingest). `job_event`
+doubles as a transactional outbox (`seq` + `dispatch_cursor`). New rows carry enforced FKs;
+free-text intake stays in `*_raw` columns beside the resolved FK (C7 raw+resolved).
+
+**Scheduler jobs** (`main.py` `_lifespan`, single-replica): weekly payroll export, nightly DB
+backup, daily outcome auto-link scan + media-orphan sweep, a 300s ops-metric rollup, and the
+outbox dispatcher (interval, gated by `settings.enable_dispatcher`, **default OFF**). Each is
+idempotent so a duplicate run is harmless.
 
 ---
 
