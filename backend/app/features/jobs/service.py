@@ -92,6 +92,7 @@ def derive_route(locations: list[JobLocation], rate_paisa_per_km: int) -> RouteO
 
 # ── Outbox dispatch (W7/D1) ───────────────────────────────────────────────────
 DispatchHandler = Callable[[JobEvent], Awaitable[None]]
+DeadLetterHandler = Callable[[JobEvent, Exception], Awaitable[None]]
 
 
 async def run_dispatch_once(
@@ -100,12 +101,20 @@ async def run_dispatch_once(
     handler: DispatchHandler,
     *,
     limit: int = 100,
+    dead_letter: DeadLetterHandler | None = None,
 ) -> int:
     """Drain up to ``limit`` ``job_event`` rows past ``consumer``'s cursor, in
-    ``seq`` order, calling ``handler`` on each. The cursor advances only past
-    events the handler accepts; the first failure halts the batch so that event
-    is retried next tick rather than skipped (dead-lettering lands in W11).
-    Commits its own progress. Returns the number delivered."""
+    ``seq`` order, calling ``handler`` on each. The cursor advances past every
+    event the handler accepts. A handler failure is handled per ``dead_letter``:
+
+    * ``None`` (v0 behaviour): halt the batch, leaving the cursor before the
+      failed event so it retries next tick.
+    * provided (W11): dead-letter the poisoned event — call ``dead_letter`` (to
+      record an alarm), advance past it, and keep draining. A permanently-bad
+      event can't wedge the whole consumer.
+
+    Commits its own progress (cursor + any dead-letter rows). Returns the number
+    of events the cursor moved past."""
     cursor = await session.get(DispatchCursor, consumer)
     if cursor is None:
         cursor = DispatchCursor(consumer=consumer, last_seq=0)
@@ -123,24 +132,31 @@ async def run_dispatch_once(
         ).scalars()
     )
 
-    delivered = 0
+    processed = 0
     for event in events:
         try:
             await handler(event)
-        except Exception:
+        except Exception as exc:
+            if dead_letter is None:
+                logger.exception(
+                    "dispatch handler failed: consumer=%s seq=%s — halting batch",
+                    consumer,
+                    event.seq,
+                )
+                break
             logger.exception(
-                "dispatch handler failed: consumer=%s seq=%s — halting batch",
+                "dispatch handler failed: consumer=%s seq=%s — dead-lettering",
                 consumer,
                 event.seq,
             )
-            break
+            await dead_letter(event, exc)
         cursor.last_seq = event.seq
-        delivered += 1
+        processed += 1
 
-    if delivered:
+    if processed:
         cursor.updated_at = datetime.now(UTC)
     await session.commit()
-    return delivered
+    return processed
 
 
 # ── Outcome auto-link scan (W8) ───────────────────────────────────────────────

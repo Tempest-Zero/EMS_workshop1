@@ -111,6 +111,7 @@ modules = [
   "app.features.media",
   "app.features.notifications",
   "app.features.ops",
+  "app.features.telemetry",
   "app.features.tenancy",
 ]
 ignore_imports = [
@@ -146,6 +147,7 @@ forbidden_modules = [
   "app.features.jobs",
   "app.features.media",
   "app.features.notifications",
+  "app.features.telemetry",
   "app.features.tenancy",
 ]
 ignore_imports = [
