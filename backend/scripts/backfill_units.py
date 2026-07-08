@@ -25,6 +25,7 @@ from collections import defaultdict
 
 from sqlalchemy import select
 
+import app.registry  # noqa: F401  # full metadata: flush must resolve cross-slice FKs
 from app.core.db import SessionLocal
 from app.features.customers.models import ApplianceUnit
 from app.features.jobs.models import Job
