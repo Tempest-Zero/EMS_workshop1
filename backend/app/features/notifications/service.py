@@ -74,8 +74,31 @@ class NotificationService:
     def __init__(self, repo: NotificationRepository) -> None:
         self._repo = repo
 
-    async def register(self, *, tech_id: str, token: str, platform: str) -> None:
-        await self._repo.upsert_token(tech_id=tech_id, token=token, platform=platform)
+    async def register(
+        self,
+        *,
+        tech_id: str,
+        token: str,
+        platform: str,
+        installation_id: str | None = None,
+        app_version: str | None = None,
+        os_version: str | None = None,
+    ) -> None:
+        """Register a push token, and — when the client supplies an installation
+        id (W10) — upsert its fleet ``device`` row and link the token to it. The
+        registration call doubles as the device heartbeat."""
+        device_id = None
+        if installation_id is not None:
+            device_id = await self._repo.upsert_device(
+                installation_id=installation_id,
+                tech_id=tech_id,
+                platform=platform,
+                app_version=app_version,
+                os_version=os_version,
+            )
+        await self._repo.upsert_token(
+            tech_id=tech_id, token=token, platform=platform, device_id=device_id
+        )
 
     async def notify_assignment(self, *, tech_id: str, job_token: int) -> None:
         """Push a 'job assigned' notification to all of a tech's devices via FCM.

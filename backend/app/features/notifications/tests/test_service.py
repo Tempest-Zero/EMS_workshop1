@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
 from app.features.notifications.service import NotificationService
 
 _SA = {"client_email": "svc@x.iam", "project_id": "fixflow-app-5d0a8", "token_uri": "https://t"}
+_DEVICE_ID = UUID("11111111-1111-1111-1111-111111111111")
 
 
 @pytest.fixture
 def svc() -> Iterator[tuple[NotificationService, MagicMock]]:
     repo = MagicMock()
     repo.upsert_token = AsyncMock()
+    repo.upsert_device = AsyncMock(return_value=_DEVICE_ID)
     repo.list_tokens = AsyncMock(return_value=[])
     repo.delete_token = AsyncMock()
     yield NotificationService(repo), repo
@@ -36,7 +39,35 @@ def _client_posting(post: AsyncMock) -> MagicMock:
 async def test_register_delegates_to_repo(svc: tuple[NotificationService, MagicMock]) -> None:
     service, repo = svc
     await service.register(tech_id="t1", token="fcm-abc", platform="android")
-    repo.upsert_token.assert_awaited_once_with(tech_id="t1", token="fcm-abc", platform="android")
+    # Token-only register (no installation id): no device upsert, no link.
+    repo.upsert_device.assert_not_awaited()
+    repo.upsert_token.assert_awaited_once_with(
+        tech_id="t1", token="fcm-abc", platform="android", device_id=None
+    )
+
+
+async def test_register_with_installation_upserts_device_and_links_token(
+    svc: tuple[NotificationService, MagicMock],
+) -> None:
+    service, repo = svc
+    await service.register(
+        tech_id="t1",
+        token="fcm-abc",
+        platform="android",
+        installation_id="inst-1",
+        app_version="1.2.0",
+        os_version="Android 14",
+    )
+    repo.upsert_device.assert_awaited_once_with(
+        installation_id="inst-1",
+        tech_id="t1",
+        platform="android",
+        app_version="1.2.0",
+        os_version="Android 14",
+    )
+    repo.upsert_token.assert_awaited_once_with(
+        tech_id="t1", token="fcm-abc", platform="android", device_id=_DEVICE_ID
+    )
 
 
 async def test_notify_with_no_tokens_is_a_noop(svc: tuple[NotificationService, MagicMock]) -> None:
