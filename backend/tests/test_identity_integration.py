@@ -144,8 +144,9 @@ async def test_revoke_sessions_kills_live_tokens(
 async def test_tech_cannot_set_anothers_pin_or_revoke(
     app_client: AsyncClient, session: AsyncSession
 ) -> None:
-    # Seed a plain tech and log in as them.
-    session.add(
+    # Seed a plain tech and log in as them. merge (not add): the conftest roster
+    # pre-seeds t9 since 0032's tech FK, so this upserts it.
+    await session.merge(
         Technician(
             id="t9",
             name="Plain Tech",

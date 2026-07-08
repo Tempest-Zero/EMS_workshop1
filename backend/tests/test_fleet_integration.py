@@ -20,7 +20,8 @@ pytestmark = pytest.mark.integration
 
 
 async def _seed_tech(session: AsyncSession, tech_id: str = "t1") -> None:
-    session.add(
+    # merge: the conftest roster pre-seeds t1..t9 since 0032's tech FK.
+    await session.merge(
         Technician(id=tech_id, name="Imran", role="tech", pin_hash=hash_pin("1234"), active=True)
     )
     await session.flush()

@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -214,6 +214,54 @@ async def run_outcome_auto_link_scan(session: AsyncSession, *, within_days: int 
     if pairs:
         await session.commit()
     return len(pairs)
+
+
+# ── Media-orphan sweep (W12; spec §6's one surviving loose ref) ────────────────
+MediaOrphanHandler = Callable[[UUID, UUID], Awaitable[None]]
+
+
+async def run_media_orphan_sweep(
+    session: AsyncSession,
+    *,
+    older_than_hours: int = 48,
+    on_orphan: MediaOrphanHandler | None = None,
+) -> int:
+    """Flag completions whose ``remarks_audio_media_id`` resolves to no
+    ``job_media`` row (the audio-note upload failed or was dropped) once they're
+    older than ``older_than_hours`` — the reconciliation for the one loose ref
+    the model keeps (the completion is the money path; its outbox item must
+    never be rejected because the voice note dead-lettered). Logs each and calls
+    ``on_orphan`` (the composition root emits the ``media_orphan`` app_event).
+    Raw SQL keeps this inside the jobs slice — ``job_media`` is referenced by
+    table name, not a cross-slice import."""
+    cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT c.id AS completion_id, c.remarks_audio_media_id AS media_id
+                FROM job_completion c
+                WHERE c.remarks_audio_media_id IS NOT NULL
+                  AND c.submitted_at < :cutoff
+                  AND NOT EXISTS (
+                      SELECT 1 FROM job_media m WHERE m.id = c.remarks_audio_media_id
+                  )
+                """
+            ).bindparams(cutoff=cutoff)
+        )
+    ).all()
+
+    for row in rows:
+        logger.warning(
+            "media orphan: completion=%s remarks_audio_media_id=%s unresolved",
+            row.completion_id,
+            row.media_id,
+        )
+        if on_orphan is not None:
+            await on_orphan(row.completion_id, row.media_id)
+    if rows and on_orphan is not None:
+        await session.commit()
+    return len(rows)
 
 
 class JobNotFoundError(LookupError):
