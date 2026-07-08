@@ -20,7 +20,12 @@ import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import app.registry  # noqa: F401 — register the FULL ORM schema in Base.metadata.
+# Register the FULL ORM schema in Base.metadata. Deliberately NOT
+# `import app.registry`: that statement also binds the name `app` (the
+# package) in this namespace, which `app = create_app()` below would then
+# shadow — legal at runtime but a mypy strict error that cascades into every
+# test importing `app.main.app`.
+from app import registry as _registry  # noqa: F401
 from app.core.backup import run_db_backup
 from app.core.config import settings
 from app.core.db import Base, SessionLocal
