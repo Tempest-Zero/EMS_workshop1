@@ -74,3 +74,25 @@ async def test_handler_failure_leaves_cursor_unmoved(
     cursor = await session.get(DispatchCursor, "erp")
     assert cursor is not None
     assert cursor.last_seq == 0  # the failed event retries next tick, not skipped
+
+
+async def test_dead_letter_advances_past_a_poisoned_event(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    """W11: with a dead_letter handler, a permanently-failing event is advanced
+    past (and alarmed) instead of wedging the consumer forever."""
+    await _make_events(app_client, auth_headers, 2)
+    dead_lettered: list[int] = []
+
+    async def failing(event: JobEvent) -> None:
+        raise RuntimeError("poison")
+
+    async def dead_letter(event: JobEvent, _exc: Exception) -> None:
+        dead_lettered.append(event.seq)
+
+    processed = await run_dispatch_once(session, "erp2", failing, dead_letter=dead_letter)
+    assert processed == 2  # both advanced past despite failing
+    assert len(dead_lettered) == 2
+    cursor = await session.get(DispatchCursor, "erp2")
+    assert cursor is not None
+    assert cursor.last_seq == max(dead_lettered)

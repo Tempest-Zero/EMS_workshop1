@@ -43,6 +43,8 @@ from app.features.jobs.service import run_dispatch_once, run_outcome_auto_link_s
 from app.features.media.router import router as media_router
 from app.features.notifications.router import router as notifications_router
 from app.features.ops.router import router as ops_router
+from app.features.telemetry.router import router as telemetry_router
+from app.features.telemetry.service import MetricRollup, record_dead_letter
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +72,33 @@ async def _log_whatsapp_event(event: JobEvent) -> None:
 
 async def _run_whatsapp_dispatch() -> None:
     """The interval job: drain new job_event rows into the whatsapp consumer.
-    Owns its session; ``run_dispatch_once`` commits its own cursor progress."""
+    Owns its session; ``run_dispatch_once`` commits its own cursor progress. A
+    poisoned event is dead-lettered (advanced past + ``outbox_dead_letter``
+    app_event) so one bad row can't wedge the consumer — the composition root
+    is the seam that lets jobs stay decoupled from telemetry."""
     async with SessionLocal() as session:
-        await run_dispatch_once(session, "whatsapp", _log_whatsapp_event)
+
+        async def _dead_letter(event: JobEvent, _exc: Exception) -> None:
+            await record_dead_letter(
+                session, shop_id=DEFAULT_SHOP_ID, consumer="whatsapp", seq=event.seq
+            )
+
+        await run_dispatch_once(session, "whatsapp", _log_whatsapp_event, dead_letter=_dead_letter)
+
+
+# Holds the per-route baseline across 5-minute ticks (single-replica).
+_metric_rollup = MetricRollup()
+
+
+async def _run_metric_rollup() -> None:
+    """The 5-minute job: snapshot the in-process request metrics and persist the
+    delta since the last tick, so ops history survives the next deploy."""
+    async with SessionLocal() as session:
+        try:
+            await _metric_rollup.tick(session)
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def _run_outcome_scan() -> None:
@@ -117,6 +143,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             hour=3,
             minute=0,
             name="outcome-auto-link-scan",
+        )
+        add_interval_job(
+            scheduler,
+            _run_metric_rollup,
+            seconds=300,
+            name="ops-metric-rollup",
         )
         scheduler.start()
         app.state.scheduler = scheduler
@@ -186,6 +218,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, prefix="/api")
     app.include_router(notifications_router, prefix="/api")
     app.include_router(ops_router, prefix="/api")
+    app.include_router(telemetry_router, prefix="/api")
 
     return app
 
