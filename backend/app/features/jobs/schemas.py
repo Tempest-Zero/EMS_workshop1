@@ -7,7 +7,9 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.shared.phone import canonicalize_pk_phone
 
 JobStatus = Literal["open", "waiting", "ready", "closed"]
 JobType = Literal["carry-in", "home-visit", "pickup-delivery"]
@@ -41,7 +43,23 @@ class JobCreate(BaseModel):
     power_protection: PowerProtection | None = None
     suspected_surge: bool | None = None
     in_warranty_claimed: bool | None = None
+    # F5 consent chip: "customer agreed to WhatsApp updates". When true the
+    # writer links-or-creates the customer and appends a consent event.
+    whatsapp_consent: bool = False
     shop_id: str = Field(default=DEFAULT_SHOP_ID, max_length=64)
+
+    @field_validator("customer_phone")
+    @classmethod
+    def _canonicalize_phone(cls, v: str | None) -> str | None:
+        """Store recognizable Pakistani mobiles as E.164 (+923XXXXXXXXX).
+
+        WhatsApp (click-to-chat now, the Cloud API behind the same Send
+        button) needs E.164, and free-text spellings otherwise accumulate.
+        Lenient by design: the field has always been free text, so a landline,
+        foreign number, or annotated entry is kept trimmed as-is — intake must
+        never fail over the phone.
+        """
+        return canonicalize_pk_phone(v)
 
 
 class JobEventOut(BaseModel):
@@ -221,6 +239,8 @@ class Job(BaseModel):
     shop_id: str
     status: JobStatus
     job_type: JobType
+    # Best-effort intake link (0021) — the handle for consent lookups/writes.
+    customer_id: UUID | None = None
     customer_name: str
     customer_phone: str | None = None
     customer_address: str | None = None

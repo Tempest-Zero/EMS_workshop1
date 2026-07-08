@@ -11,32 +11,29 @@ match). Backfill creates the customers this matches against
 
 from __future__ import annotations
 
-import re
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.customers.models import Customer, CustomerPhone
+from app.features.customers.models import Customer, CustomerConsentEvent, CustomerPhone
+from app.shared.phone import to_e164_pk
 
-# Pakistani mobile after punctuation is stripped: optional +92 / 0092 / 0 prefix,
-# then a 10-digit mobile starting with 3 (e.g. 0300-1234567, +92 300 1234567).
-_PK_MOBILE = re.compile(r"^(?:\+?92|0092|0)?(3\d{9})$")
+
+class CustomerNotFoundError(Exception):
+    """Raised when a consent write names a customer id that doesn't exist."""
 
 
 def normalize_phone_e164(raw: str | None) -> str | None:
     """Recognizable Pakistani mobiles → E.164 (``+923XXXXXXXXX``); else ``None``.
 
     Lenient by design: a landline, foreign, or garbled number returns ``None``
-    (it just won't match a customer), never an error.
+    (it just won't match a customer), never an error. The rule itself lives in
+    the shared kernel (``app.shared.phone``) so jobs' intake canonicalizer and
+    WhatsApp addressing apply the identical spelling.
     """
-    if not raw:
-        return None
-    digits = re.sub(r"[^\d+]", "", raw)
-    m = _PK_MOBILE.match(digits)
-    if m is None:
-        return None
-    return "+92" + m.group(1)
+    return to_e164_pk(raw)
 
 
 async def match_customer_by_phone(
@@ -58,3 +55,79 @@ async def match_customer_by_phone(
     if len(winners) == 1:
         return next(iter(winners))
     return None
+
+
+async def resolve_customer(session: AsyncSession, customer_id: UUID) -> Customer | None:
+    """The customer row, with dedupe-merge pointers followed to the winner.
+
+    Reads must never act on a merged-away loser row (its consent columns stop
+    being maintained); the pointer chain is short by construction (losers point
+    at winners, winners aren't merged), but the walk is capped defensively.
+    """
+    current = await session.get(Customer, customer_id)
+    for _ in range(5):
+        if current is None or current.merged_into_customer_id is None:
+            return current
+        current = await session.get(Customer, current.merged_into_customer_id)
+    return current
+
+
+async def get_whatsapp_opt_in(session: AsyncSession, customer_id: UUID) -> datetime | None:
+    """The (merge-resolved) customer's current WhatsApp consent timestamp —
+    the one question the messaging slice asks before any send."""
+    customer = await resolve_customer(session, customer_id)
+    return customer.whatsapp_opt_in_at if customer is not None else None
+
+
+async def record_consent(
+    session: AsyncSession,
+    *,
+    customer_id: UUID,
+    kind: str,
+    scope: str,
+    channel: str,
+    recorded_by: str | None,
+) -> Customer:
+    """Append a consent event and maintain the denormalized current-state
+    columns on ``customer`` (the table proves it; the columns answer "may
+    we?"). Recorded against the merge-resolved winner."""
+    customer = await resolve_customer(session, customer_id)
+    if customer is None:
+        raise CustomerNotFoundError(f"customer {customer_id} not found")
+    session.add(
+        CustomerConsentEvent(
+            customer_id=customer.id,
+            kind=kind,
+            scope=scope,
+            channel=channel,
+            recorded_by=recorded_by,
+        )
+    )
+    now = datetime.now(UTC)
+    stamp = now if kind == "given" else None
+    if scope == "whatsapp":
+        customer.whatsapp_opt_in_at = stamp
+    elif scope == "contact":
+        customer.consent_contact_at = stamp
+    customer.updated_at = now
+    await session.flush()
+    return customer
+
+
+async def create_customer_with_phone(
+    session: AsyncSession,
+    *,
+    shop_id: str,
+    full_name: str,
+    phone_e164: str,
+    source: str = "walk_in",
+) -> Customer:
+    """Create a customer + primary phone in one go (the intake "no match:
+    create on submit" path). The phone must already be E.164 — callers
+    normalize via ``app.shared.phone`` first."""
+    customer = Customer(shop_id=shop_id, full_name=full_name, source=source)
+    session.add(customer)
+    await session.flush()  # assigns customer.id for the phone row
+    session.add(CustomerPhone(customer_id=customer.id, phone_e164=phone_e164, is_primary=True))
+    await session.flush()
+    return customer
