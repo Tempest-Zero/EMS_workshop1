@@ -35,5 +35,12 @@ async def register_device(
     session: SessionDep,
     principal: CurrentPrincipal,
 ) -> None:
-    await service.register(tech_id=principal.tech_id, token=body.token, platform=body.platform)
+    await service.register(
+        tech_id=principal.tech_id,
+        token=body.token,
+        platform=body.platform,
+        installation_id=body.installation_id,
+        app_version=body.app_version,
+        os_version=body.os_version,
+    )
     await session.commit()
