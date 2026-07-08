@@ -88,6 +88,7 @@ class Job(Base):
         Index("ix_job_assigned_tech", "assigned_tech_id"),
         Index("ix_job_customer", "customer_id"),
         Index("ix_job_shop_category_status", "shop_id", "category_id", "status"),
+        Index("ix_job_appliance_unit", "appliance_unit_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -108,6 +109,11 @@ class Job(Base):
     # Appliance category (0023): dual-written at intake from appliance_type.
     category_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("appliance_category.id"), nullable=True
+    )
+    # The physical machine (0024): set by backfill; live intake matching is a
+    # named deferral (spec open decision #2).
+    appliance_unit_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("appliance_unit.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=sa_text("'open'")

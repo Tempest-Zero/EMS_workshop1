@@ -11,7 +11,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.customers.models import Customer, CustomerPhone
+from app.features.customers.models import ApplianceUnit, Customer, CustomerPhone
 from app.features.customers.service import match_customer_by_phone
 from app.features.jobs.models import Job
 
@@ -66,6 +66,32 @@ async def test_job_create_links_customer_by_phone(
     job = await session.get(Job, resp.json()["id"])
     assert job is not None
     assert job.customer_id == customer.id
+
+
+async def test_appliance_unit_links_to_customer_and_job(session: AsyncSession) -> None:
+    # W4 asset layer: a unit anchors to a customer + category, and a job can
+    # reference it (all three FKs + the partial serial index in one round-trip).
+    customer = await _seed_customer(session, full_name="Unit Owner", phone_e164="+923218887766")
+    unit = ApplianceUnit(
+        customer_id=customer.id,
+        category_id="refrigerator",
+        brand_raw="Dawlance",
+        serial_number="SN-123",
+    )
+    session.add(unit)
+    await session.flush()
+    job = Job(
+        token=990001,
+        customer_name="Unit Owner",
+        appliance_type="Refrigerator",
+        problem="test",
+        appliance_unit_id=unit.id,
+    )
+    session.add(job)
+    await session.commit()
+    got = await session.get(Job, job.id)
+    assert got is not None
+    assert got.appliance_unit_id == unit.id
 
 
 async def test_job_create_leaves_customer_id_null_when_no_match(
