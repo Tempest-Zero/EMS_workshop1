@@ -280,6 +280,11 @@ class JobService:
             assigned_tech_id=body.assigned_tech_id,
             preferred_date=body.preferred_date if is_visit else None,
             time_window=body.time_window if is_visit else None,
+            intake_channel=body.intake_channel,
+            type_reason=body.type_reason,
+            power_protection=body.power_protection,
+            suspected_surge=body.suspected_surge,
+            in_warranty_claimed=body.in_warranty_claimed,
         )
         return await self._repo.create(row)
 
