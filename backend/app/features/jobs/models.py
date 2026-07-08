@@ -357,3 +357,46 @@ class DispatchCursor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )
+
+
+class JobOutcome(Base):
+    """The actuarial table (W8, spec §3.5): did a repair actually hold? Multiple
+    checks per job are allowed (a 30-day call, a 90-day auto-scan), so there is
+    deliberately no unique on ``job_id``. The strongest signal is
+    ``refail_job_id`` — the follow-up job on the same unit, which turns "the
+    January fridge came back in March" from an inference into a row."""
+
+    __tablename__ = "job_outcome"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('auto_link', 'manager_call', 'whatsapp')",
+            name="job_outcome_channel_check",
+        ),
+        CheckConstraint(
+            "result IN ('ok', 're_failed', 'unreachable', 'pending')",
+            name="job_outcome_result_check",
+        ),
+        Index("ix_job_outcome_job_checked", "job_id", "checked_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
+    )
+    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("job.id"), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    result: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Set when a re-failure is reported without a follow-up job yet.
+    refail_fault_code_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("fault_code.id"), nullable=True
+    )
+    # The follow-up job itself — the strongest re-failure signal.
+    refail_job_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("job.id"), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # tech/manager slug, or 'system' for the auto-link scan.
+    recorded_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )

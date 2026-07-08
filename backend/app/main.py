@@ -39,7 +39,7 @@ from app.features.health.router import router as health_router
 from app.features.identity.router import router as identity_router
 from app.features.jobs.models import JobEvent
 from app.features.jobs.router import router as jobs_router
-from app.features.jobs.service import run_dispatch_once
+from app.features.jobs.service import run_dispatch_once, run_outcome_auto_link_scan
 from app.features.media.router import router as media_router
 from app.features.notifications.router import router as notifications_router
 from app.features.ops.router import router as ops_router
@@ -75,6 +75,18 @@ async def _run_whatsapp_dispatch() -> None:
         await run_dispatch_once(session, "whatsapp", _log_whatsapp_event)
 
 
+async def _run_outcome_scan() -> None:
+    """The daily job: link repeat jobs on the same unit as re-failure outcomes.
+    Owns its session; the scan is idempotent so a duplicate run is harmless."""
+    async with SessionLocal() as session:
+        try:
+            n = await run_outcome_auto_link_scan(session)
+            logger.info("outcome auto-link scan: %s re-failure row(s) recorded", n)
+        except Exception:
+            await session.rollback()
+            raise
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Exposed on app.state so the ops health probe can report the scheduler's
@@ -99,6 +111,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 seconds=settings.dispatcher_interval_seconds,
                 name="outbox-dispatch-whatsapp",
             )
+        add_daily_job(
+            scheduler,
+            _run_outcome_scan,
+            hour=3,
+            minute=0,
+            name="outcome-auto-link-scan",
+        )
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info(

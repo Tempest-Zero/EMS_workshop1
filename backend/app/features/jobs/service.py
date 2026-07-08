@@ -8,9 +8,10 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.features.customers.service import match_customer_by_phone
@@ -21,6 +22,7 @@ from app.features.jobs.models import (
     JobEvent,
     JobLocation,
     JobMaterial,
+    JobOutcome,
     JobPayment,
 )
 from app.features.jobs.models import Job as JobRow
@@ -139,6 +141,63 @@ async def run_dispatch_once(
         cursor.updated_at = datetime.now(UTC)
     await session.commit()
     return delivered
+
+
+# ── Outcome auto-link scan (W8) ───────────────────────────────────────────────
+async def run_outcome_auto_link_scan(session: AsyncSession, *, within_days: int = 90) -> int:
+    """Record a re-failure outcome for every closed repair that was followed by
+    another job on the *same physical unit* within ``within_days``. The later
+    job is the strongest signal a repair didn't hold, so we link them as a fact
+    rather than inferring it later from customer+category. Idempotent: an
+    existing ``auto_link`` row for the same (repair, follow-up) pair is skipped,
+    so the daily run is safe to repeat. Returns the number of rows inserted."""
+    later = aliased(JobRow)
+    already_linked = (
+        select(JobOutcome.id)
+        .where(
+            JobOutcome.job_id == JobRow.id,
+            JobOutcome.refail_job_id == later.id,
+            JobOutcome.channel == "auto_link",
+        )
+        .exists()
+    )
+    stmt = (
+        select(
+            JobRow.id.label("job_id"),
+            later.id.label("refail_job_id"),
+            later.created_at.label("checked_at"),
+        )
+        .join(
+            later,
+            and_(
+                later.appliance_unit_id == JobRow.appliance_unit_id,
+                later.id != JobRow.id,
+                later.created_at > JobRow.closed_at,
+                later.created_at <= JobRow.closed_at + timedelta(days=within_days),
+            ),
+        )
+        .where(
+            JobRow.appliance_unit_id.is_not(None),
+            JobRow.closed_at.is_not(None),
+            ~already_linked,
+        )
+    )
+    pairs = (await session.execute(stmt)).all()
+
+    for pair in pairs:
+        session.add(
+            JobOutcome(
+                job_id=pair.job_id,
+                checked_at=pair.checked_at,
+                channel="auto_link",
+                result="re_failed",
+                refail_job_id=pair.refail_job_id,
+                recorded_by="system",
+            )
+        )
+    if pairs:
+        await session.commit()
+    return len(pairs)
 
 
 class JobNotFoundError(LookupError):
