@@ -249,7 +249,10 @@ async def test_cloud_send_is_idempotent_per_job_and_kind(
     assert first.status_code == 200, first.text
     assert first.json()["status"] == "sent"
     assert first.json()["provider_message_id"] == "wamid.test1"
-    assert calls[0][0] == "923001234567"  # E.164 without the +, per the API
+    # The fake intercepts _post_cloud_api itself, so it sees canonical E.164;
+    # the '+' strip Meta wants happens inside the real payload construction
+    # (covered by the wa_chat_url unit test for the same rule).
+    assert calls[0][0] == "+923001234567"
 
     replay = await app_client.post(
         f"/api/messaging/jobs/{job['id']}/whatsapp/send",
