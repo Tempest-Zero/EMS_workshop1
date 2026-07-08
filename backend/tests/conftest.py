@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.db import get_session
 from app.core.storage import SignedUpload, get_storage
+from app.features.catalog.models import ApplianceCategory
 from app.features.identity.models import Technician
 from app.features.identity.security import create_access_token, hash_pin
 from app.features.tenancy.models import Shop
@@ -40,6 +41,20 @@ TEST_DB_URL = os.getenv("FIXFLOW_TEST_DATABASE_URL")
 # Hashed once for the whole run (PBKDF2 is deliberately slow); the seeded row
 # below needs a syntactically valid hash even though most tests never log in.
 _TEST_PIN_HASH = hash_pin("1234")
+
+# Category ids seeded by migration 0023; re-seeded per test (create_all skips
+# migration seeds) so job.category_id's FK is always satisfiable.
+_CATEGORY_IDS = (
+    "ac",
+    "refrigerator",
+    "deep_freezer",
+    "washing_machine",
+    "water_dispenser",
+    "microwave",
+    "oven",
+    "tv",
+    "other",
+)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -116,6 +131,11 @@ async def session(_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         # fixture — so every FK is satisfied. merge() = upsert: covers both the
         # migration-seeded first test and the post-truncate/create_all cases.
         await sess.merge(Shop(id="default", name="Test Shop"))
+        # 0023: job.category_id FKs to appliance_category and the intake writer
+        # derives it from appliance_type — so e.g. a "Split AC" job needs 'ac'
+        # seeded. Migration seeds these in prod; create_all tests re-seed here.
+        for _cat_id in _CATEGORY_IDS:
+            await sess.merge(ApplianceCategory(id=_cat_id))
         await sess.commit()
         yield sess
 
