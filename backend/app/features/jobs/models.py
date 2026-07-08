@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
@@ -31,6 +32,7 @@ from sqlalchemy import (
 from sqlalchemy import (
     text as sa_text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +46,14 @@ from app.core.db import Base
 # migration-only object wouldn't reach create_all — binding it here removes that
 # objection.) ``start=1052`` matches the prototype's first number on an empty DB.
 job_token_seq = Sequence("job_token_seq", start=1052, metadata=Base.metadata)
+
+# The global ordering key that makes job_event a transactional outbox (W7/D1).
+# Bound to Base.metadata like job_token_seq so both schema paths create it
+# (Alembic 0027 in real DBs, metadata.create_all in tests), and attached to
+# JobEvent.seq as a client-side default so every construction site is unchanged
+# and `alembic check` stays clean (the column carries no server default; the
+# sequence is a separate metadata object).
+job_event_seq = Sequence("job_event_seq", metadata=Base.metadata)
 
 
 class JobEventKind(StrEnum):
@@ -166,10 +176,16 @@ class Job(Base):
 
 class JobEvent(Base):
     """Append-only timeline entry for a job (notes, follow-ups, status changes).
-    The job row holds current state; this is the audit trail behind it."""
+    The job row holds current state; this is the audit trail behind it. Since
+    W7 it doubles as a transactional outbox: ``seq`` is a gap-free global
+    ordering key consumers drain in order, and ``payload`` carries structured
+    detail (C9 — UUIDs/slugs only, never PII)."""
 
     __tablename__ = "job_event"
-    __table_args__ = (Index("ix_job_event_job_time", "job_id", "created_at"),)
+    __table_args__ = (
+        UniqueConstraint("seq", name="uq_job_event_seq"),
+        Index("ix_job_event_job_time", "job_id", "created_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
@@ -178,6 +194,12 @@ class JobEvent(Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     text: Mapped[str] = mapped_column(String(1024), nullable=False)
     actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Outbox ordering key (W7): the sequence is the client-side default, so
+    # existing construction sites get a seq automatically. Unique + NOT NULL.
+    seq: Mapped[int] = mapped_column(BigInteger, job_event_seq, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'{}'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )
@@ -319,3 +341,19 @@ class JobPayment(Base):
     )
     voided: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
     void_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+
+class DispatchCursor(Base):
+    """One row per outbox consumer (``whatsapp``, ``erp``, ``analytics``): the
+    high-water ``seq`` it has processed from ``job_event`` (W7/D1). A dispatcher
+    loop reads events ``WHERE seq > last_seq ORDER BY seq``, delivers, and
+    advances ``last_seq`` — only on success, so a delivery failure is retried
+    next tick rather than silently skipped. Lives with the events it consumes."""
+
+    __tablename__ = "dispatch_cursor"
+
+    consumer: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=sa_text("0"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )

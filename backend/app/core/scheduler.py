@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
 
@@ -69,4 +70,24 @@ def add_daily_job(
         id=name,
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+
+
+def add_interval_job(
+    scheduler: AsyncIOScheduler,
+    job: AsyncJob,
+    *,
+    seconds: int,
+    name: str = "interval-job",
+) -> None:
+    """Every ``seconds`` (e.g. the outbox dispatcher). ``max_instances=1`` so a
+    slow run never overlaps the next tick — the dispatcher must not double-run."""
+    scheduler.add_job(
+        _wrap_safe(job, name),
+        IntervalTrigger(seconds=seconds),
+        id=name,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,  # a burst of missed ticks collapses to one catch-up run
+        misfire_grace_time=seconds,
     )

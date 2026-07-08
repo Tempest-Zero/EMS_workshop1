@@ -4,22 +4,26 @@ for other slices (never reach past this from another feature)."""
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.features.customers.service import match_customer_by_phone
 from app.features.jobs.catalog_map import category_for_appliance_type
-from app.features.jobs.models import Job as JobRow
 from app.features.jobs.models import (
+    DispatchCursor,
     JobCompletion,
     JobEvent,
     JobLocation,
     JobMaterial,
     JobPayment,
 )
+from app.features.jobs.models import Job as JobRow
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     CompletionOut,
@@ -82,6 +86,59 @@ def derive_route(locations: list[JobLocation], rate_paisa_per_km: int) -> RouteO
         distance_m=distance_m,
         fuel_paisa=route_fuel_paisa(distance_m, rate_paisa_per_km),
     )
+
+
+# ── Outbox dispatch (W7/D1) ───────────────────────────────────────────────────
+DispatchHandler = Callable[[JobEvent], Awaitable[None]]
+
+
+async def run_dispatch_once(
+    session: AsyncSession,
+    consumer: str,
+    handler: DispatchHandler,
+    *,
+    limit: int = 100,
+) -> int:
+    """Drain up to ``limit`` ``job_event`` rows past ``consumer``'s cursor, in
+    ``seq`` order, calling ``handler`` on each. The cursor advances only past
+    events the handler accepts; the first failure halts the batch so that event
+    is retried next tick rather than skipped (dead-lettering lands in W11).
+    Commits its own progress. Returns the number delivered."""
+    cursor = await session.get(DispatchCursor, consumer)
+    if cursor is None:
+        cursor = DispatchCursor(consumer=consumer, last_seq=0)
+        session.add(cursor)
+        await session.flush()
+
+    events = list(
+        (
+            await session.execute(
+                select(JobEvent)
+                .where(JobEvent.seq > cursor.last_seq)
+                .order_by(JobEvent.seq)
+                .limit(limit)
+            )
+        ).scalars()
+    )
+
+    delivered = 0
+    for event in events:
+        try:
+            await handler(event)
+        except Exception:
+            logger.exception(
+                "dispatch handler failed: consumer=%s seq=%s — halting batch",
+                consumer,
+                event.seq,
+            )
+            break
+        cursor.last_seq = event.seq
+        delivered += 1
+
+    if delivered:
+        cursor.updated_at = datetime.now(UTC)
+    await session.commit()
+    return delivered
 
 
 class JobNotFoundError(LookupError):

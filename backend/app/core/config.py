@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     # Cron spec for the weekly payroll export, in the shop's timezone.
     # Default: every Sunday at 18:00 Asia/Karachi (the client's payroll cycle).
     scheduler_timezone: str = "Asia/Karachi"
+    # Outbox dispatcher (W7): drains job_event → consumers on an interval. Ships
+    # OFF — the v0 whatsapp consumer is log-only, so flip this on only once a
+    # real delivery handler exists. Requires enable_scheduler.
+    enable_dispatcher: bool = False
+    dispatcher_interval_seconds: int = 60
 
     # ── Backups (nightly pg_dump → R2) ───────────────────────────────────
     # Dumps land in the media bucket under `backup_prefix` — on a DIFFERENT
