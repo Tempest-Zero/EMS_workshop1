@@ -37,7 +37,7 @@ The house rules from 0001–0017 are kept; four new conventions are added. All f
 | customer | — | — | `customer`, `customer_phone`, `customer_consent_event` |
 | asset | — | — | `appliance_unit` |
 | catalog & taxonomy | — | — | `appliance_category`, `appliance_brand`, `appliance_model`, `brand_alias`, `model_alias`, `fault_code`, `action_code`, `part`, `part_alias` |
-| jobs | `job_payment` | `job`, `job_event`, `job_completion`, `job_material`, `job_location` | `job_outcome` |
+| jobs | `job_payment` | `job`, `job_event`, `job_completion`, `job_material`, `job_location` | `job_outcome`, `job_travel_sample` (0035) |
 | media | — | `job_media` (type fix + FK + phases) | — |
 | notifications/fleet | — | `device_token` (+FKs) | `device` |
 | attendance & payroll | `attendance_shift`, `attendance_geofence`, `attendance_adjustment`*, `payroll_export` | `attendance_event`, `attendance_presence_event` (+tech FK) | — |
@@ -286,6 +286,8 @@ Modified: `job_type` CHECK extended to `carry-in / home-visit / pickup-delivery`
 ### 4.3 `job_completion`
 + `fault_code_id String(64) FK fault_code, nullable` and + `action_code_id String(64) FK action_code, nullable` — the two tap-pickers (§4.3). Nullable forever: **flag-never-block extends to data completeness**; the completeness score (§6), not a constraint, drives fill-rate. One primary fault + one primary action for v1; a `job_completion_fault` M2M is a future migration if multi-diagnosis proves real. `remarks_audio_media_id` **stays loose** (§6 below).
 
+0035 adds fuel provenance: `fuel_basis` ('manual' | 'estimate' | 'breadcrumbs'; NULL on historical rows reads as implicitly manual), `fuel_distance_m` (the billed round-trip metres when derived), and a NOT NULL `fuel_rate_paisa_per_km` snapshot pinned at first submission — the same never-silently-repriced contract as `labour_rate_paisa`.
+
 ### 4.4 `job_material`
 + `part_id UUID FK part, nullable` · rename `name` → `name_raw` (C7; SQLAlchemy attribute keeps `name` for wire compat) · + `quality String(16) CHECK genuine/aftermarket/refurb, nullable` · + `source_market String(64) nullable`. The picker that writes `part_id` also prices the line — the §6 money-gate is what makes this table fill itself.
 
@@ -368,6 +370,7 @@ Granular, additive, each independently deployable; nothing blocks a workflow mid
 | 0028 | fleet | `device`; `device_token.device_id` | §5.2 |
 | 0029 | telemetry | `app_event`, `ops_metric_rollup` + rollup cron | 0022/0023 (W1) |
 | 0030 | integrity wave | `job_media.job_id` String→UUID+FK (+quarantine), tech_id FKs across jobs/attendance/notifications, `job_media.phase` extension | debt paydown |
+| 0035 | travel telemetry | `job_travel_sample` (GPS breadcrumbs, attendance-ping pattern on the jobs slice); `job_completion.fuel_basis/fuel_distance_m/fuel_rate_paisa_per_km` | fuel overhaul (post-plan; 0031–0034 shipped in between — see git) |
 
 Standing rules restated: every model change ships with its migration and passes `alembic check`; no workflow blocks on a new field; PII never enters the pseudonymous zone.
 

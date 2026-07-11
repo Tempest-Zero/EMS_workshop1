@@ -236,7 +236,13 @@ class JobCompletion(Base):
     (upsert). Drives the auto-generated original bill."""
 
     __tablename__ = "job_completion"
-    __table_args__ = (UniqueConstraint("job_id", name="uq_job_completion_job"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_job_completion_job"),
+        CheckConstraint(
+            "fuel_basis IS NULL OR fuel_basis IN ('manual', 'estimate', 'breadcrumbs')",
+            name="job_completion_fuel_basis_check",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
@@ -249,6 +255,18 @@ class JobCompletion(Base):
     # Snapshotted at first submission — a config-rate change never reprices old work.
     labour_rate_paisa: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=sa_text("120000")
+    )
+    # Fuel provenance (0035): how the billed fuel line was produced — 'manual'
+    # (tech-typed), 'estimate' (straight-line × circuity), or 'breadcrumbs'
+    # (path-sum of travel samples). NULL on pre-0035 rows = implicitly manual.
+    # The distance is the billed ROUND-TRIP metres (NULL when manual/no route).
+    fuel_distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fuel_basis: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Snapshotted at first submission like labour_rate_paisa: auto-derived fuel
+    # recomputes on resubmit (desired — the route can upgrade to breadcrumbs),
+    # so the money-bearing rate must be pinned to keep that recompute honest.
+    fuel_rate_paisa_per_km: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=sa_text("2000")
     )
     remarks_text: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     # Loose reference to a job_media row (type=audio) — no hard FK so the voice
@@ -346,6 +364,48 @@ class JobLocation(Base):
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )
     device_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JobTravelSample(Base):
+    """A GPS breadcrumb sampled while the tech travels for a job (0035). Bulk
+    droppable telemetry — the same contract as ``attendance_ping``, NOT the
+    punch rail: batch-ingested, idempotent on ``client_id``, no ``job_event``.
+    Trusted samples between the depart/arrive punches sum to the actual driven
+    distance, which upgrades the fuel line from the circuity estimate.
+    ``captured_at`` is the device clock (the analytical axis, ping semantics:
+    out-of-window samples are rejected at ingest, never re-bucketed)."""
+
+    __tablename__ = "job_travel_sample"
+    __table_args__ = (
+        CheckConstraint(
+            "leg IN ('outbound', 'return', 'delivery')",
+            name="job_travel_sample_leg_check",
+        ),
+        UniqueConstraint("client_id", name="uq_job_travel_sample_client_id"),
+        Index("ix_job_travel_sample_job_time", "job_id", "captured_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
+    )
+    job_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("job.id"), nullable=False)
+    client_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    # Which travel phase the phone was sampling: the primary segmentation axis
+    # (punch-window clipping is the secondary guard — see derive_route).
+    leg: Mapped[str] = mapped_column(String(16), nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_mock: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
+    # Device clock at the fix — NOT server receipt time (that's received_at).
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+    # Tech snapshot stamped from the JWT at ingest — assignment can change later.
+    recorded_by: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("technician.id"), nullable=True
+    )
 
 
 class JobPayment(Base):

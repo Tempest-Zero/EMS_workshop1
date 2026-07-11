@@ -86,9 +86,27 @@ class Settings(BaseSettings):
     # paisa (Rs 1200/hour). Money is ALWAYS integer paisa, never floats.
     labour_rate_paisa: int = 1200 * 100
     # Fuel/running cost per km for the GPS route estimate (Phase 3). Integer
-    # paisa per kilometre (Rs 20/km) — applied to the straight-line distance
-    # between the depart-workshop and arrive-customer pins.
+    # paisa per kilometre (Rs 20/km) — applied to the derived route distance.
+    # Snapshotted onto the completion at first submission (like the labour
+    # rate) so a later change never reprices an existing bill.
     fuel_rate_paisa_per_km: int = 20 * 100
+    # Circuity factor: straight-line → road distance for the fuel estimate.
+    # Dense-city driving runs ~1.3-1.4× the crow-flies line; applied to the
+    # FLOAT distance before route_fuel_paisa rounds — money stays integer.
+    # Used only when no trusted travel breadcrumbs exist for the leg.
+    fuel_route_circuity_factor: float = 1.35
+    # A travel breadcrumb whose GPS accuracy is worse than this (metres) can't
+    # be placed on a road; it is excluded from the path-sum. Tighter than the
+    # attendance geofence ceiling (200 m) because path-sum ACCUMULATES noise —
+    # one coarse fix inflates the billed distance instead of one flag.
+    travel_sample_accuracy_ceiling_m: float = 50.0
+    # Trust window for job GPS timestamps. Punch device_time inside the window
+    # becomes captured_at (re-bucket, never reject — a punch is evidence);
+    # a travel sample outside it is REJECTED (ping semantics — a re-bucketed
+    # sample would fabricate a path segment "now"). Jobs-scoped on purpose:
+    # these feed billing, so they must not silently move with attendance tuning.
+    jobs_gps_backdate_ceiling_hours: int = 48
+    jobs_gps_future_tolerance_seconds: int = 120
 
     # ── Push (Firebase Cloud Messaging, HTTP v1) ─────────────────────────
     # The FCM service-account JSON, base64-encoded (set in Railway). The backend
