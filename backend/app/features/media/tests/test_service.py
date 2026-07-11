@@ -220,7 +220,10 @@ async def test_list_for_job_groups_by_phase(
         _media(phase="after"),
         _media(phase="before"),
         _media(phase="closing", type="video"),
+        _media(phase="condition"),
         _media(phase="remark", type="audio"),  # not gallery media → excluded
+        _media(phase="intake", type="audio"),  # not gallery media → excluded
+        _media(phase="approval", type="audio"),  # not gallery media → excluded
     ]
 
     out = await svc.list_for_job(job_id="job-1")
@@ -228,6 +231,16 @@ async def test_list_for_job_groups_by_phase(
     assert len(out.before) == 2
     assert len(out.after) == 1
     assert len(out.closing) == 1
+    assert len(out.condition) == 1
+
+
+def test_upload_request_accepts_new_phases() -> None:
+    """The 0036 vocabulary: condition snaps + the intake/approval voice notes."""
+    for phase, mtype in (("condition", "photo"), ("intake", "audio"), ("approval", "audio")):
+        req = MediaUploadRequest.model_validate(
+            {"phase": phase, "type": mtype, "filename": f"x-{phase}"}
+        )
+        assert req.phase == phase
 
 
 async def test_list_for_job_does_not_mint_playback_for_pending(

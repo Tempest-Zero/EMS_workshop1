@@ -1,4 +1,5 @@
-"""Integration: appliance category dual-write at job intake.
+"""Integration: appliance category dual-write at job intake + the read-only
+catalog HTTP surface (0036).
 
 Real Postgres. The conftest session fixture seeds the categories (create_all
 skips migration seeds), so the category_id FK is satisfiable.
@@ -11,7 +12,13 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.features.catalog.models import Part
+from app.features.catalog.models import (
+    ActionCode,
+    ApplianceBrand,
+    BrandAlias,
+    FaultCode,
+    Part,
+)
 from app.features.jobs.models import Job, JobMaterial
 
 pytestmark = pytest.mark.integration
@@ -102,3 +109,49 @@ async def test_material_resolves_to_a_part(
     assert refreshed.part_id == part.id
     assert refreshed.quality == "aftermarket"
     assert refreshed.source_market == "Saddar"
+
+
+async def test_catalog_read_endpoints_serve_the_vocabulary(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    """The 0036 read surface: the phone's pickers fetch categories, brands
+    (+aliases), fault/action chips, and parts — active rows only."""
+    brand = ApplianceBrand(name_canonical="Haier")
+    session.add(brand)
+    await session.flush()
+    session.add(BrandAlias(alias_norm="hair", brand_id=brand.id))
+    session.add(FaultCode(id="ac_gas_low", category_id="ac", label_en="Gas low"))
+    session.add(FaultCode(id="fridge_no_cool", category_id="refrigerator", label_en="No cooling"))
+    session.add(FaultCode(id="ac_retired", category_id="ac", label_en="Old code", active=False))
+    session.add(ActionCode(id="ac_gas_recharge", category_id="ac", label_en="Gas recharge"))
+    session.add(Part(name_canonical="Run Capacitor", category_id=None, quality="genuine"))
+    session.add(Part(name_canonical="AC PCB", category_id="ac"))
+    await session.commit()
+
+    cats = await app_client.get("/api/catalog/categories", headers=auth_headers)
+    assert cats.status_code == 200, cats.text
+    assert any(c["id"] == "ac" for c in cats.json())
+
+    brands = await app_client.get("/api/catalog/brands", headers=auth_headers)
+    assert brands.status_code == 200, brands.text
+    haier = next(b for b in brands.json() if b["name"] == "Haier")
+    assert haier["aliases"] == ["hair"]
+
+    faults = await app_client.get("/api/catalog/fault-codes?category_id=ac", headers=auth_headers)
+    ids = [f["id"] for f in faults.json()]
+    assert "ac_gas_low" in ids
+    assert "fridge_no_cool" not in ids  # category filter applies
+    assert "ac_retired" not in ids  # retired codes stay invisible
+
+    actions = await app_client.get("/api/catalog/action-codes", headers=auth_headers)
+    assert any(a["id"] == "ac_gas_recharge" for a in actions.json())
+
+    parts = await app_client.get("/api/catalog/parts?category_id=ac", headers=auth_headers)
+    names = [p["name_canonical"] for p in parts.json()]
+    assert "AC PCB" in names
+    assert "Run Capacitor" in names  # cross-category (NULL) rides every filter
+
+
+async def test_catalog_endpoints_require_auth(app_client: AsyncClient) -> None:
+    resp = await app_client.get("/api/catalog/categories")
+    assert resp.status_code == 401

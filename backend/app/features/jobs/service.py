@@ -468,12 +468,25 @@ class JobService:
         hand-inserted row, or a restore that didn't bump the sequence): on the
         unique-violation we just draw the next value and retry, never a 500.
         """
+        # Idempotent create (0036): a replayed offline create with the same
+        # client_id returns the already-created job instead of a duplicate.
+        if body.client_id is not None:
+            existing = await self._repo.get_by_client_id(body.client_id)
+            if existing is not None:
+                return Job.model_validate(existing)
         last_error: IntegrityError | None = None
         for _ in range(3):
             try:
                 created = await self._create_with_next_token(body, actor=actor)
             except IntegrityError as e:
                 await self._repo.rollback()
+                # Two concurrent sends of the same queued create land here via
+                # uq_job_client_id — recover the race as the dedupe no-op it
+                # is; only the token-collision case should retry.
+                if body.client_id is not None:
+                    raced = await self._repo.get_by_client_id(body.client_id)
+                    if raced is not None:
+                        return Job.model_validate(raced)
                 last_error = e
                 continue
             await self._repo.add_event(
@@ -494,10 +507,14 @@ class JobService:
             shop_id=body.shop_id,
             status="open",
             job_type=body.job_type,
+            client_id=body.client_id,
             customer_id=customer_id,
             customer_name=body.customer_name.strip(),
             customer_phone=body.customer_phone,
             customer_address=body.customer_address if is_visit else None,
+            # The home pin rides the same visit-only rule as the address.
+            customer_lat=body.customer_lat if is_visit else None,
+            customer_lng=body.customer_lng if is_visit else None,
             appliance_type=body.appliance_type,
             appliance_brand=body.appliance_brand,
             appliance_model=body.appliance_model,

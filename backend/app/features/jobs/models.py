@@ -107,6 +107,7 @@ class Job(Base):
             name="job_power_protection_check",
         ),
         UniqueConstraint("token", name="uq_job_token"),
+        UniqueConstraint("client_id", name="uq_job_client_id"),
         Index("ix_job_shop_status", "shop_id", "status"),
         Index("ix_job_assigned_tech", "assigned_tech_id"),
         Index("ix_job_customer", "customer_id"),
@@ -145,10 +146,19 @@ class Job(Base):
         String(16), nullable=False, server_default=sa_text("'carry-in'")
     )
 
+    # Idempotent intake (0036): the phone's outbox replays a queued create with
+    # the same client-minted UUID; unique (NULLs pass) turns the replay into a
+    # dedupe. NULL on web-created jobs.
+    client_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+
     # Customer (embedded)
     customer_name: Mapped[str] = mapped_column(String(128), nullable=False)
     customer_phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     customer_address: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Home pin from the intake map (0036) — nullable, home-visit only. The
+    # travel screen renders it and hands off to the Maps app for navigation.
+    customer_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    customer_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Appliance (embedded)
     appliance_type: Mapped[str] = mapped_column(String(64), nullable=False)

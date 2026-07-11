@@ -66,6 +66,7 @@ def _persist(job: JobRow) -> JobRow:
 def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
+    repo.get_by_client_id = AsyncMock(return_value=None)
     repo.list_jobs = AsyncMock(return_value=[])
     repo.next_token = AsyncMock(return_value=1052)
     repo.create = AsyncMock(side_effect=_persist)
@@ -152,6 +153,78 @@ async def test_create_carry_in_drops_visit_only_fields(svc: tuple[JobService, Ma
         )
     )
     assert job.customer_address is None
+
+
+async def test_create_dedupes_on_client_id(svc: tuple[JobService, MagicMock]) -> None:
+    """A replayed offline create (same client_id) returns the existing job —
+    no second row, no second token, no duplicate 'create' event."""
+    service, repo = svc
+    client_id = uuid4()
+    existing = _open_job()
+    existing.client_id = client_id
+    repo.get_by_client_id.return_value = existing
+
+    job = await service.create_job(
+        JobCreate(customer_name="Yusuf", appliance_type="Split AC", client_id=client_id)
+    )
+
+    assert job.id == existing.id
+    repo.create.assert_not_awaited()
+    repo.add_event.assert_not_awaited()
+
+
+async def test_create_client_id_race_recovers_as_dedupe(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """Two concurrent sends of one queued create: the loser's IntegrityError on
+    uq_job_client_id resolves to the winner's row, never a 500 or a retry."""
+    service, repo = svc
+    client_id = uuid4()
+    winner = _open_job()
+    winner.client_id = client_id
+    # Fast-path miss, then the post-IntegrityError re-check finds the winner.
+    repo.get_by_client_id.side_effect = [None, winner]
+    repo.create.side_effect = IntegrityError("dup", None, Exception("uq_job_client_id"))
+
+    job = await service.create_job(
+        JobCreate(customer_name="Yusuf", appliance_type="Split AC", client_id=client_id)
+    )
+
+    assert job.id == winner.id
+    repo.rollback.assert_awaited_once()
+    repo.add_event.assert_not_awaited()
+
+
+async def test_create_home_visit_stores_home_pin(svc: tuple[JobService, MagicMock]) -> None:
+    service, _ = svc
+    job = await service.create_job(
+        JobCreate(
+            job_type="home-visit",
+            customer_name="Yusuf",
+            customer_address="House 31, DHA",
+            appliance_type="Split AC",
+            customer_lat=24.8607,
+            customer_lng=67.0011,
+        )
+    )
+    assert job.customer_lat == pytest.approx(24.8607)
+    assert job.customer_lng == pytest.approx(67.0011)
+
+
+async def test_create_carry_in_drops_home_pin(svc: tuple[JobService, MagicMock]) -> None:
+    """The pin rides the same visit-only rule as the address."""
+    service, _ = svc
+    job = await service.create_job(
+        JobCreate(
+            job_type="carry-in",
+            customer_name="Zainab",
+            appliance_type="Washing Machine",
+            customer_lat=24.8607,
+            customer_lng=67.0011,
+        )
+    )
+    assert job.customer_lat is None
+    assert job.customer_lng is None
     assert job.time_window is None
 
 

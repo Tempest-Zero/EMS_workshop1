@@ -52,7 +52,7 @@ class JobMedia(Base):
     __tablename__ = "job_media"
     __table_args__ = (
         CheckConstraint(
-            "phase IN ('before', 'after', 'remark', 'closing', 'condition', 'approval')",
+            "phase IN ('before', 'after', 'remark', 'closing', 'condition', 'approval', 'intake')",
             name="job_media_phase_check",
         ),
         CheckConstraint("type IN ('video', 'photo', 'audio')", name="job_media_type_check"),

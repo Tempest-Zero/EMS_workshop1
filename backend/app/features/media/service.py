@@ -161,12 +161,13 @@ class MediaService:
         before: list[MediaItem] = []
         after: list[MediaItem] = []
         closing: list[MediaItem] = []
-        buckets = {"before": before, "after": after, "closing": closing}
+        condition: list[MediaItem] = []
+        buckets = {"before": before, "after": after, "closing": closing, "condition": condition}
         for m in rows:
             bucket = buckets.get(m.phase)
-            if bucket is not None:  # remark audio isn't gallery media → skip
+            if bucket is not None:  # remark/intake/approval audio isn't gallery media → skip
                 bucket.append(self._to_item(m))
-        return MediaList(before=before, after=after, closing=closing)
+        return MediaList(before=before, after=after, closing=closing, condition=condition)
 
     async def count_phase(self, *, job_id: str, phase: str) -> int:
         """How many media rows a job has for a phase. The public surface other
