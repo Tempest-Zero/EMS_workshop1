@@ -1,6 +1,8 @@
 /**
- * My Jobs + the unassigned Work List. The technician sees jobs assigned to
- * them, and can Claim (free-pick) anything from the work list.
+ * The shared task list. One screen serves four routes — the route name IS the
+ * filter (AvailableTasks / OngoingTasks / CompletedTasks / legacy JobsList) —
+ * so each category view stays a plain navigation target. Falls back to the
+ * offline read cache when the network is away.
  */
 
 import { useFocusEffect } from "@react-navigation/native";
@@ -22,7 +24,8 @@ import { cacheStamp, loadJobsList, saveJobsList } from "../../lib/jobsCache";
 import { useAuth } from "../auth/AuthContext";
 import type { JobsStackParamList } from "./types";
 
-type Props = NativeStackScreenProps<JobsStackParamList, "JobsList">;
+type ListRoute = "JobsList" | "AvailableTasks" | "OngoingTasks" | "CompletedTasks";
+type Props = NativeStackScreenProps<JobsStackParamList, ListRoute>;
 
 const STATUS_COLOR: Record<string, string> = {
   open: "#2563eb",
@@ -46,7 +49,9 @@ function JobRow({
     <Pressable style={styles.card} onPress={onPress}>
       <View style={styles.cardTop}>
         <Text style={styles.token}>#{job.token}</Text>
-        <View style={[styles.chip, { backgroundColor: (STATUS_COLOR[job.status] ?? "#64748b") + "1a" }]}>
+        <View
+          style={[styles.chip, { backgroundColor: (STATUS_COLOR[job.status] ?? "#64748b") + "1a" }]}
+        >
           <Text style={[styles.chipText, { color: STATUS_COLOR[job.status] ?? "#64748b" }]}>
             {job.status}
           </Text>
@@ -61,15 +66,19 @@ function JobRow({
         {job.problem}
       </Text>
       {onClaim ? (
-        <Pressable style={[styles.claimBtn, claiming && styles.claimBtnBusy]} onPress={onClaim} disabled={claiming}>
-          <Text style={styles.claimText}>{claiming ? "Claiming…" : "Claim"}</Text>
+        <Pressable
+          style={[styles.claimBtn, claiming && styles.claimBtnBusy]}
+          onPress={onClaim}
+          disabled={claiming}
+        >
+          <Text style={styles.claimText}>{claiming ? "Claiming…" : "Claim Job"}</Text>
         </Pressable>
       ) : null}
     </Pressable>
   );
 }
 
-export function JobsListScreen({ navigation }: Props) {
+export function JobsListScreen({ navigation, route }: Props) {
   const { technician } = useAuth();
   const me = technician?.id;
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -77,8 +86,9 @@ export function JobsListScreen({ navigation }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [claiming, setClaiming] = useState<string | null>(null);
-  // Set when the list on screen is the offline cache, not server truth.
   const [cachedAt, setCachedAt] = useState<string | null>(null);
+
+  const currentRoute = route.name;
 
   const load = useCallback(async () => {
     try {
@@ -86,10 +96,8 @@ export function JobsListScreen({ navigation }: Props) {
       setJobs(all);
       setError(null);
       setCachedAt(null);
-      void saveJobsList(all); // refresh the offline copy (best-effort)
+      void saveJobsList(all);
     } catch {
-      // Offline (or server unreachable): fall back to the last synced list so
-      // the tech can still see and open their work — clearly labelled stale.
       const cached = await loadJobsList();
       if (cached) {
         setJobs(cached.data);
@@ -110,9 +118,6 @@ export function JobsListScreen({ navigation }: Props) {
     }, [load]),
   );
 
-  const mine = jobs.filter((j) => j.assigned_tech_id === me && j.status !== "closed");
-  const workList = jobs.filter((j) => !j.assigned_tech_id && j.status !== "closed");
-
   const claim = async (id: string) => {
     setClaiming(id);
     try {
@@ -120,7 +125,6 @@ export function JobsListScreen({ navigation }: Props) {
       await load();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
-        // The Phase-1 claim guard: someone else got there first.
         setError("Already claimed by another technician — list refreshed.");
         await load();
       } else {
@@ -136,65 +140,117 @@ export function JobsListScreen({ navigation }: Props) {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator />
+        <ActivityIndicator size="large" color="#0f172a" />
       </View>
     );
   }
 
+  const available = jobs.filter((j) => !j.assigned_tech_id && j.status !== "closed");
+  const ongoing = jobs.filter((j) => j.assigned_tech_id === me && j.status !== "closed");
+  const completed = jobs.filter((j) => j.assigned_tech_id === me && j.status === "closed");
+
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true);
-            void load();
-          }}
-        />
-      }
-    >
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      {cachedAt ? (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineText}>
-            Offline — showing your last synced jobs ({cacheStamp(cachedAt)}). Pull to retry.
-          </Text>
-        </View>
-      ) : null}
-
-      <Text style={styles.section}>MY JOBS</Text>
-      {mine.length === 0 ? (
-        <Text style={styles.empty}>No jobs assigned to you. Claim one from the work list below.</Text>
-      ) : (
-        mine.map((j) => <JobRow key={j.id} job={j} onPress={() => open(j)} />)
-      )}
-
-      <Text style={[styles.section, { marginTop: 20 }]}>WORK LIST · UNASSIGNED</Text>
-      {workList.length === 0 ? (
-        <Text style={styles.empty}>Nothing waiting to be picked up.</Text>
-      ) : (
-        workList.map((j) => (
-          <JobRow
-            key={j.id}
-            job={j}
-            onPress={() => open(j)}
-            onClaim={() => void claim(j.id)}
-            claiming={claiming === j.id}
+    <View style={styles.container}>
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              void load();
+            }}
           />
-        ))
+        }
+      >
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {cachedAt ? (
+          <View style={styles.offlineBanner}>
+            <Text style={styles.offlineText}>
+              Offline — showing last synced data ({cacheStamp(cachedAt)}).
+            </Text>
+          </View>
+        ) : null}
+
+        {currentRoute === "AvailableTasks" && (
+          <View>
+            <Text style={styles.section}>AVAILABLE WORK LIST</Text>
+            {available.length === 0 ? (
+              <Text style={styles.empty}>No unassigned open tickets right now.</Text>
+            ) : (
+              available.map((j) => (
+                <JobRow
+                  key={j.id}
+                  job={j}
+                  onPress={() => open(j)}
+                  onClaim={() => void claim(j.id)}
+                  claiming={claiming === j.id}
+                />
+              ))
+            )}
+          </View>
+        )}
+
+        {currentRoute === "OngoingTasks" && (
+          <View>
+            <Text style={styles.section}>ACTIVE ON-GOING JOBS</Text>
+            {ongoing.length === 0 ? (
+              <Text style={styles.empty}>You aren't working on any jobs right now.</Text>
+            ) : (
+              ongoing.map((j) => <JobRow key={j.id} job={j} onPress={() => open(j)} />)
+            )}
+          </View>
+        )}
+
+        {currentRoute === "CompletedTasks" && (
+          <View>
+            <Text style={styles.section}>COMPLETED HISTORY ROSTER</Text>
+            {completed.length === 0 ? (
+              <Text style={styles.empty}>No completed jobs found on your record history.</Text>
+            ) : (
+              completed.map((j) => <JobRow key={j.id} job={j} onPress={() => open(j)} />)
+            )}
+          </View>
+        )}
+
+        {currentRoute === "JobsList" && (
+          <View>
+            <Text style={styles.section}>MY ASSIGNED WORK</Text>
+            {ongoing.map((j) => (
+              <JobRow key={j.id} job={j} onPress={() => open(j)} />
+            ))}
+          </View>
+        )}
+      </ScrollView>
+
+      {(currentRoute === "JobsList" || currentRoute === "AvailableTasks") && (
+        <Pressable style={styles.fab} onPress={() => navigation.navigate("CreateJob")}>
+          <Text style={styles.fabText}>+</Text>
+        </Pressable>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#f8fafc" },
-  content: { padding: 16, paddingBottom: 40 },
+  container: {
+    flex: 1,
+    height: "100%",
+    width: "100%",
+    backgroundColor: "#f8fafc",
+  },
+  screen: { flex: 1 },
+  content: { padding: 16, paddingBottom: 100 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#f8fafc" },
-  section: { fontSize: 11, fontWeight: "800", color: "#64748b", letterSpacing: 0.5, marginBottom: 8 },
-  empty: { fontSize: 13, color: "#94a3b8", fontStyle: "italic" },
+  section: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#64748b",
+    letterSpacing: 0.5,
+    marginBottom: 12,
+  },
+  empty: { fontSize: 13, color: "#94a3b8", fontStyle: "italic", marginTop: 4, paddingHorizontal: 4 },
   error: { color: "#b91c1c", fontSize: 13, fontWeight: "600", marginBottom: 10 },
   offlineBanner: {
     backgroundColor: "#fef3c7",
@@ -211,22 +267,52 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#e2e8f0",
     padding: 14,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   cardTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   token: { fontSize: 15, fontWeight: "800", color: "#0f172a" },
   chip: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 },
   chipText: { fontSize: 11, fontWeight: "800", textTransform: "capitalize" },
   customer: { fontSize: 15, fontWeight: "700", color: "#1e293b", marginTop: 6 },
-  appliance: { fontSize: 12, fontWeight: "600", color: "#64748b", marginTop: 2, textTransform: "uppercase" },
+  appliance: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#64748b",
+    marginTop: 2,
+    textTransform: "uppercase",
+  },
   problem: { fontSize: 13, color: "#475569", marginTop: 4 },
   claimBtn: {
-    marginTop: 10,
-    backgroundColor: "#0f172a",
+    marginTop: 12,
+    backgroundColor: "#2563eb",
     borderRadius: 10,
     paddingVertical: 10,
     alignItems: "center",
   },
   claimBtnBusy: { opacity: 0.6 },
   claimText: { color: "white", fontWeight: "800", fontSize: 14 },
+
+  fab: {
+    position: "absolute",
+    bottom: "10%",
+    right: "5%",
+    backgroundColor: "#0f172a",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 15,
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    zIndex: 9999,
+  },
+  fabText: {
+    color: "white",
+    fontSize: 32,
+    fontWeight: "300",
+    marginTop: -4,
+  },
 });
