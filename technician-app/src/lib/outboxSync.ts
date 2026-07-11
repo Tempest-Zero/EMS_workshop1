@@ -35,7 +35,7 @@ import {
   type OutboxItem,
   type OutboxKind,
 } from "./outbox";
-import { jobsApi, type JobDetail, type LocationInput } from "./jobsApi";
+import { jobsApi, type JobCreateInput, type JobDetail, type LocationInput } from "./jobsApi";
 import {
   failureReason,
   isAuthFailure,
@@ -43,6 +43,9 @@ import {
   MAX_ATTEMPTS,
 } from "./syncClassification";
 
+interface CreatePayload {
+  body: JobCreateInput;
+}
 interface CompletionPayload {
   body: Parameters<typeof jobsApi.submitCompletion>[1];
 }
@@ -66,9 +69,13 @@ interface NotePayload {
   text: string;
 }
 
-/** Replay one queued item via the matching jobs API call. */
-async function send(item: OutboxItem): Promise<JobDetail> {
+/** Replay one queued item via the matching jobs API call. (Creates return a
+ * `Job`, everything else a `JobDetail` — the flush only cares that it lands.) */
+async function send(item: OutboxItem): Promise<unknown> {
   switch (item.kind) {
+    case "create":
+      // Idempotent on the payload's client_id — a replay dedupes server-side.
+      return jobsApi.create((item.payload as CreatePayload).body);
     case "completion":
       return jobsApi.submitCompletion(item.jobId, (item.payload as CompletionPayload).body);
     case "payment": {
@@ -155,10 +162,10 @@ export async function flushOutbox(): Promise<void> {
   }
 }
 
-export async function sendOrQueue(
+export async function sendOrQueue<T = JobDetail>(
   item: OutboxItem,
-  call: () => Promise<JobDetail>,
-): Promise<JobDetail | null> {
+  call: () => Promise<T>,
+): Promise<T | null> {
   const net = await NetInfo.fetch();
   if (net.isConnected === false) {
     await enqueue(item);
@@ -187,6 +194,7 @@ export async function sendOrQueue(
 }
 
 export type {
+  CreatePayload,
   CompletionPayload,
   PaymentPayload,
   VoidPayload,

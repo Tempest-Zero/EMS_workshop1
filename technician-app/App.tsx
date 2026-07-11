@@ -14,6 +14,7 @@ import { DashboardScreen } from "./src/features/dashboard/DashboardScreen";
 import { ArrivalJobBillScreen } from "./src/features/jobs/arrival-job/ArrivalJobBillScreen";
 import { ArrivalJobWizard } from "./src/features/jobs/arrival-job/ArrivalJobWizard";
 import { JobsStack } from "./src/features/jobs/JobsStack";
+import { usePendingMediaDrain } from "./src/features/media/usePendingMediaDrain";
 import { OnboardingScreen } from "./src/features/onboarding/OnboardingScreen";
 import { isOnboarded } from "./src/features/onboarding/permissions";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
@@ -55,6 +56,7 @@ function AuthedStack() {
   const { queued, failed } = useOutboxSync();
   usePushRegistration();
   useAttendanceBackground();
+  usePendingMediaDrain();
   return (
     <View style={styles.flex}>
       {queued > 0 || failed > 0 ? <OfflineBanner queued={queued} failed={failed} /> : null}

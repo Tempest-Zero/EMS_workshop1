@@ -57,6 +57,8 @@ function apiDetail(e: ApiError): string | null {
 /** Human label for a queued/failed outbox entry in the overlay lists. */
 function itemLabel(item: OutboxItem): string {
   switch (item.kind) {
+    case "create":
+      return "New job (intake)";
     case "payment": {
       const p = item.payload as PaymentPayload;
       return `Payment ${formatPaisa(p.amountPaisa)} (${p.method})`;

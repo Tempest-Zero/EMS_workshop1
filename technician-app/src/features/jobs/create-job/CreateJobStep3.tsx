@@ -1,10 +1,17 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform, Modal } from 'react-native';
+import MapView, { Marker } from 'react-native-maps';
+
+import { getLocation } from '../../attendance/location';
 
 interface Step3Props {
   /** The customer address — held by the wizard so submit can send it. */
   location: string;
   setLocation: (val: string) => void;
+  /** The home pin (0036) — the travel map + navigation hand-off read it. */
+  customerLat: number | null;
+  customerLng: number | null;
+  setCustomerPin: (lat: number, lng: number) => void;
   serviceType: string;
   setServiceType: (val: string) => void;
   timeWindow: string;
@@ -12,18 +19,43 @@ interface Step3Props {
   onNext: () => void;
 }
 
+// Karachi — the shop's city; the map has to open somewhere sensible when no
+// pin is set and the tech's own GPS is unavailable.
+const DEFAULT_REGION = {
+  latitude: 24.8607,
+  longitude: 67.0011,
+  latitudeDelta: 0.08,
+  longitudeDelta: 0.08,
+};
+
 // 📅 Helper data for our custom calendar
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const TIME_SLOTS = ['Morning (9a - 12p)', 'Afternoon (1p - 5p)', 'Evening (5p - 8p)'];
 
-export function CreateJobStep3({ location, setLocation, serviceType, setServiceType, timeWindow, setTimeWindow, onNext }: Step3Props) {
+export function CreateJobStep3({ location, setLocation, customerLat, customerLng, setCustomerPin, serviceType, setServiceType, timeWindow, setTimeWindow, onNext }: Step3Props) {
   // 🪄 NEW: Calendar Modal States
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedDate, setSelectedDate] = useState<number | null>(null);
   const [selectedTimeSlot, setSelectedTimeSlot] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
 
   const isStep3Valid = serviceType !== '' && timeWindow !== '' && location.trim().length > 0;
+  const isVisit = serviceType !== 'Carry-in';
+
+  // "I'm standing at the customer's door" — pin from the tech's own GPS.
+  const useMyLocation = async () => {
+    if (locating) return;
+    setLocating(true);
+    try {
+      const fix = await getLocation();
+      if (fix.lat != null && fix.lng != null) {
+        setCustomerPin(fix.lat, fix.lng);
+      }
+    } finally {
+      setLocating(false);
+    }
+  };
 
   // Checks if the active time window is a custom date rather than the default presets
   const isCustomTime = timeWindow !== 'Today 4-6' && timeWindow !== 'Tmrw AM' && timeWindow !== '';
@@ -74,30 +106,54 @@ export function CreateJobStep3({ location, setLocation, serviceType, setServiceT
           ))}
         </View>
 
-        {/* 2. MAP MOCKUP */}
-        <View style={styles.mapContainer}>
-          <View style={styles.mapRoadVertical} />
-          <View style={styles.mapRoadHorizontal} />
-          
-          <View style={styles.mapPinContainer}>
-            <View style={styles.mapPinOuter}>
-              <View style={styles.mapPinInner} />
+        {/* 2. CUSTOMER HOME PIN (real map — the travel screen navigates to it) */}
+        {isVisit ? (
+          <>
+            <View style={styles.mapContainer}>
+              <MapView
+                style={StyleSheet.absoluteFill}
+                initialRegion={
+                  customerLat != null && customerLng != null
+                    ? { latitude: customerLat, longitude: customerLng, latitudeDelta: 0.02, longitudeDelta: 0.02 }
+                    : DEFAULT_REGION
+                }
+                onPress={(e) =>
+                  setCustomerPin(e.nativeEvent.coordinate.latitude, e.nativeEvent.coordinate.longitude)
+                }
+              >
+                {customerLat != null && customerLng != null ? (
+                  <Marker
+                    draggable
+                    coordinate={{ latitude: customerLat, longitude: customerLng }}
+                    onDragEnd={(e) =>
+                      setCustomerPin(e.nativeEvent.coordinate.latitude, e.nativeEvent.coordinate.longitude)
+                    }
+                  />
+                ) : null}
+              </MapView>
+              <Pressable style={styles.myLocationBtn} onPress={() => void useMyLocation()}>
+                <Text style={styles.myLocationText}>{locating ? '…' : '📍 My location'}</Text>
+              </Pressable>
             </View>
-          </View>
+            <Text style={styles.helperText}>
+              {customerLat != null
+                ? 'Pin set — drag it or tap the map to adjust.'
+                : "Tap the map to drop the customer's home pin (optional)."}
+            </Text>
+          </>
+        ) : null}
 
-          <View style={styles.addressPill}>
-            <Text style={styles.addressIcon}>📍</Text>
-            <TextInput
-              style={styles.addressInput}
-              placeholder="Type customer address..."
-              placeholderTextColor="#94a3b8"
-              value={location}
-              onChangeText={setLocation}
-              autoCorrect={false}
-            />
-          </View>
+        <View style={styles.addressRow}>
+          <Text style={styles.addressIcon}>📍</Text>
+          <TextInput
+            style={styles.addressInput}
+            placeholder="Type customer address..."
+            placeholderTextColor="#94a3b8"
+            value={location}
+            onChangeText={setLocation}
+            autoCorrect={false}
+          />
         </View>
-        <Text style={styles.helperText}>Live map disabled for Expo Go testing</Text>
 
         <View style={styles.spacer} />
 
@@ -220,12 +276,10 @@ const styles = StyleSheet.create({
   chipText: { color: '#475569', fontWeight: '600', fontSize: 14 },
   chipTextActive: { color: '#ffffff' },
 
-  mapContainer: { height: 180, backgroundColor: '#f0ebd8', borderRadius: 16, borderWidth: 1, borderColor: '#94a3b8', overflow: 'hidden', position: 'relative', marginTop: 8 },
-  mapRoadVertical: { position: 'absolute', left: '35%', top: 0, bottom: 0, width: 12, backgroundColor: '#e2ddc7' },
-  mapRoadHorizontal: { position: 'absolute', top: '45%', left: 0, right: 0, height: 12, backgroundColor: '#e2ddc7' },
-  mapPinContainer: { position: 'absolute', top: '55%', left: '65%', transform: [{ translateX: -10 }, { translateY: -10 }] },
-  mapPinOuter: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: '#1c1917', justifyContent: 'center', alignItems: 'center' },
-  mapPinInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#1c1917' },
+  mapContainer: { height: 200, backgroundColor: '#f0ebd8', borderRadius: 16, borderWidth: 1, borderColor: '#94a3b8', overflow: 'hidden', position: 'relative', marginTop: 8 },
+  myLocationBtn: { position: 'absolute', top: 10, right: 10, backgroundColor: '#ffffff', borderRadius: 20, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: '#cbd5e1', elevation: 3 },
+  myLocationText: { fontSize: 12, fontWeight: '700', color: '#334155' },
+  addressRow: { marginTop: 12, backgroundColor: '#ffffff', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 16, borderWidth: 1, borderColor: '#cbd5e1', flexDirection: 'row', alignItems: 'center' },
   
   addressPill: { position: 'absolute', bottom: 12, left: 12, right: 12, backgroundColor: '#ffffff', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 16, borderWidth: 1, borderColor: '#cbd5e1', flexDirection: 'row', alignItems: 'center' },
   addressIcon: { fontSize: 14, marginRight: 8 },

@@ -1,13 +1,22 @@
 /**
- * The 4-step intake wizard. STILL A MOCK in this stage: submit is a
- * placeholder alert — the real POST /api/jobs through the outbox, the map
- * pin, and the voice-note uploads land in the intake-wiring stage.
+ * The 4-step intake wizard (F2–F5): who → what (voice-first) → where & how →
+ * estimate & consent. Submit goes through the OUTBOX with a client-minted
+ * idempotency key — offline intake queues and never duplicates. Voice notes
+ * ride the pending-media queue until their job row exists server-side.
  */
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import * as Crypto from "expo-crypto";
 import React, { useState } from 'react';
 import { StyleSheet, View, Pressable, SafeAreaView, StatusBar, Alert, Text, Platform } from 'react-native';
 
+import { ApiError } from "../../../lib/api";
+import { jobsApi, type Job } from "../../../lib/jobsApi";
+import { makeItem } from "../../../lib/outbox";
+import { sendOrQueue } from "../../../lib/outboxSync";
+import { useAuth } from "../../auth/AuthContext";
+import { enqueuePendingMedia } from "../../media/pendingMedia";
 import type { JobsStackParamList } from "../types";
+import { createJobPayload } from './createJobPayload';
 // 🔌 Child Steps
 import { CreateJobStep1 } from './CreateJobStep1Screen';
 import { CreateJobStep2 } from './CreateJobStep2';
@@ -17,7 +26,9 @@ import { CreateJobStep4 } from './CreateJobStep4';
 type Props = NativeStackScreenProps<JobsStackParamList, "CreateJob">;
 
 export function CreateJobWizard({ navigation }: Props) {
+  const { technician } = useAuth();
   const [currentStep, setCurrentStep] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
   const [highestStep, setHighestStep] = useState(1);
   
   // Shared Data - Step 1
@@ -33,7 +44,9 @@ export function CreateJobWizard({ navigation }: Props) {
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   
   // Shared Data - Step 3
-  const [location, setLocation] = useState(''); 
+  const [location, setLocation] = useState('');
+  const [customerLat, setCustomerLat] = useState<number | null>(null);
+  const [customerLng, setCustomerLng] = useState<number | null>(null);
   const [serviceType, setServiceType] = useState('Home visit');
   const [timeWindow, setTimeWindow] = useState('Today 4-6');
 
@@ -57,12 +70,94 @@ export function CreateJobWizard({ navigation }: Props) {
     }
   };
 
-  // 🚀 THE FINAL SUBMISSION — placeholder until the intake-wiring stage
-  // replaces it with the real POST /api/jobs through the outbox.
-  const submitJob = () => {
-    Alert.alert("Job Created!", `Successfully queued new ${appliance} job at ${location}.`, [
-      { text: "OK", onPress: () => navigation.goBack() }
-    ]);
+  /** Queue the captured voice notes against the job's client_id — they upload
+   * once the job row exists (immediately when online, after sync when not). */
+  const queueVoiceNotes = async (clientId: string) => {
+    if (problemAudio) {
+      await enqueuePendingMedia({
+        id: `intake:${clientId}`,
+        jobClientId: clientId,
+        phase: "intake",
+        type: "audio",
+        uri: problemAudio,
+        filename: `problem-${Date.now()}.m4a`,
+        contentType: "audio/mp4",
+      });
+    }
+    if (voiceNote) {
+      await enqueuePendingMedia({
+        id: `approval:${clientId}`,
+        jobClientId: clientId,
+        phase: "approval",
+        type: "audio",
+        uri: voiceNote,
+        filename: `estimate-${Date.now()}.m4a`,
+        contentType: "audio/mp4",
+      });
+    }
+  };
+
+  // 🚀 THE FINAL SUBMISSION — POST /api/jobs through the outbox. The
+  // client-minted client_id makes an offline replay a server-side dedupe.
+  const submitJob = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const clientId = Crypto.randomUUID();
+      const body = createJobPayload(
+        {
+          phone,
+          name,
+          appliance,
+          brand,
+          problemText,
+          hasProblemAudio: problemAudio.length > 0,
+          location,
+          serviceType,
+          timeWindow,
+          estimate,
+          approval,
+          consent,
+          customerLat,
+          customerLng,
+          techId: technician?.id ?? null,
+        },
+        clientId,
+      );
+
+      let created: Job | null;
+      try {
+        created = await sendOrQueue<Job>(
+          makeItem({ id: `create:${clientId}`, kind: "create", jobId: clientId, payload: { body } }),
+          () => jobsApi.create(body),
+        );
+      } catch (e) {
+        // A definitive 4xx on a live submit is a validation problem the tech
+        // is looking at right now — say so, keep the draft on screen.
+        const detail =
+          e instanceof ApiError
+            ? (/"detail"\s*:\s*"([^"]+)"/.exec(e.message)?.[1] ?? `rejected (${e.status})`)
+            : "rejected";
+        Alert.alert("Couldn't create the job", detail);
+        return;
+      }
+
+      // Voice notes ride the pending-media queue either way: online they
+      // drain within seconds of this; offline they wait for the create.
+      await queueVoiceNotes(clientId);
+
+      if (created) {
+        navigation.replace("JobDetail", { id: created.id, token: created.token });
+      } else {
+        Alert.alert(
+          "Saved offline",
+          `The ${appliance} job is queued and will sync when you reconnect. Voice notes upload right after it.`,
+          [{ text: "OK", onPress: () => navigation.goBack() }],
+        );
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -130,14 +225,19 @@ export function CreateJobWizard({ navigation }: Props) {
         )}
 
         {currentStep === 3 && (
-          <CreateJobStep3 
+          <CreateJobStep3
             location={location} setLocation={setLocation}
-            serviceType={serviceType} setServiceType={setServiceType} 
+            customerLat={customerLat} customerLng={customerLng}
+            setCustomerPin={(lat, lng) => {
+              setCustomerLat(lat);
+              setCustomerLng(lng);
+            }}
+            serviceType={serviceType} setServiceType={setServiceType}
             timeWindow={timeWindow} setTimeWindow={setTimeWindow}
             onNext={() => {
               setCurrentStep(4);
               setHighestStep(Math.max(highestStep, 4));
-            }} 
+            }}
           />
         )}
 
