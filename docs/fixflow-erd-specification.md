@@ -383,7 +383,7 @@ Standing rules restated: every model change ships with its migration and passes 
 | Estimate & approval tables | Already served by `job_event` (kinds `estimate/approved/declined` + payload + `phase='approval'` media). A table adds nothing but joins. |
 | `technician_skill` graph | H3. Derivable later from completions × outcomes × attendance — capture feeds it already. |
 | Multi-fault M2M on completion | One primary fault/action first; add the M2M only if real jobs demand it (YAGNI with a named revisit trigger). |
-| WhatsApp message log | The dispatcher's delivery bookkeeping starts as `app_event` rows; a `message` table only if two-way conversation state ever matters. |
+| Two-way WhatsApp conversation state | Superseded in part (0034): `customer_message` now records the *automated Cloud API* sends — one row per (job, kind), the unique constraint doubling as the replay guard, webhook statuses folded in by `wamid`. Still excluded: inbound conversation threading — a customer reply is counted, never acted on. |
 | Native PG enums, RLS, partitions, warehouse | House conventions + anti-roadmap. RLS becomes attractive at real multi-tenancy; the shop FKs laid here are its prerequisite. |
 
 ---

@@ -20,9 +20,15 @@ import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Register the FULL ORM schema in Base.metadata. Deliberately NOT
+# `import app.registry`: that statement also binds the name `app` (the
+# package) in this namespace, which `app = create_app()` below would then
+# shadow — legal at runtime but a mypy strict error that cascades into every
+# test importing `app.main.app`.
+from app import registry as _registry  # noqa: F401
 from app.core.backup import run_db_backup
 from app.core.config import settings
-from app.core.db import SessionLocal
+from app.core.db import Base, SessionLocal
 from app.core.metrics import MetricsMiddleware
 from app.core.request_id import RequestIdMiddleware, configure_logging
 from app.core.scheduler import (
@@ -36,8 +42,15 @@ from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.router import router as attendance_router
 from app.features.attendance.schemas import DEFAULT_SHOP_ID
 from app.features.attendance.service import AttendanceService
+from app.features.customer_messaging.deps import get_messaging_service
+from app.features.customer_messaging.router import router as messaging_router
+from app.features.customer_messaging.router import webhook_router as whatsapp_webhook_router
+from app.features.customer_messaging.service import build_dispatch_handler
+from app.features.customers.router import router as customers_router
+from app.features.customers.service import get_whatsapp_opt_in
 from app.features.health.router import router as health_router
 from app.features.identity.router import router as identity_router
+from app.features.jobs.deps import get_jobs_service
 from app.features.jobs.models import JobEvent
 from app.features.jobs.router import router as jobs_router
 from app.features.jobs.service import (
@@ -72,19 +85,16 @@ async def _run_payroll_export() -> None:
             raise
 
 
-async def _log_whatsapp_event(event: JobEvent) -> None:
-    """v0 outbox consumer: log-only. A real WhatsApp delivery handler replaces
-    this; until then flipping ``enable_dispatcher`` on just advances the cursor
-    and records what *would* have been sent (UUIDs/slugs only — no PII)."""
-    logger.info("dispatch[whatsapp] seq=%s kind=%s job=%s", event.seq, event.kind, event.job_id)
-
-
 async def _run_whatsapp_dispatch() -> None:
-    """The interval job: drain new job_event rows into the whatsapp consumer.
-    Owns its session; ``run_dispatch_once`` commits its own cursor progress. A
-    poisoned event is dead-lettered (advanced past + ``outbox_dead_letter``
-    app_event) so one bad row can't wedge the consumer — the composition root
-    is the seam that lets jobs stay decoupled from telemetry."""
+    """The interval job: drain new job_event rows into the WhatsApp consumer
+    (``customer_messaging``). Owns its session; ``run_dispatch_once`` commits
+    its own cursor progress (which also persists the ``customer_message`` rows
+    the handler adds). The handler itself degrades to log-only while the Cloud
+    API is unconfigured, and records send failures on the row instead of
+    raising — so the dead-letter path (advance past + ``outbox_dead_letter``
+    app_event) stays reserved for genuinely poisoned events. The composition
+    root is the seam that lets jobs, messaging, customers, and telemetry stay
+    decoupled from each other."""
     async with SessionLocal() as session:
 
         async def _dead_letter(event: JobEvent, _exc: Exception) -> None:
@@ -92,7 +102,13 @@ async def _run_whatsapp_dispatch() -> None:
                 session, shop_id=DEFAULT_SHOP_ID, consumer="whatsapp", seq=event.seq
             )
 
-        await run_dispatch_once(session, "whatsapp", _log_whatsapp_event, dead_letter=_dead_letter)
+        async def _opt_in(customer_id: UUID) -> datetime | None:
+            return await get_whatsapp_opt_in(session, customer_id)
+
+        handler = build_dispatch_handler(
+            get_messaging_service(session), get_jobs_service(session), _opt_in
+        )
+        await run_dispatch_once(session, "whatsapp", handler, dead_letter=_dead_letter)
 
 
 # Holds the per-route baseline across 5-minute ticks (single-replica).
@@ -212,6 +228,14 @@ def create_app() -> FastAPI:
     # the insecure dev JWT secret (forgeable tokens). No-op in dev.
     settings.assert_safe_for_production()
 
+    # Fail-fast on a structurally broken ORM graph. Accessing ``sorted_tables``
+    # forces the same whole-metadata topological sort a ``session.flush`` does,
+    # so a missing model registration (an FK whose target table isn't in the
+    # metadata) crashes the boot — which ``start.sh`` treats as fail-safe —
+    # instead of 500ing every write at runtime. Guards the ``import app.registry``
+    # above against ever being dropped again.
+    _ = Base.metadata.sorted_tables
+
     configure_logging()
 
     # Error tracking — off unless a DSN is configured (boots fine without an
@@ -252,6 +276,9 @@ def create_app() -> FastAPI:
     app.include_router(media_router, prefix="/api")
     app.include_router(attendance_router, prefix="/api")
     app.include_router(jobs_router, prefix="/api")
+    app.include_router(customers_router, prefix="/api")
+    app.include_router(messaging_router, prefix="/api")
+    app.include_router(whatsapp_webhook_router, prefix="/api")
     app.include_router(notifications_router, prefix="/api")
     app.include_router(ops_router, prefix="/api")
     app.include_router(telemetry_router, prefix="/api")

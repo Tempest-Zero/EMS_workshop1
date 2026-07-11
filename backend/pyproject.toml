@@ -105,6 +105,7 @@ type = "independence"
 modules = [
   "app.features.attendance",
   "app.features.catalog",
+  "app.features.customer_messaging",
   "app.features.customers",
   "app.features.health",
   "app.features.jobs",
@@ -118,10 +119,19 @@ ignore_imports = [
   # Jobs' close-gate checks closing media through the media surface.
   "app.features.jobs.router -> app.features.media.deps",
   "app.features.jobs.service -> app.features.media.service",
-  # Jobs' intake best-effort links a new job to an existing customer by phone.
+  # Jobs' intake best-effort links a new job to an existing customer by phone
+  # (and records the F5 WhatsApp-consent chip against that customer).
   "app.features.jobs.service -> app.features.customers.service",
   # Manager-assign pushes through the notifications surface.
   "app.features.jobs.router -> app.features.notifications.deps",
+  # Customer messaging composes from the job read model, witnesses sends on
+  # the jobs timeline, and reads consent — all via public surfaces.
+  "app.features.customer_messaging.router -> app.features.jobs.deps",
+  "app.features.customer_messaging.router -> app.features.jobs.schemas",
+  "app.features.customer_messaging.router -> app.features.jobs.service",
+  "app.features.customer_messaging.router -> app.features.customers.service",
+  "app.features.customer_messaging.service -> app.features.jobs.schemas",
+  "app.features.customer_messaging.service -> app.features.jobs.service",
   # Media's delete policy asks jobs for the job's status (evidence freezes at
   # close) — router-level composition through the jobs deps/service surface.
   "app.features.media.router -> app.features.jobs.deps",
@@ -133,6 +143,7 @@ ignore_imports = [
   "app.features.*.tests.* -> app.main",
   "app.features.*.tests.* -> app.features.*.service",
   "app.features.*.tests.* -> app.features.*.deps",
+  "app.features.*.tests.* -> app.features.*.schemas",
 ]
 
 [[tool.importlinter.contracts]]
@@ -142,6 +153,7 @@ source_modules = ["app.features.identity"]
 forbidden_modules = [
   "app.features.attendance",
   "app.features.catalog",
+  "app.features.customer_messaging",
   "app.features.customers",
   "app.features.health",
   "app.features.jobs",

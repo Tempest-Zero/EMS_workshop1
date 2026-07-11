@@ -14,18 +14,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import settings
-from app.features.customers.service import match_customer_by_phone
+from app.features.customers.service import (
+    create_customer_with_phone,
+    match_customer_by_phone,
+    record_consent,
+)
 from app.features.jobs.catalog_map import category_for_appliance_type
 from app.features.jobs.models import (
     DispatchCursor,
     JobCompletion,
-    JobEvent,
     JobLocation,
     JobMaterial,
     JobOutcome,
     JobPayment,
 )
 from app.features.jobs.models import Job as JobRow
+
+# Explicit re-export: JobEvent is the payload type of the dispatch contract
+# (``DispatchHandler`` below) — outbox consumers type their handlers against
+# it through this surface instead of reaching into jobs.models.
+from app.features.jobs.models import JobEvent as JobEvent
 from app.features.jobs.repository import JobRepository
 from app.features.jobs.schemas import (
     CompletionOut,
@@ -45,6 +53,7 @@ from app.features.jobs.schemas import (
 )
 from app.features.media.service import MediaService
 from app.shared.geo import haversine_m
+from app.shared.phone import to_e164_pk
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +310,7 @@ class JobService:
         return await self._detail(row)
 
     # ── Commands ─────────────────────────────────────────────────────────
-    async def create_job(self, body: JobCreate) -> Job:
+    async def create_job(self, body: JobCreate, *, actor: str | None = None) -> Job:
         """Create a job with the next human-facing token.
 
         The token comes from the ``job_token_seq`` sequence, so concurrent
@@ -313,7 +322,7 @@ class JobService:
         last_error: IntegrityError | None = None
         for _ in range(3):
             try:
-                created = await self._create_with_next_token(body)
+                created = await self._create_with_next_token(body, actor=actor)
             except IntegrityError as e:
                 await self._repo.rollback()
                 last_error = e
@@ -324,7 +333,11 @@ class JobService:
             return Job.model_validate(created)
         raise last_error if last_error is not None else RuntimeError("unreachable")
 
-    async def _create_with_next_token(self, body: JobCreate) -> JobRow:
+    async def _create_with_next_token(self, body: JobCreate, *, actor: str | None) -> JobRow:
+        # Customer link (+ consent, when the F5 chip was ticked) resolves
+        # BEFORE the job row is added: a consent failure can then roll back to
+        # a clean session and degrade to an unlinked job instead of a 500.
+        customer_id = await self._link_customer(body, actor=actor)
         token = await self._repo.next_token()
         is_visit = body.job_type == "home-visit"
         row = JobRow(
@@ -332,7 +345,7 @@ class JobService:
             shop_id=body.shop_id,
             status="open",
             job_type=body.job_type,
-            customer_id=await self._match_customer(body),
+            customer_id=customer_id,
             customer_name=body.customer_name.strip(),
             customer_phone=body.customer_phone,
             customer_address=body.customer_address if is_visit else None,
@@ -363,6 +376,49 @@ class JobService:
         except Exception:
             logger.exception("customer phone match failed at job intake; leaving customer_id NULL")
             return None
+
+    async def _link_customer(self, body: JobCreate, *, actor: str | None) -> UUID | None:
+        """Resolve the job's customer link, honouring the F5 consent chip.
+
+        Without consent this is the existing best-effort match. With consent
+        there must be a customer row to hang the fact on: match one, else
+        create one from the intake's name + E.164 mobile (the annex's "no
+        match: create customer on submit") — a non-addressable phone means
+        there is nothing WhatsApp consent could apply to, so it degrades to
+        the plain match. Consent must never fail intake: any error rolls the
+        session back (nothing else is pending yet) and links best-effort.
+        """
+        matched = await self._match_customer(body)
+        if not body.whatsapp_consent:
+            return matched
+        try:
+            customer_id = matched
+            if customer_id is None:
+                phone = to_e164_pk(body.customer_phone)
+                if phone is None:
+                    logger.info("whatsapp consent without an addressable mobile — not recorded")
+                    return None
+                created = await create_customer_with_phone(
+                    self._repo.session,
+                    shop_id=body.shop_id,
+                    full_name=body.customer_name.strip(),
+                    phone_e164=phone,
+                    source=body.intake_channel or "walk_in",
+                )
+                customer_id = created.id
+            await record_consent(
+                self._repo.session,
+                customer_id=customer_id,
+                kind="given",
+                scope="whatsapp",
+                channel="form",
+                recorded_by=actor,
+            )
+            return customer_id
+        except Exception:
+            logger.exception("consent recording failed at job intake; linking best-effort")
+            await self._repo.rollback()
+            return await self._match_customer(body)
 
     async def add_note(
         self, *, job_id: UUID, shop_id: str, text: str, actor: str | None, kind: str = "note"
@@ -556,6 +612,32 @@ class JobService:
         else:
             text = f"Bill negotiated → Rs {amount_paisa // 100:,}{suffix}"
         await self._repo.add_event(JobEvent(job_id=row.id, kind="bill", text=text, actor=actor))
+        return await self._detail(row)
+
+    async def log_customer_message(
+        self, *, job_id: UUID, shop_id: str, kind: str, channel: str, actor: str | None
+    ) -> JobDetail:
+        """Record that a customer message went out (the F15 "Send on WhatsApp"
+        write, and the Cloud sender's audit trail). A bill send is a ``bill``
+        timeline event per the storyboard annex; the other kinds are
+        follow-ups. Payload stays PII-free (slugs only, C9)."""
+        row = await self._load(job_id, shop_id)
+        labels = {
+            "intake_ack": "intake acknowledgement",
+            "bill": "bill",
+            "ready": "ready-for-collection notice",
+        }
+        via = "click-to-chat" if channel == "clicktochat" else "Cloud API"
+        await self._repo.add_event(
+            JobEvent(
+                job_id=row.id,
+                kind="bill" if kind == "bill" else "followup",
+                text=f"WhatsApp {labels.get(kind, kind)} sent ({via})",
+                actor=actor,
+                payload={"whatsapp": kind, "channel": channel},
+            )
+        )
+        row.updated_at = datetime.now(UTC)
         return await self._detail(row)
 
     # ── Cash / revenue ledger (Module 4) ─────────────────────────────────
