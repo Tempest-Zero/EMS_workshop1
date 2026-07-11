@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import and_, select, text
@@ -180,6 +181,7 @@ def derive_route(
     candidates = [s for s in samples if s.leg == "outbound" and lo <= s.captured_at <= hi]
 
     path = path_sum_m(candidates)
+    basis: Literal["estimate", "breadcrumbs"]
     if path is not None and path >= straight_m:
         basis, distance = "breadcrumbs", path
     else:
