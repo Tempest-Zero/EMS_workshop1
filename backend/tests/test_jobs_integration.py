@@ -4,6 +4,9 @@ guarded claim (409 instead of a silent steal)."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -363,6 +366,7 @@ async def test_gps_route_and_fuel_estimate(app_client: AsyncClient, auth_headers
     assert body["route"] is not None
     assert body["route"]["distance_m"] > 0
     assert body["route"]["fuel_paisa"] > 0
+    assert body["route"]["basis"] == "estimate"  # no breadcrumbs → circuity estimate
     assert len(body["locations"]) == 2
     assert sum(1 for e in body["events"] if e["kind"] == "gps") == 2
     # The mock-location flag round-trips for manager review.
@@ -380,6 +384,153 @@ async def test_gps_route_and_fuel_estimate(app_client: AsyncClient, auth_headers
         headers=auth_headers,
     )
     assert len(replay.json()["locations"]) == 2
+
+
+async def _post_punch(
+    app_client: AsyncClient,
+    headers: Headers,
+    job_id: str,
+    kind: str,
+    lat: float,
+    lng: float,
+    device_time: datetime,
+) -> None:
+    resp = await app_client.post(
+        f"/api/jobs/{job_id}/locations",
+        json={
+            "kind": kind,
+            "lat": lat,
+            "lng": lng,
+            "client_id": str(uuid4()),
+            "device_time": device_time.isoformat(),
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_travel_breadcrumbs_upgrade_route_and_dedupe(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    """The breadcrumb seam end-to-end against real PG: in-window device_time
+    becomes the punch's captured_at (re-bucket), a batch of trusted samples
+    between the pins flips the route basis to 'breadcrumbs', a replayed batch
+    dedupes on client_id, and a stale batch is rejected outright."""
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+
+    now = datetime.now(UTC)
+    depart_at, arrive_at = now - timedelta(minutes=30), now - timedelta(minutes=5)
+    await _post_punch(
+        app_client, auth_headers, job_id, "depart_workshop", 24.8607, 67.0011, depart_at
+    )
+    await _post_punch(
+        app_client, auth_headers, job_id, "arrive_customer", 24.8615, 67.0099, arrive_at
+    )
+
+    # 10 samples marching depart → arrive with a lat zigzag, so the path-sum
+    # exceeds the straight line (real roads are never the crow-flies line).
+    client_ids = [str(uuid4()) for _ in range(10)]
+    samples = [
+        {
+            "client_id": client_ids[i],
+            "leg": "outbound",
+            "lat": 24.8607 + i * 0.0001 + (0.0004 if i % 2 else 0.0),
+            "lng": 67.0011 + i * 0.0009778,
+            "accuracy_m": 15,
+            "captured_at": (depart_at + timedelta(minutes=2 + i * 2)).isoformat(),
+        }
+        for i in range(10)
+    ]
+    batch = await app_client.post(
+        f"/api/jobs/{job_id}/travel-samples", json={"samples": samples}, headers=auth_headers
+    )
+    assert batch.status_code == 201, batch.text
+    body = batch.json()
+    assert body["accepted"] == 10
+    assert body["deduped"] == 0
+    assert body["rejected"] == 0
+    assert body["route"]["basis"] == "breadcrumbs"
+    assert body["route"]["sample_count"] == 10
+    assert body["route"]["round_trip_fuel_paisa"] > 0
+
+    # Offline replay of the identical batch → a safe no-op, not double rows.
+    replay = await app_client.post(
+        f"/api/jobs/{job_id}/travel-samples", json={"samples": samples}, headers=auth_headers
+    )
+    assert replay.status_code == 201, replay.text
+    assert replay.json()["accepted"] == 0
+    assert replay.json()["deduped"] == 10
+
+    # A batch outside the trust window is rejected (ping semantics — never
+    # re-bucketed), and the route keeps its breadcrumb basis untouched.
+    stale = [
+        {
+            "client_id": str(uuid4()),
+            "leg": "outbound",
+            "lat": 24.86,
+            "lng": 67.0,
+            "accuracy_m": 15,
+            "captured_at": (now - timedelta(days=3)).isoformat(),
+        }
+        for _ in range(5)
+    ]
+    stale_resp = await app_client.post(
+        f"/api/jobs/{job_id}/travel-samples", json={"samples": stale}, headers=auth_headers
+    )
+    assert stale_resp.status_code == 201, stale_resp.text
+    assert stale_resp.json()["rejected"] == 5
+    assert stale_resp.json()["accepted"] == 0
+    assert stale_resp.json()["route"]["basis"] == "breadcrumbs"
+
+
+async def test_completion_omitted_fuel_bills_round_trip_estimate(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    """Omitted fuel_paisa → the server bills the derived round trip and
+    persists the provenance (G5 closed: the estimate is no longer display-only)."""
+    created = await app_client.post("/api/jobs", json=_INTAKE, headers=auth_headers)
+    job_id = created.json()["id"]
+
+    now = datetime.now(UTC)
+    await _post_punch(
+        app_client,
+        auth_headers,
+        job_id,
+        "depart_workshop",
+        24.8607,
+        67.0011,
+        now - timedelta(minutes=30),
+    )
+    await _post_punch(
+        app_client,
+        auth_headers,
+        job_id,
+        "arrive_customer",
+        24.8615,
+        67.0099,
+        now - timedelta(minutes=5),
+    )
+
+    detail = await app_client.get(f"/api/jobs/{job_id}", headers=auth_headers)
+    route = detail.json()["route"]
+    assert route["basis"] == "estimate"
+
+    # 120000 materials + 120000 labour (1h @ Rs1200) + the derived round trip.
+    comp = await app_client.post(
+        f"/api/jobs/{job_id}/completion",
+        json={
+            "materials": [{"name": "Run capacitor", "qty": 2, "unit_paisa": 60000}],
+            "time_spent_mins": 60,
+        },
+        headers=auth_headers,
+    )
+    assert comp.status_code == 200, comp.text
+    body = comp.json()
+    assert body["bill_original_paisa"] == 240000 + route["round_trip_fuel_paisa"]
+    assert body["completion"]["fuel_paisa"] == route["round_trip_fuel_paisa"]
+    assert body["completion"]["fuel_basis"] == "estimate"
+    assert body["completion"]["fuel_distance_m"] == pytest.approx(route["round_trip_distance_m"])
 
 
 async def test_close_requires_a_closing_video(

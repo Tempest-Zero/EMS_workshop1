@@ -33,11 +33,14 @@ from app.features.jobs.schemas import (
     NoteRequest,
     PaymentRequest,
     TransitionRequest,
+    TravelSampleBatch,
+    TravelSampleBatchResponse,
     VoidRequest,
 )
 from app.features.jobs.service import (
     JobActionError,
     JobConflictError,
+    JobForbiddenError,
     JobNotFoundError,
     JobService,
 )
@@ -365,6 +368,35 @@ async def record_location(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     await session.commit()
     return detail
+
+
+@router.post(
+    "/{job_id}/travel-samples",
+    response_model=TravelSampleBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Record a batch of travel breadcrumbs (≤100; idempotent on client_id)",
+)
+async def record_travel_samples(
+    job_id: UUID,
+    body: TravelSampleBatch,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> TravelSampleBatchResponse:
+    try:
+        result = await service.record_travel_samples(
+            job_id=job_id,
+            shop_id=DEFAULT_SHOP_ID,
+            body=body,
+            actor=principal.tech_id,
+            actor_is_manager=principal.role == "manager",
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    await session.commit()
+    return result
 
 
 async def _assign(service: JobService, job_id: UUID, tech_id: str, actor: str) -> JobDetail:

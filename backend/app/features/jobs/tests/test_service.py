@@ -3,29 +3,42 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.core.config import settings
 from app.features.jobs.models import Job as JobRow
-from app.features.jobs.models import JobCompletion, JobEvent, JobLocation, JobPayment
+from app.features.jobs.models import (
+    JobCompletion,
+    JobEvent,
+    JobLocation,
+    JobPayment,
+    JobTravelSample,
+)
 from app.features.jobs.schemas import (
     CompletionRequest,
     JobCreate,
     LocationRequest,
     MaterialIn,
     TransitionRequest,
+    TravelSampleBatch,
+    TravelSampleIn,
 )
 from app.features.jobs.service import (
     JobActionError,
     JobConflictError,
+    JobForbiddenError,
     JobNotFoundError,
     JobService,
+    derive_route,
+    path_sum_m,
     route_fuel_paisa,
 )
+from app.shared.geo import haversine_m
 
 
 def _event(kind: str, text: str = "x") -> JobEvent:
@@ -70,6 +83,8 @@ def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo.list_locations = AsyncMock(return_value=[])
     repo.get_location_by_client = AsyncMock(return_value=None)
     repo.add_location = AsyncMock(side_effect=lambda loc: loc)
+    repo.list_travel_samples = AsyncMock(return_value=[])
+    repo.create_travel_samples = AsyncMock(return_value=0)
     repo.try_claim = AsyncMock(return_value=True)
     repo.refresh = AsyncMock()
     repo.rollback = AsyncMock()
@@ -688,3 +703,395 @@ async def test_detail_route_none_with_one_pin(svc: tuple[JobService, MagicMock])
     detail = await service.get_job(job_id=job.id, shop_id="default")
     assert detail.route is None
     assert len(detail.locations) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "label"),
+    [
+        ("depart_workshop", "left workshop"),
+        ("arrive_customer", "arrived at customer"),
+        ("depart_customer", "left customer"),
+        ("arrive_workshop", "back at workshop"),
+        ("depart_workshop_delivery", "left workshop (delivery)"),
+        ("arrive_customer_delivery", "arrived at customer (delivery)"),
+    ],
+)
+async def test_record_location_labels_every_kind(
+    svc: tuple[JobService, MagicMock], kind: str, label: str
+) -> None:
+    """Every punch kind gets an honest timeline label — the old binary ternary
+    called a return-leg punch 'arrived at customer'."""
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    await service.record_location(
+        job_id=job.id,
+        shop_id="default",
+        body=LocationRequest(kind=kind, lat=24.86, lng=67.0, client_id=uuid4()),  # type: ignore[arg-type]
+        actor="t1",
+    )
+    assert label in repo.add_event.await_args.args[0].text
+
+
+async def test_record_location_trusts_in_window_device_time(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """An offline-synced punch keeps its real capture time (re-bucket, never
+    reject) — the breadcrumb window-clip depends on the pins' true spread."""
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    device_time = datetime.now(UTC) - timedelta(hours=3)
+    await service.record_location(
+        job_id=job.id,
+        shop_id="default",
+        body=LocationRequest(
+            kind="depart_workshop", lat=24.86, lng=67.0, device_time=device_time, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    assert repo.add_location.await_args.args[0].captured_at == device_time
+
+
+async def test_record_location_rebuckets_stale_device_time(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    stale = datetime.now(UTC) - timedelta(hours=settings.jobs_gps_backdate_ceiling_hours + 5)
+    await service.record_location(
+        job_id=job.id,
+        shop_id="default",
+        body=LocationRequest(
+            kind="depart_workshop", lat=24.86, lng=67.0, device_time=stale, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    stored = repo.add_location.await_args.args[0]
+    assert stored.captured_at != stale  # re-bucketed to receipt time…
+    assert stored.captured_at >= datetime.now(UTC) - timedelta(minutes=1)
+    assert stored.device_time == stale  # …but the raw clock is kept for audit
+
+
+# ── Travel breadcrumbs → billable distance ───────────────────────────────────
+_T0 = datetime(2026, 7, 10, 9, 0, tzinfo=UTC)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _sample(
+    lat: float,
+    lng: float,
+    at: datetime,
+    *,
+    leg: str = "outbound",
+    accuracy_m: float | None = 20.0,
+    is_mock: bool = False,
+) -> JobTravelSample:
+    s = JobTravelSample(
+        job_id=uuid4(),
+        client_id=uuid4(),
+        leg=leg,
+        lat=lat,
+        lng=lng,
+        accuracy_m=accuracy_m,
+        is_mock=is_mock,
+        captured_at=at,
+    )
+    s.id = uuid4()
+    return s
+
+
+def _drive(n: int, *, start: datetime = _T0, zigzag: bool = False) -> list[JobTravelSample]:
+    """``n`` samples heading north from 24.86, one per minute, ~111 m apart
+    (0.001° lat). ``zigzag`` swings lng each step so the path-sum lands well
+    above the straight line between the endpoints."""
+    return [
+        _sample(
+            24.86 + i * 0.001,
+            67.0 + (0.001 if zigzag and i % 2 else 0.0),
+            start + timedelta(minutes=i),
+        )
+        for i in range(n)
+    ]
+
+
+def _pairwise_sum(samples: list[JobTravelSample]) -> float:
+    return sum(
+        haversine_m(a.lat, a.lng, b.lat, b.lng) for a, b in zip(samples, samples[1:], strict=False)
+    )
+
+
+def test_path_sum_is_sum_of_consecutive_segments() -> None:
+    samples = _drive(6)
+    assert path_sum_m(samples) == pytest.approx(_pairwise_sum(samples))
+
+
+def test_path_sum_excludes_untrusted_samples() -> None:
+    """Mock fixes and coarse/missing accuracy can't feed money — the good
+    neighbours bridge the gap instead."""
+    samples = _drive(7)
+    samples[2].is_mock = True
+    samples[4].accuracy_m = None
+    samples[5].accuracy_m = settings.travel_sample_accuracy_ceiling_m + 1
+    trusted = [samples[0], samples[1], samples[3], samples[6]]
+    # Only 4 trusted → below the minimum → can't be trusted at all.
+    assert path_sum_m(samples) is None
+    # With one more good sample the path is the bridge over the excluded ones.
+    samples.append(_sample(24.867, 67.0, _T0 + timedelta(minutes=7)))
+    assert path_sum_m(samples) == pytest.approx(_pairwise_sum([*trusted, samples[-1]]))
+
+
+def test_path_sum_skips_teleport_and_jitter_segments() -> None:
+    samples = _drive(6)
+    # Teleport: ~5.5 km in 60 s (~92 m/s) — the segment contributes 0.
+    samples.insert(3, _sample(24.91, 67.0, samples[2].captured_at + timedelta(seconds=30)))
+    # Jitter: 0 m from its predecessor — also contributes 0.
+    samples.append(
+        _sample(samples[-1].lat, samples[-1].lng, samples[-1].captured_at + timedelta(minutes=1))
+    )
+    total = path_sum_m(samples)
+    assert total is not None
+    # The teleport segment (in AND out) and the jitter segment add nothing, so
+    # the total stays below the honest drive's pairwise sum.
+    assert total < _pairwise_sum(_drive(6))
+
+
+def test_path_sum_skips_non_advancing_time() -> None:
+    samples = _drive(6)
+    dup = _sample(24.868, 67.0, samples[-1].captured_at)  # same clock tick, big jump
+    samples.append(dup)
+    assert path_sum_m(samples) == pytest.approx(_pairwise_sum(samples[:-1]))
+
+
+def test_path_sum_none_when_too_sparse() -> None:
+    assert path_sum_m(_drive(4)) is None
+
+
+def _pins(depart_at: datetime, arrive_at: datetime) -> list[JobLocation]:
+    depart = _loc("depart_workshop", 24.86, 67.0)
+    depart.captured_at = depart_at
+    arrive = _loc("arrive_customer", 24.87, 67.0)
+    arrive.captured_at = arrive_at
+    return [depart, arrive]
+
+
+def test_derive_route_upgrades_to_breadcrumbs() -> None:
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    samples = _drive(11, zigzag=True)
+    route = derive_route(pins, samples, rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.basis == "breadcrumbs"
+    expected = path_sum_m(samples)
+    assert expected is not None
+    assert route.distance_m == pytest.approx(expected)
+    assert route.sample_count == 11
+    assert route.round_trip_distance_m == pytest.approx(expected * 2)
+    # Round ONCE on the doubled distance — never double the rounded paisa.
+    assert route.round_trip_fuel_paisa == route_fuel_paisa(expected * 2, 2000)
+
+
+def test_derive_route_estimates_when_samples_sparse() -> None:
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    straight = haversine_m(24.86, 67.0, 24.87, 67.0)
+    route = derive_route(pins, _drive(3), rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.distance_m == pytest.approx(straight * 1.35)
+    assert route.fuel_paisa == route_fuel_paisa(straight * 1.35, 2000)
+
+
+def test_derive_route_estimates_when_path_shorter_than_straight() -> None:
+    """A 'path' below the straight line is physically impossible without heavy
+    sample loss — the estimate is more honest."""
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    clustered = [
+        _sample(24.8600 + i * 0.0002, 67.0, _T0 + timedelta(minutes=i)) for i in range(6)
+    ]  # ~22 m steps, ~111 m total — far under the ~1112 m straight line
+    route = derive_route(pins, clustered, rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.basis == "estimate"
+
+
+def test_derive_route_clips_samples_to_the_latest_drive() -> None:
+    """A rescheduled job driven twice must bill only the latest drive — the
+    first attempt's breadcrumbs fall outside the latest punch window."""
+    first_drive = _drive(8, start=_T0 - timedelta(hours=3), zigzag=True)
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    route = derive_route(pins, first_drive, rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.basis == "estimate"  # stale samples clipped → too few → estimate
+    assert route.sample_count == 0
+
+
+def test_derive_route_ignores_return_leg_samples() -> None:
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    returning = [
+        _sample(24.86 + i * 0.001, 67.0, _T0 + timedelta(minutes=i), leg="return") for i in range(8)
+    ]
+    route = derive_route(pins, returning, rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.sample_count == 0
+
+
+async def test_record_travel_samples_requires_assignment(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t2"
+    repo.get.return_value = job
+    batch = TravelSampleBatch(
+        samples=[TravelSampleIn(client_id=uuid4(), lat=24.86, lng=67.0, captured_at=_now())]
+    )
+    with pytest.raises(JobForbiddenError):
+        await service.record_travel_samples(
+            job_id=job.id, shop_id="default", body=batch, actor="t1", actor_is_manager=False
+        )
+    repo.create_travel_samples.assert_not_awaited()
+
+
+async def test_record_travel_samples_manager_bypasses_assignment(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t2"
+    repo.get.return_value = job
+    repo.create_travel_samples.return_value = 1
+    batch = TravelSampleBatch(
+        samples=[TravelSampleIn(client_id=uuid4(), lat=24.86, lng=67.0, captured_at=_now())]
+    )
+    resp = await service.record_travel_samples(
+        job_id=job.id, shop_id="default", body=batch, actor="m1", actor_is_manager=True
+    )
+    assert resp.accepted == 1
+    repo.add_event.assert_not_awaited()  # telemetry, not a timeline moment
+
+
+async def test_record_travel_samples_rejects_stale_and_counts_dedupe(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t1"
+    repo.get.return_value = job
+    repo.create_travel_samples.return_value = 1  # of the 2 fresh, 1 was already stored
+    stale_at = _now() - timedelta(hours=settings.jobs_gps_backdate_ceiling_hours + 2)
+    batch = TravelSampleBatch(
+        samples=[
+            TravelSampleIn(client_id=uuid4(), lat=24.86, lng=67.0, captured_at=_now()),
+            TravelSampleIn(client_id=uuid4(), lat=24.861, lng=67.0, captured_at=_now()),
+            TravelSampleIn(client_id=uuid4(), lat=24.862, lng=67.0, captured_at=stale_at),
+        ]
+    )
+    resp = await service.record_travel_samples(
+        job_id=job.id, shop_id="default", body=batch, actor="t1", actor_is_manager=False
+    )
+    assert resp.rejected == 1  # the stale one was dropped, never stored
+    assert resp.accepted == 1
+    assert resp.deduped == 1  # 2 fresh − 1 newly stored
+    rows = repo.create_travel_samples.await_args.args[0]
+    assert len(rows) == 2  # the stale sample never reached the repository
+    assert all(r["recorded_by"] == "t1" for r in rows)
+
+
+# ── Bill fuel auto-fill ──────────────────────────────────────────────────────
+async def test_completion_autofills_round_trip_fuel_from_route(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """Omitted fuel → the server bills the derived ROUND TRIP (outbound × 2)
+    and persists the provenance."""
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_locations.return_value = _pins(_now() - timedelta(hours=1), _now())
+
+    body = CompletionRequest(
+        materials=[MaterialIn(name="Relay", qty=2, unit_paisa=60000)],  # 120000
+        time_spent_mins=60,  # labour = 120000
+    )
+    detail = await service.submit_completion(
+        job_id=job.id, shop_id="default", body=body, actor="t1"
+    )
+
+    straight = haversine_m(24.86, 67.0, 24.87, 67.0)
+    one_way = straight * settings.fuel_route_circuity_factor
+    expected_fuel = route_fuel_paisa(one_way * 2, settings.fuel_rate_paisa_per_km)
+    assert detail.bill_original_paisa == 240000 + expected_fuel
+
+    completion = repo.add_completion.await_args.args[0]
+    assert completion.fuel_paisa == expected_fuel
+    assert completion.fuel_basis == "estimate"
+    assert completion.fuel_distance_m == pytest.approx(one_way * 2)
+    assert completion.fuel_rate_paisa_per_km == settings.fuel_rate_paisa_per_km  # snapshot
+
+    payload = repo.add_event.await_args.args[0].payload
+    assert payload["fuel_basis"] == "estimate"
+    assert payload["fuel_paisa"] == expected_fuel
+
+
+async def test_completion_explicit_zero_fuel_wins(svc: tuple[JobService, MagicMock]) -> None:
+    """An explicit 0 is the tech's call — auto-fill must NOT overwrite it even
+    when a route exists."""
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_locations.return_value = _pins(_now() - timedelta(hours=1), _now())
+
+    body = CompletionRequest(time_spent_mins=60, fuel_paisa=0)
+    detail = await service.submit_completion(
+        job_id=job.id, shop_id="default", body=body, actor="t1"
+    )
+    assert detail.bill_original_paisa == 120000  # labour only
+    completion = repo.add_completion.await_args.args[0]
+    assert completion.fuel_paisa == 0
+    assert completion.fuel_basis == "manual"
+    assert completion.fuel_distance_m is None
+
+
+async def test_completion_autofill_zero_without_route(svc: tuple[JobService, MagicMock]) -> None:
+    """Carry-in (no pins): omitted fuel bills 0 with no basis — nothing to
+    derive from, and old clients keep today's behaviour bit-for-bit."""
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job  # fixture's list_locations is []
+
+    body = CompletionRequest(time_spent_mins=60)
+    detail = await service.submit_completion(
+        job_id=job.id, shop_id="default", body=body, actor="t1"
+    )
+    assert detail.bill_original_paisa == 120000
+    completion = repo.add_completion.await_args.args[0]
+    assert completion.fuel_paisa == 0
+    assert completion.fuel_basis is None
+    repo.list_travel_samples.assert_not_awaited()  # no pins → the query is skipped
+
+
+async def test_completion_resubmit_derives_with_the_snapshot_rate(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """The rate pinned at first submission — not today's settings — prices a
+    re-derived fuel line, exactly like labour_rate_paisa."""
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_locations.return_value = _pins(_now() - timedelta(hours=1), _now())
+    snapshot_rate = settings.fuel_rate_paisa_per_km * 2  # pretend settings later doubled
+    existing = JobCompletion(
+        job_id=job.id, labour_rate_paisa=120000, fuel_rate_paisa_per_km=snapshot_rate
+    )
+    existing.id = uuid4()
+    repo.get_completion.return_value = existing
+
+    await service.submit_completion(
+        job_id=job.id, shop_id="default", body=CompletionRequest(), actor="t1"
+    )
+
+    straight = haversine_m(24.86, 67.0, 24.87, 67.0)
+    one_way = straight * settings.fuel_route_circuity_factor
+    assert existing.fuel_paisa == route_fuel_paisa(one_way * 2, snapshot_rate)

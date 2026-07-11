@@ -9,6 +9,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import CursorResult, delete, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.jobs.models import (
@@ -18,6 +19,7 @@ from app.features.jobs.models import (
     JobLocation,
     JobMaterial,
     JobPayment,
+    JobTravelSample,
     job_token_seq,
 )
 
@@ -210,3 +212,29 @@ class JobRepository:
         await self._session.flush()
         await self._session.refresh(location)
         return location
+
+    # ── Travel breadcrumbs (bulk telemetry) ──────────────────────────────
+    async def create_travel_samples(self, rows: list[dict[str, object]]) -> int:
+        """Bulk-insert breadcrumbs, silently skipping any ``client_id`` already
+        stored — an offline batch replayed after a lost response must be a safe
+        no-op. Returns the number of NEW rows (same ON CONFLICT pattern as
+        attendance pings / telemetry events)."""
+        if not rows:
+            return 0
+        stmt = (
+            pg_insert(JobTravelSample)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=["client_id"])
+            .returning(JobTravelSample.id)
+        )
+        result = await self._session.execute(stmt)
+        return len(result.scalars().all())
+
+    async def list_travel_samples(self, job_id: UUID) -> list[JobTravelSample]:
+        stmt = (
+            select(JobTravelSample)
+            .where(JobTravelSample.job_id == job_id)
+            .order_by(JobTravelSample.captured_at.asc(), JobTravelSample.id.asc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars())

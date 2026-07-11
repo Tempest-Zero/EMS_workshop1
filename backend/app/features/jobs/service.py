@@ -27,6 +27,7 @@ from app.features.jobs.models import (
     JobMaterial,
     JobOutcome,
     JobPayment,
+    JobTravelSample,
 )
 from app.features.jobs.models import Job as JobRow
 
@@ -50,6 +51,8 @@ from app.features.jobs.schemas import (
     PaymentOut,
     RouteOut,
     TransitionRequest,
+    TravelSampleBatch,
+    TravelSampleBatchResponse,
 )
 from app.features.media.service import MediaService
 from app.shared.geo import haversine_m
@@ -67,11 +70,11 @@ def _labour_paisa(time_spent_mins: int, rate_paisa: int) -> int:
     return (time_spent_mins * rate_paisa + 30) // 60
 
 
-def completion_total_paisa(body: CompletionRequest, rate_paisa: int) -> int:
+def completion_total_paisa(body: CompletionRequest, rate_paisa: int, fuel_paisa: int) -> int:
     return (
         _materials_total_paisa(body.materials)
         + _labour_paisa(body.time_spent_mins, rate_paisa)
-        + body.fuel_paisa
+        + fuel_paisa
     )
 
 
@@ -85,18 +88,156 @@ def _latest_location(locations: list[JobLocation], kind: str) -> JobLocation | N
     return max(matching, key=lambda loc: loc.captured_at) if matching else None
 
 
-def derive_route(locations: list[JobLocation], rate_paisa_per_km: int) -> RouteOut | None:
-    """The straight-line route between the latest depart + arrive pins, with a
-    fuel estimate. ``None`` until both pins exist."""
+def _has_route_pins(locations: list[JobLocation]) -> bool:
+    """Both boundary pins exist — the precondition for any route derivation
+    (and the guard that skips the breadcrumb query for carry-in jobs)."""
+    return (
+        _latest_location(locations, "depart_workshop") is not None
+        and _latest_location(locations, "arrive_customer") is not None
+    )
+
+
+# ── Travel breadcrumbs → billable distance ───────────────────────────────────
+# Deliberately module constants, not Settings — promote one only when someone
+# actually needs to tune it.
+_TRAVEL_MIN_TRUSTED_SAMPLES = 5  # fewer → the path can't be trusted, fall back
+_TRAVEL_MAX_SPEED_MPS = 35.0  # ~126 km/h: faster implies a GPS teleport
+_TRAVEL_MIN_SEGMENT_M = 10.0  # stationary jitter floor
+_TRAVEL_WINDOW_SLACK = timedelta(seconds=120)  # clip tolerance around the punch window
+
+
+def _trusted_samples(samples: list[JobTravelSample]) -> list[JobTravelSample]:
+    """Samples fit to feed money: not a mock fix, and accurate enough to place
+    on a road. Stricter than the punches' flag-never-block treatment because a
+    path-sum ACCUMULATES noise — and exclusion never blocks anything, the
+    ladder just falls back to the circuity estimate."""
+    return [
+        s
+        for s in samples
+        if not s.is_mock
+        and s.accuracy_m is not None
+        and s.accuracy_m <= settings.travel_sample_accuracy_ceiling_m
+    ]
+
+
+def path_sum_m(samples: list[JobTravelSample]) -> float | None:
+    """Actual driven distance: the sum of consecutive haversine segments over
+    trusted samples (callers pass them ``captured_at``-ascending). ``None``
+    when fewer than ``_TRAVEL_MIN_TRUSTED_SAMPLES`` survive filtering — too
+    sparse a trail under-counts, and the estimate is more honest.
+
+    Segment rules: time must advance (``dt <= 0`` → duplicate/reordered fix,
+    skip); shorter than the jitter floor → parked, skip; implied speed above
+    the ceiling → GPS teleport, skip (under-billing a glitch beats over-billing
+    it — the straight-line floor in ``derive_route`` catches gross
+    under-counts). A long TIME gap at sane speed counts in full: OS-throttled
+    sampling over a real stretch of road is legitimate distance."""
+    trusted = _trusted_samples(samples)
+    if len(trusted) < _TRAVEL_MIN_TRUSTED_SAMPLES:
+        return None
+    total = 0.0
+    for prev, curr in zip(trusted, trusted[1:], strict=False):
+        dt = (curr.captured_at - prev.captured_at).total_seconds()
+        if dt <= 0:
+            continue
+        dist = haversine_m(prev.lat, prev.lng, curr.lat, curr.lng)
+        if dist < _TRAVEL_MIN_SEGMENT_M or dist / dt > _TRAVEL_MAX_SPEED_MPS:
+            continue
+        total += dist
+    return total
+
+
+def derive_route(
+    locations: list[JobLocation],
+    samples: list[JobTravelSample],
+    *,
+    rate_paisa_per_km: int,
+    circuity_factor: float,
+) -> RouteOut | None:
+    """The billable ONE-WAY route between the latest depart + arrive pins.
+    ``None`` until both pins exist — a route existing means travel provably
+    happened, exactly as before.
+
+    Distance ladder: (a) path-sum of trusted outbound breadcrumbs clipped to
+    the punch window — actual driven metres; (b) otherwise straight-line ×
+    ``circuity_factor``. The window-clip is load-bearing: ``_latest_location``
+    means a rescheduled job driven twice must count only the latest drive's
+    samples. A "path" shorter than the straight line is physically impossible
+    without heavy sample loss, so the estimate wins there too.
+
+    Leg semantics (wired for the future): outbound = ``leg='outbound'`` within
+    depart_workshop→arrive_customer. The return leg (depart_customer→
+    arrive_workshop) is collected but not derived yet — billing happens before
+    it exists, so the billed round trip is outbound × 2."""
     depart = _latest_location(locations, "depart_workshop")
     arrive = _latest_location(locations, "arrive_customer")
     if depart is None or arrive is None:
         return None
-    distance_m = haversine_m(depart.lat, depart.lng, arrive.lat, arrive.lng)
+    straight_m = haversine_m(depart.lat, depart.lng, arrive.lat, arrive.lng)
+
+    lo = depart.captured_at - _TRAVEL_WINDOW_SLACK
+    hi = arrive.captured_at + _TRAVEL_WINDOW_SLACK
+    candidates = [s for s in samples if s.leg == "outbound" and lo <= s.captured_at <= hi]
+
+    path = path_sum_m(candidates)
+    if path is not None and path >= straight_m:
+        basis, distance = "breadcrumbs", path
+    else:
+        basis, distance = "estimate", straight_m * circuity_factor
     return RouteOut(
-        distance_m=distance_m,
-        fuel_paisa=route_fuel_paisa(distance_m, rate_paisa_per_km),
+        distance_m=distance,
+        fuel_paisa=route_fuel_paisa(distance, rate_paisa_per_km),
+        basis=basis,
+        sample_count=len(_trusted_samples(candidates)),
+        round_trip_distance_m=distance * 2,
+        # Round ONCE on the doubled distance — never double the rounded paisa.
+        round_trip_fuel_paisa=route_fuel_paisa(distance * 2, rate_paisa_per_km),
     )
+
+
+def _gps_trust_window(server_now: datetime) -> tuple[datetime, datetime]:
+    """``(oldest, newest)`` acceptable device timestamp for job GPS data."""
+    return (
+        server_now - timedelta(hours=settings.jobs_gps_backdate_ceiling_hours),
+        server_now + timedelta(seconds=settings.jobs_gps_future_tolerance_seconds),
+    )
+
+
+def _effective_capture_time(device_time: datetime | None, server_now: datetime) -> datetime:
+    """Punch semantics — re-bucket, never reject (a punch is real evidence even
+    with a bad clock): an in-window device clock is "when it happened", so an
+    offline-synced depart/arrive pair keeps its real spread instead of landing
+    seconds apart at receipt. Outside the window (or absent) fall back to the
+    authoritative ``server_now``. Mirrors attendance's ``_effective_time``;
+    ``device_time`` stays stored raw for audit either way."""
+    if device_time is None:
+        return server_now
+    dt = device_time if device_time.tzinfo is not None else device_time.replace(tzinfo=UTC)
+    lo, hi = _gps_trust_window(server_now)
+    return dt if lo <= dt <= hi else server_now
+
+
+def _sample_in_window(captured_at: datetime, server_now: datetime) -> bool:
+    """Ping semantics — the breadcrumb counterpart of ``_effective_capture_time``
+    with the attendance pings' deliberate difference: an out-of-window sample is
+    REJECTED by the caller, never re-bucketed, because a re-bucketed sample
+    would fabricate a path segment "now". Rejection only degrades the fuel line
+    to the circuity estimate. Mirrors attendance's ``_ping_in_window``."""
+    dt = captured_at if captured_at.tzinfo is not None else captured_at.replace(tzinfo=UTC)
+    lo, hi = _gps_trust_window(server_now)
+    return lo <= dt <= hi
+
+
+# Every punch kind gets an honest timeline label (the old binary ternary
+# mislabeled the return/delivery legs as "arrived at customer").
+_LOCATION_EVENT_LABELS = {
+    "depart_workshop": "left workshop",
+    "arrive_customer": "arrived at customer",
+    "depart_customer": "left customer",
+    "arrive_workshop": "back at workshop",
+    "depart_workshop_delivery": "left workshop (delivery)",
+    "arrive_customer_delivery": "arrived at customer (delivery)",
+}
 
 
 # ── Outbox dispatch (W7/D1) ───────────────────────────────────────────────────
@@ -285,6 +426,12 @@ class JobActionError(ValueError):
 class JobConflictError(Exception):
     """Raised when an action loses to the job's current state (e.g. claiming a
     job someone else already holds). Routers map it to 409."""
+
+
+class JobForbiddenError(Exception):
+    """Raised when the actor may not act on this job — a tech pushing bulk
+    billing evidence (travel breadcrumbs) onto a job that isn't theirs.
+    Routers map it to 403."""
 
 
 class JobService:
@@ -550,16 +697,53 @@ class JobService:
 
         completion = await self._repo.get_completion(row.id)
         if completion is None:
-            # Snapshot the labour rate at FIRST submission: the bill must never
-            # be silently repriced by a later config change. Resubmits reuse it.
+            # Snapshot BOTH money rates at FIRST submission: the bill must
+            # never be silently repriced by a later config change. Resubmits
+            # reuse them (auto-derived fuel legitimately recomputes when the
+            # route upgrades to breadcrumbs — the pinned rate keeps that
+            # recompute honest).
             completion = await self._repo.add_completion(
-                JobCompletion(job_id=row.id, labour_rate_paisa=settings.labour_rate_paisa)
+                JobCompletion(
+                    job_id=row.id,
+                    labour_rate_paisa=settings.labour_rate_paisa,
+                    fuel_rate_paisa_per_km=settings.fuel_rate_paisa_per_km,
+                )
             )
         else:
             await self._repo.clear_materials(completion.id)
 
+        # Fuel: an explicit figure (including 0) is the tech's call; omitted →
+        # bill the derived ROUND TRIP (outbound × 2 — the return leg hasn't
+        # happened yet at billing time). No route (carry-in) → 0. The circuity
+        # factor is deliberately NOT snapshotted: it's a distance-model
+        # parameter, not a price, and the closed-job guard above already
+        # freezes settled bills.
+        fuel_basis: str | None
+        fuel_distance_m: float | None
+        if body.fuel_paisa is not None:
+            fuel_paisa, fuel_basis, fuel_distance_m = body.fuel_paisa, "manual", None
+        else:
+            locations = await self._repo.list_locations(row.id)
+            samples = (
+                await self._repo.list_travel_samples(row.id) if _has_route_pins(locations) else []
+            )
+            route = derive_route(
+                locations,
+                samples,
+                rate_paisa_per_km=completion.fuel_rate_paisa_per_km,
+                circuity_factor=settings.fuel_route_circuity_factor,
+            )
+            if route is not None and route.round_trip_fuel_paisa is not None:
+                fuel_paisa = route.round_trip_fuel_paisa
+                fuel_basis = route.basis
+                fuel_distance_m = route.round_trip_distance_m
+            else:
+                fuel_paisa, fuel_basis, fuel_distance_m = 0, None, None
+
         completion.time_spent_mins = body.time_spent_mins
-        completion.fuel_paisa = body.fuel_paisa
+        completion.fuel_paisa = fuel_paisa
+        completion.fuel_basis = fuel_basis
+        completion.fuel_distance_m = fuel_distance_m
         completion.remarks_text = body.remarks_text
         completion.remarks_audio_media_id = body.remarks_audio_media_id
         # W5: persist-if-present, flag-never-block. The FK to the seeded
@@ -578,7 +762,7 @@ class JobService:
                 )
             )
 
-        original = completion_total_paisa(body, completion.labour_rate_paisa)
+        original = completion_total_paisa(body, completion.labour_rate_paisa, fuel_paisa)
         row.bill_original_paisa = original
         row.bill_status = "negotiated" if row.bill_negotiated_paisa is not None else "generated"
         row.updated_at = datetime.now(UTC)
@@ -588,6 +772,14 @@ class JobService:
                 kind="complete",
                 text=f"Work completed — bill Rs {original // 100:,}",
                 actor=actor,
+                # Fuel provenance per submission — the completion row is an
+                # upsert, so only this payload answers "why was fuel Rs X on
+                # the bill we sent" after a resubmit. Numbers/None only (C9).
+                payload={
+                    "fuel_paisa": fuel_paisa,
+                    "fuel_basis": fuel_basis,
+                    "fuel_distance_m": fuel_distance_m,
+                },
             )
         )
         return await self._detail(row)
@@ -724,6 +916,7 @@ class JobService:
         row = await self._load(job_id, shop_id)
         existing = await self._repo.get_location_by_client(body.client_id)
         if existing is None:
+            now = datetime.now(UTC)
             await self._repo.add_location(
                 JobLocation(
                     job_id=row.id,
@@ -733,16 +926,87 @@ class JobService:
                     lng=body.lng,
                     accuracy_m=body.accuracy_m,
                     is_mock=body.is_mock,
+                    # Trust-windowed device clock: an offline-synced depart/
+                    # arrive pair keeps its real spread instead of landing
+                    # seconds apart at receipt — the breadcrumb window-clip
+                    # in derive_route depends on this.
+                    captured_at=_effective_capture_time(body.device_time, now),
                     device_time=body.device_time,
                 )
             )
-            label = "left workshop" if body.kind == "depart_workshop" else "arrived at customer"
+            label = _LOCATION_EVENT_LABELS[body.kind]
             mock = " (mock location)" if body.is_mock else ""
             await self._repo.add_event(
                 JobEvent(job_id=row.id, kind="gps", text=f"GPS — {label}{mock}", actor=actor)
             )
             row.updated_at = datetime.now(UTC)
         return await self._detail(row)
+
+    async def record_travel_samples(
+        self,
+        *,
+        job_id: UUID,
+        shop_id: str,
+        body: TravelSampleBatch,
+        actor: str,
+        actor_is_manager: bool,
+    ) -> TravelSampleBatchResponse:
+        """Ingest a batch of travel breadcrumbs (bulk droppable telemetry —
+        the attendance-ping contract, not the punch rail). Idempotent on
+        ``client_id`` so a replayed offline batch dedupes; an out-of-window
+        ``captured_at`` is rejected, never re-bucketed. Deliberately no
+        ``job_event`` — breadcrumbs are telemetry, not timeline moments.
+
+        Guarded to the assigned tech (or a manager): a batch is bulk BILLING
+        evidence, and a stale job id in a phone's queue must not silently
+        corrupt another job's fuel line. The guard needs ``assigned_tech_id``,
+        a DB read — which is why it lives here, not in the router."""
+        row = await self._load(job_id, shop_id)
+        if not actor_is_manager and row.assigned_tech_id != actor:
+            raise JobForbiddenError(f"job {job_id} is not assigned to {actor}")
+
+        now = datetime.now(UTC)
+        fresh = [s for s in body.samples if _sample_in_window(s.captured_at, now)]
+        rejected = len(body.samples) - len(fresh)
+        if rejected:
+            logger.warning(
+                "travel samples: rejected %d of %d for job %s (captured_at outside trust window)",
+                rejected,
+                len(body.samples),
+                job_id,
+            )
+        accepted = await self._repo.create_travel_samples(
+            [
+                {
+                    "job_id": row.id,
+                    "client_id": s.client_id,
+                    "leg": s.leg,
+                    "lat": s.lat,
+                    "lng": s.lng,
+                    "accuracy_m": s.accuracy_m,
+                    "is_mock": s.is_mock,
+                    "captured_at": s.captured_at,
+                    "recorded_by": actor,
+                }
+                for s in fresh
+            ]
+        )
+        # The refreshed derivation rides back so the phone sees the estimate →
+        # breadcrumbs upgrade without refetching the (heavy) job detail.
+        locations = await self._repo.list_locations(row.id)
+        samples = await self._repo.list_travel_samples(row.id) if _has_route_pins(locations) else []
+        route = derive_route(
+            locations,
+            samples,
+            rate_paisa_per_km=settings.fuel_rate_paisa_per_km,
+            circuity_factor=settings.fuel_route_circuity_factor,
+        )
+        return TravelSampleBatchResponse(
+            accepted=accepted,
+            deduped=len(fresh) - accepted,
+            rejected=rejected,
+            route=route,
+        )
 
     async def status_by_token(self, *, token: str, shop_id: str) -> str | None:
         """The job's current status, looked up by its human token (media rows
@@ -803,6 +1067,8 @@ class JobService:
             detail.completion = CompletionOut(
                 time_spent_mins=completion.time_spent_mins,
                 fuel_paisa=completion.fuel_paisa,
+                fuel_basis=completion.fuel_basis,
+                fuel_distance_m=completion.fuel_distance_m,
                 labour_rate_paisa=completion.labour_rate_paisa,
                 remarks_text=completion.remarks_text,
                 remarks_audio_media_id=completion.remarks_audio_media_id,
@@ -825,5 +1091,13 @@ class JobService:
 
         locations = await self._repo.list_locations(row.id)
         detail.locations = [LocationOut.model_validate(loc) for loc in locations]
-        detail.route = derive_route(locations, settings.fuel_rate_paisa_per_km)
+        # Breadcrumbs are only fetched when a route can exist at all — the
+        # common carry-in case skips the query entirely.
+        samples = await self._repo.list_travel_samples(row.id) if _has_route_pins(locations) else []
+        detail.route = derive_route(
+            locations,
+            samples,
+            rate_paisa_per_km=settings.fuel_rate_paisa_per_km,
+            circuity_factor=settings.fuel_route_circuity_factor,
+        )
         return detail

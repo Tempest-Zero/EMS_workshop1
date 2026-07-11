@@ -96,7 +96,9 @@ class CompletionRequest(BaseModel):
 
     materials: list[MaterialIn] = []
     time_spent_mins: int = Field(default=0, ge=0)
-    fuel_paisa: int = Field(default=0, ge=0)
+    # None/omitted → the server bills the derived ROUND-TRIP fuel (route ×2);
+    # an explicit value — INCLUDING 0 — is the tech's figure and always wins.
+    fuel_paisa: int | None = Field(default=None, ge=0)
     remarks_text: str | None = Field(default=None, max_length=2048)
     remarks_audio_media_id: UUID | None = None
     # W5 tap-pickers (optional forever — flag-never-block): seeded vocabulary
@@ -150,6 +152,11 @@ class CompletionOut(BaseModel):
 
     time_spent_mins: int
     fuel_paisa: int
+    # How the billed fuel was produced ('manual' | 'estimate' | 'breadcrumbs';
+    # None on pre-0035 rows) + the billed round-trip metres when derived —
+    # the bill screen renders "Fuel — auto, 12.4 km round trip" from these.
+    fuel_basis: str | None = None
+    fuel_distance_m: float | None = None
     labour_rate_paisa: int
     remarks_text: str | None = None
     remarks_audio_media_id: UUID | None = None
@@ -198,11 +205,56 @@ class LocationOut(BaseModel):
 
 class RouteOut(BaseModel):
     """The derived route between the two pins — present only once both exist.
-    ``distance_m`` is the straight-line (haversine) distance; ``fuel_paisa`` is
-    the estimated running cost (integer paisa, never floats)."""
+    ``distance_m`` is the billable ONE-WAY distance: the breadcrumb path-sum
+    when trusted samples cover the drive (``basis='breadcrumbs'``), else
+    straight-line × circuity factor (``basis='estimate'``). ``fuel_paisa`` is
+    the running cost for that leg (integer paisa, never floats); the
+    ``round_trip_*`` pair is what an omitted-fuel completion bills."""
 
     distance_m: float
     fuel_paisa: int
+    basis: Literal["estimate", "breadcrumbs"] = "estimate"
+    # Trusted (non-mock, accurate-enough) outbound samples inside the punch
+    # window — how much real evidence backs the number.
+    sample_count: int = 0
+    round_trip_distance_m: float | None = None
+    round_trip_fuel_paisa: int | None = None
+
+
+TravelLeg = Literal["outbound", "return", "delivery"]
+
+
+class TravelSampleIn(BaseModel):
+    """One GPS breadcrumb sampled during a travel leg. ``client_id`` makes it
+    idempotent; ``captured_at`` is the device clock at the fix (samples outside
+    the trust window are rejected at ingest, never re-bucketed). No tech id —
+    the server stamps ``recorded_by`` from the JWT."""
+
+    client_id: UUID
+    leg: TravelLeg = "outbound"
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0)
+    is_mock: bool = False
+    captured_at: datetime
+
+
+class TravelSampleBatch(BaseModel):
+    """A batch of breadcrumbs from the phone's travel queue (≤100, mirroring
+    the attendance ping batch — an oversized batch is a client bug, 422)."""
+
+    samples: list[TravelSampleIn] = Field(..., max_length=100)
+
+
+class TravelSampleBatchResponse(BaseModel):
+    """Counts, not the job detail — the phone posts mid-drive and only needs
+    to prune its queue (accepted + deduped + rejected) and see the refreshed
+    derivation (``route``) without a heavy detail refetch."""
+
+    accepted: int
+    deduped: int
+    rejected: int = 0
+    route: RouteOut | None = None
 
 
 class EvidenceGap(BaseModel):

@@ -17,10 +17,11 @@ from app.core.db import get_session
 from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
 from app.features.jobs.router import get_service
-from app.features.jobs.schemas import Job, JobDetail
+from app.features.jobs.schemas import Job, JobDetail, TravelSampleBatchResponse
 from app.features.jobs.service import (
     JobActionError,
     JobConflictError,
+    JobForbiddenError,
     JobNotFoundError,
     JobService,
 )
@@ -324,6 +325,77 @@ async def test_record_location_rejects_bad_kind(client: AsyncClient) -> None:
         json={"kind": "teleport", "lat": 24.0, "lng": 67.0, "client_id": str(uuid4())},
     )
     assert resp.status_code == 422
+
+
+def _travel_sample(**over: object) -> dict[str, object]:
+    return {
+        "client_id": str(uuid4()),
+        "leg": "outbound",
+        "lat": 24.86,
+        "lng": 67.0,
+        "accuracy_m": 15,
+        "captured_at": "2026-07-10T09:00:00Z",
+        **over,
+    }
+
+
+async def test_record_travel_samples_returns_201_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.record_travel_samples.return_value = TravelSampleBatchResponse(
+        accepted=10, deduped=0, rejected=0, route=None
+    )
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/travel-samples",
+        json={"samples": [_travel_sample(), _travel_sample()]},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert (body["accepted"], body["deduped"], body["rejected"]) == (10, 0, 0)
+    fake_session.commit.assert_awaited()
+
+
+async def test_travel_samples_batch_of_101_is_422(client: AsyncClient) -> None:
+    # An oversized batch is a client bug (the queue flushes ≤100 at a time).
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/travel-samples",
+        json={"samples": [_travel_sample() for _ in range(101)]},
+    )
+    assert resp.status_code == 422
+
+
+async def test_travel_samples_reject_bad_lat_and_leg(client: AsyncClient) -> None:
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/travel-samples",
+        json={"samples": [_travel_sample(lat=999)]},
+    )
+    assert resp.status_code == 422  # lat out of [-90, 90]
+
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/travel-samples",
+        json={"samples": [_travel_sample(leg="teleport")]},
+    )
+    assert resp.status_code == 422  # leg not in the vocabulary
+
+
+async def test_travel_samples_on_someone_elses_job_is_403(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.record_travel_samples.side_effect = JobForbiddenError("not your job")
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/travel-samples", json={"samples": [_travel_sample()]}
+    )
+    assert resp.status_code == 403, resp.text
+
+
+async def test_travel_samples_unknown_job_is_404(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.record_travel_samples.side_effect = JobNotFoundError("nope")
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/travel-samples", json={"samples": [_travel_sample()]}
+    )
+    assert resp.status_code == 404
 
 
 async def test_evidence_gaps_is_manager_only_and_not_swallowed_by_job_route(
