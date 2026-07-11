@@ -10,7 +10,7 @@
  * never double-records (the backend dedups on it).
  */
 
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, type CompositeScreenProps } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
 import * as ImagePicker from "expo-image-picker";
@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -32,7 +33,9 @@ import { uploadMedia } from "../media/uploadMedia";
 import { ApiError } from "../../lib/api";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import { cacheStamp, loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
+import { messagingApi, type WhatsAppKind } from "../../lib/messagingApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
+import type { RootStackParamList } from "../../lib/navigation";
 import {
   discardItem,
   makeItem,
@@ -73,7 +76,12 @@ function itemLabel(item: OutboxItem): string {
   }
 }
 
-type Props = NativeStackScreenProps<JobsStackParamList, "JobDetail">;
+// Composite: this screen lives in the Jobs stack but also opens the ROOT
+// stack's arrival-wizard modal (the post-arrival evidence flow).
+type Props = CompositeScreenProps<
+  NativeStackScreenProps<JobsStackParamList, "JobDetail">,
+  NativeStackScreenProps<RootStackParamList>
+>;
 
 type Busy =
   | "note"
@@ -85,6 +93,7 @@ type Busy =
   | "void"
   | "depart"
   | "arrive"
+  | "whatsapp"
   | null;
 type PayMethod = "cash" | "card" | "online";
 
@@ -428,6 +437,40 @@ export function JobDetailScreen({ route, navigation }: Props) {
     [id, voidReason, busy],
   );
 
+  // v1 WhatsApp is click-to-chat: the backend composes the text + wa.me link
+  // (consent-gated), the phone opens WhatsApp, and send-log witnesses it on
+  // the job timeline. Online-only by nature — there is no offline wa.me.
+  const sendWhatsApp = useCallback(
+    async (kind: WhatsAppKind) => {
+      if (busy) return;
+      setBusy("whatsapp");
+      setError(null);
+      setInfo(null);
+      try {
+        const preview = await messagingApi.preview(id, kind);
+        if (!preview.consent) {
+          setError("No WhatsApp consent on record for this customer.");
+          return;
+        }
+        if (!preview.wa_me_url) {
+          setError("No WhatsApp-capable phone number on this job.");
+          return;
+        }
+        await Linking.openURL(preview.wa_me_url);
+        setJob(await messagingApi.logSend(id, kind));
+      } catch (e) {
+        if (e instanceof ApiError) {
+          setError(apiDetail(e) ?? "Couldn't prepare the WhatsApp message — try again.");
+        } else {
+          setError("Couldn't open WhatsApp — check your connection and try again.");
+        }
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, busy],
+  );
+
   const recordPunch = useCallback(
     async (kind: "depart_workshop" | "arrive_customer") => {
       if (busy) return;
@@ -529,6 +572,41 @@ export function JobDetailScreen({ route, navigation }: Props) {
         <Text style={styles.label}>PROBLEM</Text>
         <Text style={styles.value}>{job.problem}</Text>
       </View>
+
+      {/* The hub flow: travel first (home visits), then the on-site wizard.
+          "Arrived" is server truth — the arrive_customer punch — not a nav
+          param, so a killed app or second device shows the same state. */}
+      {open ? (
+        <View style={styles.card}>
+          {isVisit && !hasArrive ? (
+            <>
+              <Text style={styles.label}>TRAVEL</Text>
+              <Text style={styles.sub}>
+                Head out, then punch your arrival at the customer's door.
+              </Text>
+              <Pressable
+                style={styles.travelBtn}
+                onPress={() => navigation.navigate("Travel", { id, token })}
+              >
+                <Text style={styles.travelBtnText}>🚀 START TRAVEL</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text style={styles.label}>ON-SITE WORK</Text>
+              <Text style={styles.sub}>
+                Capture the evidence and diagnosis with the step-by-step wizard.
+              </Text>
+              <Pressable
+                style={styles.wizardBtn}
+                onPress={() => navigation.navigate("ArrivalWizard", { id, token })}
+              >
+                <Text style={styles.btnDarkText}>📋 Open Job Wizard</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.label}>ACTIONS</Text>
@@ -824,6 +902,48 @@ export function JobDetailScreen({ route, navigation }: Props) {
         ) : null}
       </View>
 
+      {open && job.customer_phone ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>CUSTOMER MESSAGING · WHATSAPP</Text>
+          <Text style={styles.sub}>
+            Opens WhatsApp with the composed message; the send is logged on the timeline.
+            Consent-gated — blocked unless the customer opted in.
+          </Text>
+          <View style={styles.statusRow}>
+            {hasBill ? (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("bill")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>{busy === "whatsapp" ? "…" : "Send bill"}</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("intake_ack")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>
+                  {busy === "whatsapp" ? "…" : "Acknowledge intake"}
+                </Text>
+              </Pressable>
+            )}
+            {isReady ? (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("ready")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>
+                  {busy === "whatsapp" ? "…" : "Ready for pickup"}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
       {hasBill || job.payments.length > 0 || pendingPayments.length > 0 ? (
         <View style={styles.card}>
           <Text style={styles.label}>CASH &amp; REVENUE</Text>
@@ -1083,4 +1203,20 @@ const styles = StyleSheet.create({
   failedReason: { fontSize: 11, color: "#b91c1c", marginTop: 1 },
   failedAction: { paddingHorizontal: 8, paddingVertical: 4 },
   retryText: { color: "#1d4ed8", fontWeight: "800", fontSize: 13 },
+  travelBtn: {
+    marginTop: 12,
+    backgroundColor: "#0f172a",
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  travelBtnText: { color: "white", fontSize: 16, fontWeight: "800", letterSpacing: 0.5 },
+  wizardBtn: {
+    marginTop: 12,
+    backgroundColor: "#2563eb",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  btnWhatsApp: { backgroundColor: "#16a34a" },
 });
