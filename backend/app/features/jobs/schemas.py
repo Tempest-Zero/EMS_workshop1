@@ -308,6 +308,9 @@ class Job(BaseModel):
     customer_lng: float | None = None
     # Echoed so an offline-queued create can reconcile to its server row.
     client_id: UUID | None = None
+    # Category slug (0023) — the phone scopes its fault/action/parts pickers
+    # to it (echoed since 0036).
+    category_id: str | None = None
     appliance_type: str
     appliance_brand: str | None = None
     appliance_model: str | None = None
