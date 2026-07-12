@@ -24,6 +24,8 @@ export interface ArrivalDraft {
   errorCodeStatus: "pending" | "no" | "yes_pending" | "done";
   errorCodeUri: string | null;
   videoUri: string | null;
+  /** The AFTER-video (F10) — the work-done gate before outcome & time. */
+  afterVideoUri: string | null;
   voiceUri: string | null;
   /** Server id of the uploaded remark voice note (links into the completion). */
   remarkMediaId: string | null;
@@ -45,6 +47,7 @@ export const EMPTY_DRAFT: ArrivalDraft = {
   errorCodeStatus: "pending",
   errorCodeUri: null,
   videoUri: null,
+  afterVideoUri: null,
   voiceUri: null,
   remarkMediaId: null,
   faultId: null,

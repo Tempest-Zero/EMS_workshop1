@@ -76,7 +76,7 @@ export function ArrivalJobStep5({ arrivalTime, submitting, onComplete }: Step5Pr
           <View style={styles.headerRow}>
             <Text style={styles.title}>Outcome & time</Text>
             <View style={styles.stepBadge}>
-              <Text style={styles.stepBadgeText}>5 / 5</Text>
+              <Text style={styles.stepBadgeText}>6 / 6</Text>
             </View>
           </View>
 

@@ -1,9 +1,10 @@
 /**
- * The 5-step on-site wizard (F8–F14): arrival evidence → voice summary →
- * diagnosis → materials → outcome & time. The wizard OWNS the collected data
- * (steps are dumb), persists a per-job draft across process death, uploads
- * evidence eagerly (falling back to the pending-media queue when offline),
- * and submits the completion through the outbox before opening the bill.
+ * The 6-step on-site wizard (F8–F14): arrival evidence → voice summary →
+ * diagnosis → materials → after-video (F10) → outcome & time. The wizard
+ * OWNS the collected data (steps are dumb), persists a per-job draft across
+ * process death, uploads evidence eagerly (falling back to the pending-media
+ * queue when offline), and submits the completion through the outbox before
+ * opening the bill.
  */
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -25,6 +26,7 @@ import {
   type UploadState,
 } from './arrivalDraft';
 import { completionFromWizard } from './completionFromWizard';
+import { ArrivalAfterVideoScreen } from './ArrivalAfterVideoScreen';
 import { ArrivalCapturesScreen } from './ArrivalCapturesScreen';
 import { ArrivalJobStep2 } from './ArrivalJobStep2';
 import { ArrivalJobStep3 } from './ArrivalJobStep3';
@@ -240,6 +242,16 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
           />
         )}
         {draft.step === 5 && (
+          <ArrivalAfterVideoScreen
+            draft={draft}
+            onCapture={(slot, patch, phase, type, uri, contentType) => {
+              update(patch);
+              void uploadEvidence(slot, phase, type, uri, contentType);
+            }}
+            onNext={() => update({ step: 6 })}
+          />
+        )}
+        {draft.step === 6 && (
           <ArrivalJobStep5
             arrivalTime={draft.arrivalAtMs ?? Date.now()}
             submitting={submitting}

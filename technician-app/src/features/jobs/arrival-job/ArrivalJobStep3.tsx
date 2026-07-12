@@ -64,7 +64,7 @@ export function ArrivalJobStep3({ categoryId, faultId, actionId, onPick, onNext 
         <View style={styles.headerRow}>
           <Text style={styles.title}>Diagnosis</Text>
           <View style={styles.stepBadge}>
-            <Text style={styles.stepBadgeText}>3 / 5</Text>
+            <Text style={styles.stepBadgeText}>3 / 6</Text>
           </View>
         </View>
 

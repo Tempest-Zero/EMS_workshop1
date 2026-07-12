@@ -186,7 +186,7 @@ export function ArrivalJobStep2({ voiceUri, onRecorded, onDeleted, onNext }: Ste
       {/* 🟢 HEADER */}
       <View style={styles.header}>
         <View style={styles.stepBadge}>
-          <Text style={styles.stepBadgeText}>2 / 5</Text>
+          <Text style={styles.stepBadgeText}>2 / 6</Text>
         </View>
       </View>
 
