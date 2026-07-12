@@ -1259,9 +1259,7 @@ async def test_completion_uses_workshop_origin_when_depart_missing(
     arrive = _loc("arrive_customer", 24.87, 67.0)
     arrive.captured_at = _now()
     repo.list_locations.return_value = [arrive]  # no depart pin
-    monkeypatch.setattr(
-        jobs_service, "workshop_circle", AsyncMock(return_value=(24.86, 67.0, 150))
-    )
+    monkeypatch.setattr(jobs_service, "workshop_circle", AsyncMock(return_value=(24.86, 67.0, 150)))
 
     body = CompletionRequest(time_spent_mins=60)  # fuel omitted → auto-derive
     await service.submit_completion(job_id=job.id, shop_id="default", body=body, actor="t1")
