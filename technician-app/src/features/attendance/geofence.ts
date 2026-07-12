@@ -23,6 +23,7 @@ import * as TaskManager from "expo-task-manager";
 import { attendanceApi, type ActiveGeofence, type PresenceKind } from "../../lib/attendanceApi";
 import { getToken, loadToken } from "../../lib/auth";
 import { haversineM } from "../../lib/geo";
+import { maybePromptTravel } from "../jobs/travelPrompt";
 import { getLocation, type LocationReading } from "./location";
 import { notifyArrived, notifyLeaving } from "./attendanceNotifications";
 import { enqueuePresence, type QueuedPresence } from "./presenceQueue";
@@ -242,9 +243,12 @@ export async function handleGeofenceEvent(
     if (await isDuplicate("depart")) return;
     const { verdict, loc } = await confirmCrossing("depart");
     await recordCrossing("depart", techId, { loc, confirmed: verdictConfirmed(verdict) });
-    // Only remind to clock OUT when we positively know they're clocked in, and
-    // never on a contradicted crossing (a flap out-and-back isn't leaving).
-    if (verdict !== "contradicted" && (await isClockedIn(techId)) === true) await notifyLeaving();
+    if (verdict === "contradicted") return; // a flap out-and-back isn't leaving
+    // Only remind to clock OUT when we positively know they're clocked in.
+    if ((await isClockedIn(techId)) === true) await notifyLeaving();
+    // Independently: if they're driving to an assigned visit with no depart
+    // punch, nudge them to start travel so the route/fuel is captured.
+    await maybePromptTravel(techId);
   }
 }
 

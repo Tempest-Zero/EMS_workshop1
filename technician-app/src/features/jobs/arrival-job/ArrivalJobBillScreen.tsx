@@ -106,6 +106,12 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
       : 'auto'
     : null;
 
+  // A visit/pickup whose auto fuel resolved to a near-zero route almost always
+  // means a missed depart punch (both ends punched on arrival). Surface it so
+  // the tech can enter the fuel by hand instead of billing ~Rs 0.
+  const isVisit = job.job_type !== 'carry-in';
+  const fuelSuspect = isVisit && fuelAuto && (completion?.fuel_distance_m ?? 0) < 1000;
+
   const originalPaisa = job.bill_original_paisa ?? materialsPaisa + labourPaisa + fuelPaisa;
   const negotiatedPaisa = rupeesToPaisa(negotiatedRs);
   const negotiateDirty =
@@ -288,6 +294,20 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
             </View>
           </View>
 
+          {fuelSuspect ? (
+            <Pressable
+              style={styles.fuelWarn}
+              onPress={() =>
+                navigation.navigate('My Jobs', { screen: 'CompleteJob', params: { id, token } })
+              }
+            >
+              <Text style={styles.fuelWarnText}>
+                ⚠ Route looks wrong ({((completion?.fuel_distance_m ?? 0) / 1000).toFixed(1)} km) —
+                tap to fix the fuel
+              </Text>
+            </Pressable>
+          ) : null}
+
           {/* 🤝 NEGOTIATION */}
           <View style={styles.negotiationContainer}>
             <Text style={styles.inputLabel}>Negotiated</Text>
@@ -432,6 +452,8 @@ const styles = StyleSheet.create({
 
   staleBanner: { backgroundColor: '#fef3c7', borderColor: '#fde68a', borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 16 },
   staleText: { color: '#92400e', fontSize: 12, fontWeight: '700' },
+  fuelWarn: { backgroundColor: '#fef3c7', borderColor: '#f59e0b', borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 16 },
+  fuelWarnText: { color: '#92400e', fontSize: 13, fontWeight: '700' },
 
   // Bill Title
   billHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 24 },

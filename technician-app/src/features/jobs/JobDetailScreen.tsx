@@ -603,6 +603,11 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const isVisit = job.job_type !== "carry-in";
   const hasDepart = job.locations.some((l) => l.kind === "depart_workshop");
   const hasArrive = job.locations.some((l) => l.kind === "arrive_customer");
+  // Auto fuel that resolved to a near-zero route on a travel job → almost
+  // always a missed depart punch; nudge toward a manual fuel figure.
+  const fuelAuto =
+    job.completion?.fuel_basis === "estimate" || job.completion?.fuel_basis === "breadcrumbs";
+  const fuelSuspect = isVisit && fuelAuto && (job.completion?.fuel_distance_m ?? 0) < 1000;
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -971,6 +976,18 @@ export function JobDetailScreen({ route, navigation }: Props) {
           </View>
         ) : null}
 
+        {fuelSuspect ? (
+          <Pressable
+            style={styles.fuelWarn}
+            onPress={() => navigation.navigate("CompleteJob", { id, token })}
+          >
+            <Text style={styles.fuelWarnText}>
+              ⚠ Route looks wrong ({((job.completion?.fuel_distance_m ?? 0) / 1000).toFixed(1)} km) —
+              tap to fix the fuel
+            </Text>
+          </Pressable>
+        ) : null}
+
         {open ? (
           <Pressable
             style={styles.completeBtn}
@@ -1306,6 +1323,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   completeBtnText: { color: "white", fontWeight: "800", fontSize: 15 },
+  fuelWarn: {
+    marginTop: 12,
+    backgroundColor: "#fef3c7",
+    borderColor: "#f59e0b",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  fuelWarnText: { color: "#92400e", fontSize: 13, fontWeight: "700" },
   input: {
     backgroundColor: "#f8fafc",
     borderColor: "#cbd5e1",

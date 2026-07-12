@@ -76,6 +76,14 @@ function expired(state: TravelState): boolean {
   return Number.isFinite(started) && Date.now() - started > MAX_TRAVEL_MS;
 }
 
+/** True when a breadcrumb leg is currently armed (and not past the failsafe).
+ * Used to suppress the geofence "start travel?" nudge — we're already
+ * recording a route. Never throws. */
+export async function hasActiveTravel(): Promise<boolean> {
+  const state = await readTravel();
+  return state !== null && !expired(state);
+}
+
 async function isRunning(): Promise<boolean> {
   try {
     return await Location.hasStartedLocationUpdatesAsync(TRAVEL_TASK);

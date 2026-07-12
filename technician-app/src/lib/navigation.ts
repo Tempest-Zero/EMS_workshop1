@@ -8,11 +8,15 @@
  * arrival wizard + bill sheet as root-level modals so any screen can open them.
  */
 
-import { createNavigationContainerRef } from "@react-navigation/native";
+import { createNavigationContainerRef, type NavigatorScreenParams } from "@react-navigation/native";
+
+import type { JobsStackParamList } from "../features/jobs/types";
 
 export type RootStackParamList = {
   DashboardHub: undefined;
-  "My Jobs": undefined; // nested JobsStack — see features/jobs/types.ts
+  // Nested JobsStack — params let outside-React callers deep-link a stack screen
+  // (e.g. the geofence travel prompt → the Travel screen).
+  "My Jobs": NavigatorScreenParams<JobsStackParamList> | undefined;
   Clock: undefined;
   Profile: undefined;
   ArrivalWizard: { id: string; token: number; arrivalTime?: number };
@@ -25,5 +29,20 @@ export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 export function navigateToClock(): void {
   if (navigationRef.isReady()) {
     navigationRef.navigate("Clock");
+  }
+}
+
+/** Deep-link the Travel screen for a specific job (the geofence travel prompt).
+ * No-op until the container is mounted. */
+export function navigateToJobTravel(id: string, token: number): void {
+  if (navigationRef.isReady()) {
+    navigationRef.navigate("My Jobs", { screen: "Travel", params: { id, token } });
+  }
+}
+
+/** Open the jobs hub (the travel prompt's fallback when several jobs qualify). */
+export function navigateToJobs(): void {
+  if (navigationRef.isReady()) {
+    navigationRef.navigate("My Jobs", { screen: "JobCategories" });
   }
 }

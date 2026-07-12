@@ -12,7 +12,8 @@ import * as Notifications from "expo-notifications";
 import { useEffect } from "react";
 import { AppState } from "react-native";
 
-import { navigateToClock } from "../../lib/navigation";
+import { navigateToClock, navigateToJobs, navigateToJobTravel } from "../../lib/navigation";
+import type { TravelPromptData } from "../jobs/travelPrompt";
 import type { AttendancePromptData } from "./attendanceNotifications";
 import { setAttendancePrompt } from "./attendancePrompt";
 import { ensureGeofenceMonitoring } from "./geofence";
@@ -21,10 +22,19 @@ import { ensurePingTracking } from "./pingTracker";
 function routeFromResponse(response: Notifications.NotificationResponse | null): void {
   const data = response?.notification.request.content.data as
     | Partial<AttendancePromptData>
+    | Partial<TravelPromptData>
     | undefined;
-  if (data?.type !== "attendance_prompt") return;
-  navigateToClock();
-  if (data.action) setAttendancePrompt(data.action);
+  if (data?.type === "attendance_prompt") {
+    navigateToClock();
+    if (data.action) setAttendancePrompt(data.action);
+    return;
+  }
+  if (data?.type === "travel_prompt") {
+    // Single-job nudge deep-links its Travel screen; the multi-job fallback
+    // opens the jobs hub so the tech picks.
+    if (data.id && typeof data.token === "number") navigateToJobTravel(data.id, data.token);
+    else navigateToJobs();
+  }
 }
 
 export function useAttendanceBackground(): void {
