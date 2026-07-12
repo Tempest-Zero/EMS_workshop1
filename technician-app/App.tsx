@@ -3,7 +3,7 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ClockScreen } from "./src/features/attendance/ClockScreen";
@@ -14,6 +14,8 @@ import { DashboardScreen } from "./src/features/dashboard/DashboardScreen";
 import { ArrivalJobBillScreen } from "./src/features/jobs/arrival-job/ArrivalJobBillScreen";
 import { ArrivalJobWizard } from "./src/features/jobs/arrival-job/ArrivalJobWizard";
 import { JobsStack } from "./src/features/jobs/JobsStack";
+import { syncTravelSamples } from "./src/features/jobs/travelSync";
+import { ensureTravelTracking } from "./src/features/jobs/travelTracker";
 import { usePendingMediaDrain } from "./src/features/media/usePendingMediaDrain";
 import { OnboardingScreen } from "./src/features/onboarding/OnboardingScreen";
 import { isOnboarded } from "./src/features/onboarding/permissions";
@@ -54,9 +56,25 @@ function AuthedStack() {
   // Mounted once for the whole authenticated app so the outbox keeps draining
   // even after the tech leaves the screen that queued a write.
   const { queued, failed } = useOutboxSync();
+  const { technician } = useAuth();
   usePushRegistration();
   useAttendanceBackground();
   usePendingMediaDrain();
+
+  // Travel breadcrumbs: reconcile the OS task on launch/foreground (re-arm
+  // after an app kill, stop an expired/orphaned session) and drain the queue.
+  useEffect(() => {
+    void ensureTravelTracking();
+    if (technician) void syncTravelSamples(technician.id);
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "active") {
+        void ensureTravelTracking();
+        if (technician) void syncTravelSamples(technician.id);
+      }
+    });
+    return () => sub.remove();
+  }, [technician]);
+
   return (
     <View style={styles.flex}>
       {queued > 0 || failed > 0 ? <OfflineBanner queued={queued} failed={failed} /> : null}

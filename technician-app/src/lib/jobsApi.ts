@@ -117,6 +117,26 @@ export interface LocationInput {
   client_id: string;
 }
 
+/** One travel breadcrumb (0035). Idempotent on client_id, batched ≤100. */
+export interface TravelSampleInput {
+  client_id: string;
+  leg: "outbound" | "return" | "delivery";
+  lat: number;
+  lng: number;
+  accuracy_m?: number | null;
+  is_mock: boolean;
+  captured_at: string;
+}
+
+export interface TravelSampleBatchResult {
+  accepted: number;
+  deduped: number;
+  rejected: number;
+  /** The refreshed derivation — the phone sees the estimate → breadcrumbs
+   * upgrade without a heavy detail refetch. */
+  route: Route | null;
+}
+
 export interface JobDetail extends Job {
   events: JobEvent[];
   completion: Completion | null;
@@ -234,4 +254,12 @@ export const jobsApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // Breadcrumb batch (0035) — assigned-tech-only server-side; idempotent per
+  // sample; a replayed offline batch dedupes.
+  recordTravelSamples: (id: string, samples: TravelSampleInput[]) =>
+    request<TravelSampleBatchResult>(
+      `/api/jobs/${encodeURIComponent(id)}/travel-samples`,
+      { method: "POST", body: JSON.stringify({ samples }) },
+    ),
 };
