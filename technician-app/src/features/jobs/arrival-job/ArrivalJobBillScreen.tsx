@@ -1,75 +1,242 @@
 /**
- * The bill sheet. STILL A MOCK in this stage: amounts are wireframe
- * placeholders — real bill lines from the job's completion, negotiate +
- * payments through the outbox, and the WhatsApp send land in the
- * bill-wiring stage.
+ * The bill sheet (F15). Line items come from the job's REAL completion
+ * (materials sum, labour = mins × snapshotted rate, fuel + its 0035 basis),
+ * totals from the server's bill fields. Negotiation and payments ride the
+ * outbox (idempotent client_id — an offline retry never double-charges);
+ * WhatsApp is the consent-gated preview → wa.me → send-log flow.
  */
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, Pressable, SafeAreaView, ScrollView, Platform, TextInput, KeyboardAvoidingView } from 'react-native';
+import * as Crypto from "expo-crypto";
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Linking, StyleSheet, Text, View, Pressable, SafeAreaView, ScrollView, Platform, TextInput, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { ApiError } from "../../../lib/api";
+import { jobsApi, type JobDetail } from "../../../lib/jobsApi";
+import { loadJobDetail, saveJobDetail } from "../../../lib/jobsCache";
+import { messagingApi } from "../../../lib/messagingApi";
+import { formatPaisa, rupeesToPaisa } from "../../../lib/money";
 import type { RootStackParamList } from "../../../lib/navigation";
+import { makeItem } from "../../../lib/outbox";
+import { sendOrQueue } from "../../../lib/outboxSync";
 
 type Props = NativeStackScreenProps<RootStackParamList, "BillSheet">;
 
+type PayChoice = 'cash' | 'transfer' | 'later';
+const METHOD_FOR: Record<Exclude<PayChoice, 'later'>, "cash" | "online"> = {
+  cash: "cash",
+  transfer: "online",
+};
+
 export function ArrivalJobBillScreen({ route, navigation }: Props) {
-  // Wireframe placeholders — replaced by the job's real completion lines
-  // in the bill-wiring stage.
-  const billDetails = {
-    jobId: String(route.params.token),
-    labour: 1500,
-    materials: 2850,
-    fuel: 200,
-  };
-  const originalTotal = billDetails.labour + billDetails.materials + billDetails.fuel;
+  const { id, token } = route.params;
 
-  const [negotiatedTotal, setNegotiatedTotal] = useState(originalTotal.toString());
+  const [job, setJob] = useState<JobDetail | null>(null);
+  const [stale, setStale] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"negotiate" | "payment" | "whatsapp" | null>(null);
+
+  const [negotiatedRs, setNegotiatedRs] = useState('');
   const [selectedDiscount, setSelectedDiscount] = useState<string | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'transfer' | 'later' | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PayChoice | null>(null);
+  const [payRs, setPayRs] = useState('');
 
-  // Helper to apply quick discounts
-  const applyDiscount = (type: string, amount: number) => {
-    setSelectedDiscount(type);
-    setNegotiatedTotal((originalTotal - amount).toString());
+  const seeded = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      const fresh = await jobsApi.get(id);
+      setJob(fresh);
+      setStale(false);
+      void saveJobDetail(fresh);
+    } catch {
+      const cached = await loadJobDetail(id);
+      if (cached) {
+        setJob(cached.data);
+        setStale(true);
+      } else {
+        setError("Couldn't load the bill — check your connection.");
+      }
+    }
+  }, [id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Seed the inputs from server truth exactly once (not on every reload).
+  useEffect(() => {
+    if (!job || seeded.current) return;
+    seeded.current = true;
+    const current = job.bill_negotiated_paisa ?? job.bill_original_paisa;
+    if (current != null) setNegotiatedRs(String(Math.round(current / 100)));
+    if (job.balance_paisa > 0) setPayRs(String(Math.round(job.balance_paisa / 100)));
+  }, [job]);
+
+  if (error && !job) {
+    return (
+      <SafeAreaView style={[styles.container, styles.center]}>
+        <Text style={styles.errorText}>{error}</Text>
+      </SafeAreaView>
+    );
+  }
+  if (!job) {
+    return (
+      <SafeAreaView style={[styles.container, styles.center]}>
+        <ActivityIndicator size="large" color="#0f172a" />
+      </SafeAreaView>
+    );
+  }
+
+  const completion = job.completion;
+  const materialsPaisa = (completion?.materials ?? []).reduce(
+    (s, m) => s + m.qty * m.unit_paisa,
+    0,
+  );
+  const labourPaisa = completion
+    ? Math.round((completion.time_spent_mins * completion.labour_rate_paisa) / 60)
+    : 0;
+  const fuelPaisa = completion?.fuel_paisa ?? 0;
+  const fuelAuto =
+    completion?.fuel_basis === 'estimate' || completion?.fuel_basis === 'breadcrumbs';
+  const fuelChip = fuelAuto
+    ? completion?.fuel_distance_m != null
+      ? `auto · ${(completion.fuel_distance_m / 1000).toFixed(1)} km round trip`
+      : 'auto'
+    : null;
+
+  const originalPaisa = job.bill_original_paisa ?? materialsPaisa + labourPaisa + fuelPaisa;
+  const negotiatedPaisa = rupeesToPaisa(negotiatedRs);
+  const negotiateDirty =
+    negotiatedPaisa > 0 && negotiatedPaisa !== (job.bill_negotiated_paisa ?? originalPaisa);
+
+  const applyDiscount = (label: string, amountPaisa: number) => {
+    setSelectedDiscount(label);
+    setNegotiatedRs(String(Math.max(0, Math.round((originalPaisa - amountPaisa) / 100))));
   };
 
-  const isReadyToSend = paymentMethod !== null && negotiatedTotal !== '';
+  const saveNegotiated = async () => {
+    if (!negotiateDirty || busy) return;
+    setBusy("negotiate");
+    setError(null);
+    setInfo(null);
+    try {
+      const detail = await sendOrQueue(
+        makeItem({
+          id: `negotiate:${id}`,
+          kind: "negotiate",
+          jobId: id,
+          payload: { amountPaisa: negotiatedPaisa, note: selectedDiscount ?? undefined },
+        }),
+        () => jobsApi.negotiateBill(id, negotiatedPaisa, selectedDiscount ?? undefined),
+      );
+      if (detail) setJob(detail);
+      else setInfo("Negotiated amount saved offline — syncing when reconnected.");
+    } catch {
+      setError("Couldn't save the negotiated amount — try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
 
-  const handleSendWhatsApp = () => {
-    // This is where you'd trigger the WhatsApp Deep Link API
-    console.log(`Sending bill for Rs${negotiatedTotal} via WhatsApp`);
-    // After sending, return to the Dashboard Hub!
-    navigation.popToTop(); 
+  const logPayment = async () => {
+    const paisa = rupeesToPaisa(payRs);
+    if (!paymentMethod || paymentMethod === 'later' || paisa <= 0 || busy) return;
+    setBusy("payment");
+    setError(null);
+    setInfo(null);
+    try {
+      const clientId = Crypto.randomUUID();
+      const detail = await sendOrQueue(
+        makeItem({
+          id: clientId,
+          kind: "payment",
+          jobId: id,
+          payload: { amountPaisa: paisa, method: METHOD_FOR[paymentMethod], clientId },
+        }),
+        () => jobsApi.logPayment(id, paisa, METHOD_FOR[paymentMethod], clientId),
+      );
+      if (detail) {
+        setJob(detail);
+        setPayRs(detail.balance_paisa > 0 ? String(Math.round(detail.balance_paisa / 100)) : '');
+      } else {
+        setInfo("Payment saved offline — syncing when reconnected.");
+      }
+    } catch {
+      setError("Couldn't log the payment — try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendWhatsApp = async () => {
+    if (busy) return;
+    setBusy("whatsapp");
+    setError(null);
+    setInfo(null);
+    try {
+      const preview = await messagingApi.preview(id, "bill");
+      if (!preview.consent) {
+        setError("No WhatsApp consent on record for this customer.");
+        return;
+      }
+      if (!preview.wa_me_url) {
+        setError("No WhatsApp-capable phone number on this job.");
+        return;
+      }
+      await Linking.openURL(preview.wa_me_url);
+      setJob(await messagingApi.logSend(id, "bill"));
+      Alert.alert("Sent", "The bill message was opened in WhatsApp and logged on the timeline.", [
+        { text: "OK", onPress: () => navigation.popToTop() },
+      ]);
+    } catch (e) {
+      if (e instanceof ApiError) {
+        setError(/"detail"\s*:\s*"([^"]+)"/.exec(e.message)?.[1] ?? "Couldn't prepare the message.");
+      } else {
+        setError("Couldn't open WhatsApp — check your connection and try again.");
+      }
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
-    <KeyboardAvoidingView 
-      style={{ flex: 1 }} 
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <SafeAreaView style={styles.container}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          
-          {/* 🧑‍🔧 TECHNICIAN HEADER */}
+
+          {/* 🧑‍🔧 HEADER */}
           <View style={styles.topHeader}>
             <View>
-              <Text style={styles.techName}>Bilal A.</Text>
+              <Text style={styles.techName}>{job.customer_name}</Text>
               <View style={styles.badgeRow}>
-                <View style={styles.badgeLight}><Text style={styles.badgeLightText}>Fridge FRG-8817</Text></View>
-                <View style={styles.badgeDark}><Text style={styles.badgeDarkText}>work complete</Text></View>
+                <View style={styles.badgeLight}>
+                  <Text style={styles.badgeLightText}>
+                    {job.appliance_type}
+                    {job.appliance_brand ? ` · ${job.appliance_brand}` : ''}
+                  </Text>
+                </View>
+                <View style={styles.badgeDark}>
+                  <Text style={styles.badgeDarkText}>{completion ? 'work complete' : job.status}</Text>
+                </View>
               </View>
-            </View>
-            <View style={styles.timeBadge}>
-              <Ionicons name="time-outline" size={14} color="#64748b" style={{ marginRight: 4 }} />
-              <Text style={styles.timeBadgeText}>1:42</Text>
             </View>
           </View>
 
+          {stale ? (
+            <View style={styles.staleBanner}>
+              <Text style={styles.staleText}>Offline — showing the last synced bill.</Text>
+            </View>
+          ) : null}
+
           {/* 🧾 BILL SHEET TITLE */}
           <View style={styles.billHeader}>
-            <Text style={styles.billTitle}>Bill · job #{billDetails.jobId}</Text>
-            <Text style={styles.autoBuiltText}>auto-built</Text>
+            <Text style={styles.billTitle}>Bill · job #{token}</Text>
+            <Text style={styles.autoBuiltText}>{completion ? 'auto-built' : 'no completion yet'}</Text>
           </View>
 
           {/* 📊 LINE ITEMS */}
@@ -77,34 +244,51 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
             <View style={styles.lineItem}>
               <View style={styles.lineItemLeft}>
                 <Text style={styles.lineItemLabel}>Labour</Text>
-                <View style={styles.tbdBadge}><Text style={styles.tbdText}>TBD</Text></View>
+                {completion ? (
+                  <View style={styles.tbdBadge}>
+                    <Text style={styles.tbdText}>{completion.time_spent_mins} min</Text>
+                  </View>
+                ) : null}
               </View>
-              <Text style={styles.lineItemValue}>Rs{billDetails.labour.toLocaleString()}</Text>
+              <Text style={styles.lineItemValue}>{formatPaisa(labourPaisa)}</Text>
             </View>
-            
+
             <View style={styles.lineItem}>
-              <Text style={styles.lineItemLabel}>Materials (picker)</Text>
-              <Text style={styles.lineItemValue}>Rs{billDetails.materials.toLocaleString()}</Text>
+              <Text style={styles.lineItemLabel}>
+                Materials{completion ? ` (${completion.materials.length})` : ''}
+              </Text>
+              <Text style={styles.lineItemValue}>{formatPaisa(materialsPaisa)}</Text>
             </View>
 
             <View style={styles.lineItem}>
               <View style={styles.lineItemLeft}>
-                <Text style={styles.lineItemLabel}>Fuel (travel log</Text>
-                <View style={styles.p2Badge}><Text style={styles.p2Text}>P2</Text></View>
-                <Text style={styles.lineItemLabel}>)</Text>
+                <Text style={styles.lineItemLabel}>Fuel</Text>
+                {fuelChip ? (
+                  <View style={styles.p2Badge}>
+                    <Text style={styles.p2Text}>{fuelChip}</Text>
+                  </View>
+                ) : null}
               </View>
-              <Text style={styles.lineItemValue}>Rs{billDetails.fuel.toLocaleString()}</Text>
+              <Text style={styles.lineItemValue}>{formatPaisa(fuelPaisa)}</Text>
             </View>
 
             <View style={styles.divider} />
 
             <View style={styles.lineItem}>
               <Text style={styles.originalTotalLabel}>Original</Text>
-              <Text style={styles.originalTotalValue}>Rs{originalTotal.toLocaleString()}</Text>
+              <Text style={styles.originalTotalValue}>{formatPaisa(originalPaisa)}</Text>
+            </View>
+            <View style={styles.lineItem}>
+              <Text style={styles.lineItemLabel}>Received</Text>
+              <Text style={styles.lineItemValue}>{formatPaisa(job.received_paisa)}</Text>
+            </View>
+            <View style={styles.lineItem}>
+              <Text style={styles.originalTotalLabel}>Balance</Text>
+              <Text style={styles.originalTotalValue}>{formatPaisa(job.balance_paisa)}</Text>
             </View>
           </View>
 
-          {/* 🤝 NEGOTIATION INPUT */}
+          {/* 🤝 NEGOTIATION */}
           <View style={styles.negotiationContainer}>
             <Text style={styles.inputLabel}>Negotiated</Text>
             <View style={styles.inputWrapper}>
@@ -112,10 +296,10 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
               <TextInput
                 style={styles.priceInput}
                 keyboardType="numeric"
-                value={negotiatedTotal}
+                value={negotiatedRs}
                 onChangeText={(val) => {
-                  setNegotiatedTotal(val);
-                  setSelectedDiscount(null); // Clear active discount chip if they type manually
+                  setNegotiatedRs(val);
+                  setSelectedDiscount(null);
                 }}
               />
             </View>
@@ -123,61 +307,108 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
 
           {/* 🏷️ DISCOUNT CHIPS */}
           <View style={styles.discountRow}>
-            <Pressable 
-              style={[styles.discountChip, selectedDiscount === 'Loyal' && styles.discountChipActive]}
-              onPress={() => applyDiscount('Loyal', 250)}
+            <Pressable
+              style={[styles.discountChip, selectedDiscount === 'loyal customer' && styles.discountChipActive]}
+              onPress={() => applyDiscount('loyal customer', 25_000)}
             >
-              <Text style={[styles.discountText, selectedDiscount === 'Loyal' && styles.discountTextActive]}>
-                {selectedDiscount === 'Loyal' ? '− Rs250 discount' : 'Loyal'}
+              <Text style={[styles.discountText, selectedDiscount === 'loyal customer' && styles.discountTextActive]}>
+                {selectedDiscount === 'loyal customer' ? '− Rs250 · loyal' : 'Loyal'}
               </Text>
             </Pressable>
-            <Pressable style={styles.discountChip}><Text style={styles.discountText}>quote</Text></Pressable>
-            <Pressable style={styles.discountChip}><Text style={styles.discountText}>goodwill</Text></Pressable>
+            <Pressable
+              style={[styles.discountChip, selectedDiscount === 'matched quote' && styles.discountChipActive]}
+              onPress={() => applyDiscount('matched quote', 50_000)}
+            >
+              <Text style={[styles.discountText, selectedDiscount === 'matched quote' && styles.discountTextActive]}>
+                {selectedDiscount === 'matched quote' ? '− Rs500 · quote' : 'Quote'}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.discountChip, selectedDiscount === 'goodwill' && styles.discountChipActive]}
+              onPress={() => applyDiscount('goodwill', 100_000)}
+            >
+              <Text style={[styles.discountText, selectedDiscount === 'goodwill' && styles.discountTextActive]}>
+                {selectedDiscount === 'goodwill' ? '− Rs1,000 · goodwill' : 'Goodwill'}
+              </Text>
+            </Pressable>
           </View>
+
+          {negotiateDirty ? (
+            <Pressable
+              style={[styles.saveNegotiateBtn, busy === 'negotiate' && styles.btnBusy]}
+              onPress={() => void saveNegotiated()}
+              disabled={!!busy}
+            >
+              <Text style={styles.saveNegotiateText}>
+                {busy === 'negotiate' ? 'Saving…' : `Save negotiated ${formatPaisa(negotiatedPaisa)}`}
+              </Text>
+            </Pressable>
+          ) : null}
 
           <View style={styles.heavyDivider} />
 
-          {/* 💳 PAYMENT METHOD */}
+          {/* 💳 PAYMENT */}
           <View style={styles.paymentMethodRow}>
-            <Pressable 
-              style={[styles.payBtn, paymentMethod === 'cash' && styles.payBtnActive]} 
-              onPress={() => setPaymentMethod('cash')}
-            >
-              <Text style={[styles.payBtnText, paymentMethod === 'cash' && styles.payBtnTextActive]}>Cash</Text>
-            </Pressable>
-            <Pressable 
-              style={[styles.payBtn, paymentMethod === 'transfer' && styles.payBtnActive]} 
-              onPress={() => setPaymentMethod('transfer')}
-            >
-              <Text style={[styles.payBtnText, paymentMethod === 'transfer' && styles.payBtnTextActive]}>Transfer</Text>
-            </Pressable>
-            <Pressable 
-              style={[styles.payBtn, paymentMethod === 'later' && styles.payBtnActive]} 
-              onPress={() => setPaymentMethod('later')}
-            >
-              <Text style={[styles.payBtnText, paymentMethod === 'later' && styles.payBtnTextActive]}>Later / partial</Text>
-            </Pressable>
+            {(['cash', 'transfer', 'later'] as const).map((m) => (
+              <Pressable
+                key={m}
+                style={[styles.payBtn, paymentMethod === m && styles.payBtnActive]}
+                onPress={() => setPaymentMethod(m)}
+              >
+                <Text style={[styles.payBtnText, paymentMethod === m && styles.payBtnTextActive]}>
+                  {m === 'cash' ? 'Cash' : m === 'transfer' ? 'Transfer' : 'Later / partial'}
+                </Text>
+              </Pressable>
+            ))}
           </View>
 
-          {/* 📎 EVIDENCE THUMBNAILS MOCK */}
-          <View style={styles.evidenceRow}>
-            <View style={styles.evidenceThumb} />
-            <View style={styles.evidenceThumb} />
-            <View style={styles.evidenceThumb} />
-            <Text style={styles.evidenceText}>evidence attached</Text>
-          </View>
+          {paymentMethod && paymentMethod !== 'later' ? (
+            <View style={styles.payRow}>
+              <View style={[styles.inputWrapper, styles.payInputWrap]}>
+                <Text style={styles.currencyPrefix}>Rs</Text>
+                <TextInput
+                  style={styles.priceInput}
+                  keyboardType="numeric"
+                  value={payRs}
+                  onChangeText={setPayRs}
+                  placeholder="amount"
+                  placeholderTextColor="#94a3b8"
+                />
+              </View>
+              <Pressable
+                style={[styles.logPayBtn, (busy === 'payment' || rupeesToPaisa(payRs) <= 0) && styles.btnBusy]}
+                onPress={() => void logPayment()}
+                disabled={busy === 'payment' || rupeesToPaisa(payRs) <= 0}
+              >
+                <Text style={styles.logPayText}>{busy === 'payment' ? '…' : 'Log payment'}</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {paymentMethod === 'later' ? (
+            <Text style={styles.laterNote}>
+              No payment now — the balance stays open on the job.
+            </Text>
+          ) : null}
+
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {info ? <Text style={styles.infoText}>{info}</Text> : null}
 
         </ScrollView>
 
-        {/* 🚀 STICKY FOOTER NAVIGATION */}
+        {/* 🚀 STICKY FOOTER */}
         <View style={styles.stickyFooter}>
-          <Pressable 
-            style={[styles.whatsappBtn, !isReadyToSend && styles.whatsappBtnDisabled]}
-            disabled={!isReadyToSend}
-            onPress={handleSendWhatsApp}
+          <Pressable
+            style={[styles.whatsappBtn, busy === 'whatsapp' && styles.whatsappBtnDisabled]}
+            disabled={!!busy}
+            onPress={() => void sendWhatsApp()}
           >
             <Ionicons name="logo-whatsapp" size={20} color="white" style={{ marginRight: 8 }} />
-            <Text style={styles.whatsappBtnText}>Send on WhatsApp</Text>
+            <Text style={styles.whatsappBtnText}>
+              {busy === 'whatsapp' ? 'Preparing…' : 'Send on WhatsApp'}
+            </Text>
+          </Pressable>
+          <Pressable style={styles.doneLink} onPress={() => navigation.popToTop()}>
+            <Text style={styles.doneLinkText}>Done — back to dashboard</Text>
           </Pressable>
         </View>
       </SafeAreaView>
@@ -187,38 +418,40 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff' },
+  center: { alignItems: 'center', justifyContent: 'center' },
   scrollContent: { paddingHorizontal: 24, paddingTop: Platform.OS === 'android' ? 40 : 20, paddingBottom: 40 },
-  
+
   // Header
-  topHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 },
-  techName: { fontSize: 24, fontWeight: '800', color: '#0f172a', fontStyle: 'italic', marginBottom: 8 },
-  badgeRow: { flexDirection: 'row', gap: 8 },
+  topHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 },
+  techName: { fontSize: 24, fontWeight: '800', color: '#0f172a', marginBottom: 8 },
+  badgeRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   badgeLight: { backgroundColor: '#f1f5f9', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8 },
   badgeLightText: { color: '#64748b', fontSize: 12, fontWeight: '600' },
   badgeDark: { backgroundColor: '#94a3b8', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8 },
   badgeDarkText: { color: '#ffffff', fontSize: 12, fontWeight: '700' },
-  timeBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16, borderWidth: 1, borderColor: '#e2e8f0' },
-  timeBadgeText: { color: '#64748b', fontWeight: '700', fontSize: 13 },
+
+  staleBanner: { backgroundColor: '#fef3c7', borderColor: '#fde68a', borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 16 },
+  staleText: { color: '#92400e', fontSize: 12, fontWeight: '700' },
 
   // Bill Title
   billHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 24 },
-  billTitle: { fontSize: 22, fontWeight: '800', fontStyle: 'italic', color: '#0f172a' },
+  billTitle: { fontSize: 22, fontWeight: '800', color: '#0f172a' },
   autoBuiltText: { fontSize: 14, color: '#94a3b8', fontWeight: '500' },
 
   // Line Items
   lineItemsContainer: { marginBottom: 24 },
   lineItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  lineItemLeft: { flexDirection: 'row', alignItems: 'center' },
+  lineItemLeft: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
   lineItemLabel: { fontSize: 16, color: '#475569', fontWeight: '600' },
   lineItemValue: { fontSize: 16, color: '#0f172a', fontWeight: '500', fontVariant: ['tabular-nums'] },
-  
-  tbdBadge: { backgroundColor: '#fef08a', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginLeft: 8 },
-  tbdText: { fontSize: 10, fontWeight: '800', color: '#854d0e' },
-  p2Badge: { backgroundColor: '#bfdbfe', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginLeft: 6, marginRight: 2 },
+
+  tbdBadge: { backgroundColor: '#e0e7ff', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginLeft: 8 },
+  tbdText: { fontSize: 10, fontWeight: '800', color: '#3730a3' },
+  p2Badge: { backgroundColor: '#bfdbfe', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginLeft: 6 },
   p2Text: { fontSize: 10, fontWeight: '800', color: '#1e3a8a' },
 
   divider: { height: 1, backgroundColor: '#e2e8f0', marginVertical: 12 },
-  
+
   originalTotalLabel: { fontSize: 16, color: '#0f172a', fontWeight: '800' },
   originalTotalValue: { fontSize: 16, color: '#0f172a', fontWeight: '800', fontVariant: ['tabular-nums'] },
 
@@ -227,32 +460,42 @@ const styles = StyleSheet.create({
   inputLabel: { fontSize: 16, color: '#475569', fontWeight: '600' },
   inputWrapper: { flexDirection: 'row', alignItems: 'center' },
   currencyPrefix: { fontSize: 18, color: '#0f172a', fontWeight: '700', marginRight: 4 },
-  priceInput: { fontSize: 18, color: '#0f172a', fontWeight: '800', fontVariant: ['tabular-nums'], minWidth: 60, textAlign: 'right' },
+  priceInput: { fontSize: 18, color: '#0f172a', fontWeight: '800', fontVariant: ['tabular-nums'], minWidth: 80, textAlign: 'right', paddingVertical: 4 },
 
   // Discount Chips
-  discountRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 24 },
+  discountRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16 },
   discountChip: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#cbd5e1', backgroundColor: '#ffffff' },
   discountChipActive: { backgroundColor: '#eff6ff', borderColor: '#3b82f6' },
   discountText: { fontSize: 14, color: '#64748b', fontWeight: '600' },
   discountTextActive: { color: '#2563eb' },
 
-  heavyDivider: { height: 1, backgroundColor: '#f1f5f9', marginBottom: 24 },
+  saveNegotiateBtn: { backgroundColor: '#0f172a', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginBottom: 8 },
+  saveNegotiateText: { color: 'white', fontSize: 15, fontWeight: '800' },
+  btnBusy: { opacity: 0.5 },
+
+  heavyDivider: { height: 1, backgroundColor: '#f1f5f9', marginVertical: 20 },
 
   // Payment Methods
-  paymentMethodRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
+  paymentMethodRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   payBtn: { flex: 1, paddingVertical: 12, borderRadius: 24, borderWidth: 1, borderColor: '#cbd5e1', alignItems: 'center' },
   payBtnActive: { backgroundColor: '#1c1917', borderColor: '#1c1917' },
   payBtnText: { fontSize: 14, fontWeight: '700', color: '#475569' },
   payBtnTextActive: { color: '#ffffff' },
 
-  // Evidence Mocks
-  evidenceRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  evidenceThumb: { width: 40, height: 40, backgroundColor: '#e2e8f0', borderRadius: 8, marginRight: 8, borderWidth: 1, borderColor: '#cbd5e1' },
-  evidenceText: { fontSize: 14, color: '#94a3b8', fontWeight: '500', fontStyle: 'italic', marginLeft: 4 },
+  payRow: { flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 8 },
+  payInputWrap: { flex: 1, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10 },
+  logPayBtn: { backgroundColor: '#059669', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 20, alignItems: 'center' },
+  logPayText: { color: 'white', fontWeight: '800', fontSize: 14 },
+  laterNote: { fontSize: 13, color: '#64748b', fontStyle: 'italic', marginBottom: 8 },
+
+  errorText: { color: '#b91c1c', fontSize: 13, fontWeight: '600', marginTop: 8 },
+  infoText: { color: '#b45309', fontSize: 13, fontWeight: '600', marginTop: 8 },
 
   // Footer
   stickyFooter: { paddingVertical: 16, paddingHorizontal: 24, paddingBottom: Platform.OS === 'ios' ? 32 : 16, backgroundColor: '#ffffff', borderTopWidth: 1, borderTopColor: '#f1f5f9' },
   whatsappBtn: { flexDirection: 'row', backgroundColor: '#25D366', paddingVertical: 18, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
   whatsappBtnDisabled: { backgroundColor: '#86efac' },
   whatsappBtnText: { color: 'white', fontSize: 16, fontWeight: '800' },
+  doneLink: { alignItems: 'center', marginTop: 12 },
+  doneLinkText: { color: '#64748b', fontSize: 14, fontWeight: '600', textDecorationLine: 'underline' },
 });

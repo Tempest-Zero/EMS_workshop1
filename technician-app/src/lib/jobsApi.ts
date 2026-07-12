@@ -58,8 +58,17 @@ export interface Material {
 export interface Completion {
   time_spent_mins: number;
   fuel_paisa: number;
+  /** How the billed fuel was produced ('manual' | 'estimate' | 'breadcrumbs';
+   * null on pre-0035 rows = implicitly manual) + the billed round-trip metres
+   * when derived — the bill sheet renders "auto · 12.4 km round trip". */
+  fuel_basis: string | null;
+  fuel_distance_m: number | null;
+  /** Rate snapshot at first submission — labour = mins × rate / 60. */
+  labour_rate_paisa: number;
   remarks_text: string | null;
   remarks_audio_media_id: string | null;
+  fault_code_id: string | null;
+  action_code_id: string | null;
   submitted_at: string;
   materials: Material[];
 }
@@ -87,8 +96,15 @@ export interface JobLocation {
 }
 
 export interface Route {
+  /** Billable ONE-WAY distance: breadcrumb path-sum when trusted samples
+   * cover the drive, else straight-line × circuity (see `basis`). */
   distance_m: number;
   fuel_paisa: number;
+  basis: "estimate" | "breadcrumbs";
+  sample_count: number;
+  /** What an omitted-fuel completion bills (outbound × 2). */
+  round_trip_distance_m: number;
+  round_trip_fuel_paisa: number;
 }
 
 export interface LocationInput {
