@@ -35,7 +35,6 @@ type Props = NativeStackScreenProps<RootStackParamList, "ArrivalWizard">;
 
 export function ArrivalJobWizard({ route, navigation }: Props) {
   const { id, token } = route.params;
-  const arrivalTime = route.params.arrivalTime ?? Date.now();
 
   const [draft, setDraft] = useState<ArrivalDraft | null>(null);
   const [categoryId, setCategoryId] = useState<string | null>(null);
@@ -50,16 +49,31 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
     let cancelled = false;
     void (async () => {
       const saved = await loadArrivalDraft(id);
-      if (!cancelled) setDraft(saved ?? { ...EMPTY_DRAFT });
+      let job = null;
       try {
-        const job = await jobsApi.get(id);
-        if (!cancelled) {
-          setCategoryId(job.category_id);
-          setJobType(job.job_type);
-        }
+        job = await jobsApi.get(id);
       } catch {
         /* offline — pickers fall back to unscoped/local behaviour, neutral copy */
       }
+      if (cancelled) return;
+      if (job) {
+        setCategoryId(job.category_id);
+        setJobType(job.job_type);
+      }
+
+      // Anchor the on-site clock ONCE, then persist it so a killed/reopened
+      // wizard keeps the true elapsed time instead of restarting from now.
+      // Priority: the arrival nav param → the arrive_customer punch → now.
+      let next = saved ?? { ...EMPTY_DRAFT };
+      if (next.arrivalAtMs == null) {
+        const arrivePunch = job?.locations.find((l) => l.kind === "arrive_customer");
+        const startedMs =
+          route.params.arrivalTime ??
+          (arrivePunch ? Date.parse(arrivePunch.captured_at) : Date.now());
+        next = { ...next, arrivalAtMs: startedMs };
+        void saveArrivalDraft(id, next);
+      }
+      setDraft(next);
     })();
     return () => {
       cancelled = true;
@@ -216,7 +230,7 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
         )}
         {draft.step === 5 && (
           <ArrivalJobStep5
-            arrivalTime={arrivalTime}
+            arrivalTime={draft.arrivalAtMs ?? Date.now()}
             submitting={submitting}
             onComplete={(outcome, timeSpentMins, adjustReason) =>
               void submit(outcome, timeSpentMins, adjustReason)

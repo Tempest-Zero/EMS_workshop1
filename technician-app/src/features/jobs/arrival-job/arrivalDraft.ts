@@ -32,6 +32,10 @@ export interface ArrivalDraft {
   materials: MaterialLine[];
   /** Which capture slots already reached the server (or its queue). */
   uploads: Record<string, UploadState>;
+  /** Epoch ms the on-site clock started (arrival). Persisted so the step-5
+   * stopwatch survives a killed/reopened wizard instead of resetting to now.
+   * Set once by the wizard; null until then. */
+  arrivalAtMs: number | null;
 }
 
 export const EMPTY_DRAFT: ArrivalDraft = {
@@ -47,6 +51,7 @@ export const EMPTY_DRAFT: ArrivalDraft = {
   actionId: null,
   materials: [],
   uploads: {},
+  arrivalAtMs: null,
 };
 
 const keyFor = (jobId: string) => `jobs.arrivalDraft.v1:${jobId}`;
