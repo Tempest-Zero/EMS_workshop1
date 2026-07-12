@@ -13,7 +13,10 @@ import StatusChip from "@shared/ui/StatusChip";
 export default function WorkListCard({ job }) {
   const { technicians, assignJob } = useApp();
   const assignable = technicians.filter((t) => t.role !== "manager");
-  const isVisit = job.jobType === "home-visit";
+  // The shop travels for home visits AND pickups; only a carry-in has no leg.
+  const isVisit = Boolean(job.jobType) && job.jobType !== "carry-in";
+  const typeLabel =
+    job.jobType === "pickup-delivery" ? "Pickup" : isVisit ? "Home Visit" : "Carry-in";
 
   return (
     <Card className="flex flex-col p-4">
@@ -27,7 +30,7 @@ export default function WorkListCard({ job }) {
           </div>
           <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
             {isVisit ? <Home className="h-3 w-3" /> : null}
-            {isVisit ? "Home Visit" : "Carry-in"}
+            {typeLabel}
           </span>
         </div>
         <div className="mt-1 truncate text-sm font-bold text-slate-800">{job.customer.name}</div>

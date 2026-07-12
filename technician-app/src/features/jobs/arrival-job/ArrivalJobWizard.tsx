@@ -1,20 +1,21 @@
 /**
- * The 5-step on-site wizard (F8–F14): arrival evidence → voice summary →
- * diagnosis → materials → outcome & time. The wizard OWNS the collected data
- * (steps are dumb), persists a per-job draft across process death, uploads
- * evidence eagerly (falling back to the pending-media queue when offline),
- * and submits the completion through the outbox before opening the bill.
+ * The 6-step on-site wizard (F8–F14): arrival evidence → voice summary →
+ * diagnosis → materials → after-video (F10) → outcome & time. The wizard
+ * OWNS the collected data (steps are dumb), persists a per-job draft across
+ * process death, uploads evidence eagerly (falling back to the pending-media
+ * queue when offline), and submits the completion through the outbox before
+ * opening the bill.
  */
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, View, SafeAreaView, StatusBar } from 'react-native';
 
-import { ApiError, type MediaType, type Phase } from "../../../lib/api";
+import { api, ApiError, type MediaType, type Phase } from "../../../lib/api";
 import { jobsApi, type JobType } from "../../../lib/jobsApi";
 import type { RootStackParamList } from "../../../lib/navigation";
 import { makeItem } from "../../../lib/outbox";
 import { sendOrQueue } from "../../../lib/outboxSync";
-import { enqueuePendingMedia } from "../../media/pendingMedia";
+import { enqueuePendingMedia, removePendingMedia } from "../../media/pendingMedia";
 import { uploadMedia } from "../../media/uploadMedia";
 import {
   clearArrivalDraft,
@@ -25,6 +26,7 @@ import {
   type UploadState,
 } from './arrivalDraft';
 import { completionFromWizard } from './completionFromWizard';
+import { ArrivalAfterVideoScreen } from './ArrivalAfterVideoScreen';
 import { ArrivalCapturesScreen } from './ArrivalCapturesScreen';
 import { ArrivalJobStep2 } from './ArrivalJobStep2';
 import { ArrivalJobStep3 } from './ArrivalJobStep3';
@@ -207,7 +209,18 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
               update({ voiceUri: uri });
               void uploadEvidence("voice", "remark", "audio", uri, "audio/mp4");
             }}
-            onDeleted={() => update({ voiceUri: null, remarkMediaId: null })}
+            onDeleted={() => {
+              // The eager upload may already be server-side — delete it there
+              // too (best-effort: offline leaves the row and the next clip
+              // simply supersedes it as the completion's link), and drop any
+              // still-queued offline copy so a deleted note can't upload later.
+              const mediaId = draftRef.current?.remarkMediaId;
+              if (mediaId) void api.deleteMedia(String(token), mediaId).catch(() => {});
+              void removePendingMedia(`arrival:${id}:voice`);
+              const uploads = { ...(draftRef.current?.uploads ?? {}) };
+              delete uploads.voice;
+              update({ voiceUri: null, remarkMediaId: null, uploads });
+            }}
             onNext={() => update({ step: 3 })}
           />
         )}
@@ -229,6 +242,16 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
           />
         )}
         {draft.step === 5 && (
+          <ArrivalAfterVideoScreen
+            draft={draft}
+            onCapture={(slot, patch, phase, type, uri, contentType) => {
+              update(patch);
+              void uploadEvidence(slot, phase, type, uri, contentType);
+            }}
+            onNext={() => update({ step: 6 })}
+          />
+        )}
+        {draft.step === 6 && (
           <ArrivalJobStep5
             arrivalTime={draft.arrivalAtMs ?? Date.now()}
             submitting={submitting}

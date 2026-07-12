@@ -52,3 +52,35 @@ def test_surrounding_whitespace_is_trimmed() -> None:
 
 def test_consent_defaults_off() -> None:
     assert _create(None).whatsapp_consent is False
+
+
+# ── job_type inference (address ⇒ travel job unless the client says otherwise) ──
+
+
+def test_address_without_type_defaults_to_home_visit() -> None:
+    job = JobCreate(
+        customer_name="Abdul",
+        appliance_type="Split AC",
+        customer_address="House 12, Gulshan",
+    )
+    assert job.job_type == "home-visit"
+
+
+def test_no_address_and_no_type_stays_carry_in() -> None:
+    job = JobCreate(customer_name="Abdul", appliance_type="Split AC")
+    assert job.job_type == "carry-in"
+
+
+def test_blank_address_does_not_flip_the_type() -> None:
+    job = JobCreate(customer_name="Abdul", appliance_type="Split AC", customer_address="   ")
+    assert job.job_type == "carry-in"
+
+
+def test_explicit_type_always_wins_over_the_inference() -> None:
+    job = JobCreate(
+        customer_name="Abdul",
+        appliance_type="Split AC",
+        customer_address="House 12, Gulshan",
+        job_type="carry-in",
+    )
+    assert job.job_type == "carry-in"

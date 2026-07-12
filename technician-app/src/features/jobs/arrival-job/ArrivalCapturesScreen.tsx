@@ -214,7 +214,7 @@ export function ArrivalCapturesScreen({ draft, jobType, onCapture, onPatch, onNe
         <View style={styles.headerRow}>
           <Text style={styles.title}>{capturesTitle}</Text>
           <View style={styles.stepBadge}>
-            <Text style={styles.stepBadgeText}>1 / 5</Text>
+            <Text style={styles.stepBadgeText}>1 / 6</Text>
           </View>
         </View>
 

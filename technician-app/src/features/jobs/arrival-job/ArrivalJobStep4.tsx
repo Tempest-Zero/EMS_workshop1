@@ -129,7 +129,7 @@ export function ArrivalJobStep4({ categoryId, materials, setMaterials, onNext }:
           <View style={styles.headerRow}>
             <Text style={styles.title}>Materials</Text>
             <View style={styles.stepBadge}>
-              <Text style={styles.stepBadgeText}>4 / 5</Text>
+              <Text style={styles.stepBadgeText}>4 / 6</Text>
             </View>
           </View>
 

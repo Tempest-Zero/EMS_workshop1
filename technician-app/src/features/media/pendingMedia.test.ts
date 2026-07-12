@@ -41,6 +41,7 @@ import {
   drainPendingMedia,
   enqueuePendingMedia,
   listPendingMedia,
+  removePendingMedia,
 } from "./pendingMedia";
 
 const ENTRY = {
@@ -63,6 +64,26 @@ it("enqueue is idempotent on id", async () => {
   await enqueuePendingMedia(ENTRY);
   await enqueuePendingMedia(ENTRY);
   expect(await listPendingMedia()).toHaveLength(1);
+});
+
+it("re-enqueueing a slot replaces the queued clip (delete + re-record)", async () => {
+  await enqueuePendingMedia(ENTRY);
+  await enqueuePendingMedia({ ...ENTRY, uri: "file:///tmp/problem-take2.m4a" });
+
+  const items = await listPendingMedia();
+  expect(items).toHaveLength(1);
+  expect(items[0]?.uri).toBe("file:///tmp/problem-take2.m4a");
+});
+
+it("removePendingMedia drops a deleted capture before it uploads", async () => {
+  await enqueuePendingMedia(ENTRY);
+  await removePendingMedia(ENTRY.id);
+  expect(await listPendingMedia()).toHaveLength(0);
+
+  // The deleted clip must never upload later.
+  mockList.mockResolvedValue([{ id: "j1", token: 1077, client_id: "cid-1" }]);
+  await drainPendingMedia();
+  expect(mockUpload).not.toHaveBeenCalled();
 });
 
 it("drains an entry once its job exists (client_id → token join)", async () => {

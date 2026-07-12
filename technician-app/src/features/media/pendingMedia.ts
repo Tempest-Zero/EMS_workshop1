@@ -58,10 +58,23 @@ export async function enqueuePendingMedia(
 ): Promise<void> {
   await mutex(async () => {
     const items = await load();
-    if (items.some((i) => i.id === item.id)) return; // idempotent
-    items.push({ ...item, createdAt: new Date().toISOString(), attempts: 0 });
+    const fresh: PendingMediaItem = { ...item, createdAt: new Date().toISOString(), attempts: 0 };
+    const at = items.findIndex((i) => i.id === item.id);
+    if (at >= 0) {
+      // The slot was re-captured (a deleted voice note re-recorded): the new
+      // clip supersedes the queued one. Replacing is the user's explicit
+      // intent — the old no-op here silently dropped the replacement.
+      items[at] = fresh;
+    } else {
+      items.push(fresh);
+    }
     await save(items);
   });
+}
+
+/** Drop a queued entry whose capture was deleted before it ever uploaded. */
+export async function removePendingMedia(id: string): Promise<void> {
+  await removeEntry(id);
 }
 
 export async function listPendingMedia(): Promise<PendingMediaItem[]> {
@@ -75,6 +88,15 @@ export async function pendingMediaCount(): Promise<number> {
 async function removeEntry(id: string): Promise<void> {
   await mutex(async () => {
     await save((await load()).filter((i) => i.id !== id));
+  });
+}
+
+/** Remove after a successful upload — but only if the entry still holds the
+ * uri that was uploaded. A re-capture that replaced the slot mid-drain must
+ * survive to upload on the next pass. */
+async function removeEntryIfUri(id: string, uri: string): Promise<void> {
+  await mutex(async () => {
+    await save((await load()).filter((i) => !(i.id === id && i.uri === uri)));
   });
 }
 
@@ -128,7 +150,7 @@ export async function drainPendingMedia(): Promise<void> {
           filename: item.filename,
           contentType: item.contentType,
         });
-        await removeEntry(item.id);
+        await removeEntryIfUri(item.id, item.uri);
       } catch (e) {
         // 413 isn't in the shared definitive set (queues never send bodies
         // that can outgrow a limit) — but here it means "this file is too

@@ -18,7 +18,9 @@ import { messagingApi } from "../../../lib/messagingApi";
 import { formatPaisa, rupeesToPaisa } from "../../../lib/money";
 import type { RootStackParamList } from "../../../lib/navigation";
 import { makeItem } from "../../../lib/outbox";
-import { sendOrQueue } from "../../../lib/outboxSync";
+import { sendOrQueue, type PaymentPayload } from "../../../lib/outboxSync";
+import { useJobOutbox } from "../../../lib/useJobOutbox";
+import { closeJobWithVideo } from "../closeJobWithVideo";
 
 type Props = NativeStackScreenProps<RootStackParamList, "BillSheet">;
 
@@ -35,7 +37,7 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"negotiate" | "payment" | "whatsapp" | null>(null);
+  const [busy, setBusy] = useState<"negotiate" | "payment" | "whatsapp" | "close" | null>(null);
 
   const [negotiatedRs, setNegotiatedRs] = useState('');
   const [selectedDiscount, setSelectedDiscount] = useState<string | null>(null);
@@ -43,6 +45,16 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
   const [payRs, setPayRs] = useState('');
 
   const seeded = useRef(false);
+
+  // Queued/failed outbox writes for THIS job — offline payments show as
+  // "syncing" and back the double-charge warning (the server dedups a
+  // *retried* tap, but only the UI can catch a doubting tech tapping twice).
+  const outboxView = useJobOutbox(id);
+  const pendingPayments = outboxView.queued.filter((i) => i.kind === "payment");
+  const pendingPaisa = pendingPayments.reduce(
+    (s, i) => s + (i.payload as PaymentPayload).amountPaisa,
+    0,
+  );
 
   const load = useCallback(async () => {
     try {
@@ -149,6 +161,28 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
   const logPayment = async () => {
     const paisa = rupeesToPaisa(payRs);
     if (!paymentMethod || paymentMethod === 'later' || paisa <= 0 || busy) return;
+    // Double-charge guard: warn when the same amount is already waiting to
+    // sync on this job — each tap mints a fresh client_id, so the server
+    // can't tell a deliberate second payment from a doubting re-tap.
+    const duplicate = pendingPayments.some(
+      (i) => (i.payload as PaymentPayload).amountPaisa === paisa,
+    );
+    if (duplicate) {
+      Alert.alert(
+        "Possible duplicate",
+        `A payment of ${formatPaisa(paisa)} is already waiting to sync on this job. Log another one?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Log anyway", style: "destructive", onPress: () => void submitPayment(paisa) },
+        ],
+      );
+      return;
+    }
+    await submitPayment(paisa);
+  };
+
+  const submitPayment = async (paisa: number) => {
+    if (!paymentMethod || paymentMethod === 'later') return;
     setBusy("payment");
     setError(null);
     setInfo(null);
@@ -171,6 +205,35 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
       }
     } catch {
       setError("Couldn't log the payment — try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // F16 — close the loop from the bill: closing video (server-gated), then
+  // land back on the jobs list with the closed job on the history roster.
+  const closeJob = async () => {
+    if (busy) return;
+    setBusy("close");
+    setError(null);
+    setInfo(null);
+    try {
+      const result = await closeJobWithVideo(id, token);
+      if (result.kind === "closed") {
+        setJob(result.job);
+        Alert.alert(
+          "Job closed ✓",
+          "Handover video attached — the job moves to your completed roster.",
+          [
+            {
+              text: "OK",
+              onPress: () => navigation.navigate("My Jobs", { screen: "CompletedTasks" }),
+            },
+          ],
+        );
+      } else if (result.kind !== "canceled") {
+        setError(result.message);
+      }
     } finally {
       setBusy(null);
     }
@@ -227,7 +290,9 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
                   </Text>
                 </View>
                 <View style={styles.badgeDark}>
-                  <Text style={styles.badgeDarkText}>{completion ? 'work complete' : job.status}</Text>
+                  <Text style={styles.badgeDarkText}>
+                    {job.status === 'closed' ? 'closed ✓' : completion ? 'work complete' : job.status}
+                  </Text>
                 </View>
               </View>
             </View>
@@ -286,12 +351,21 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
             </View>
             <View style={styles.lineItem}>
               <Text style={styles.lineItemLabel}>Received</Text>
-              <Text style={styles.lineItemValue}>{formatPaisa(job.received_paisa)}</Text>
+              <Text style={styles.lineItemValue}>
+                {formatPaisa(job.received_paisa + pendingPaisa)}
+              </Text>
             </View>
             <View style={styles.lineItem}>
               <Text style={styles.originalTotalLabel}>Balance</Text>
-              <Text style={styles.originalTotalValue}>{formatPaisa(job.balance_paisa)}</Text>
+              <Text style={styles.originalTotalValue}>
+                {formatPaisa(job.balance_paisa - pendingPaisa)}
+              </Text>
             </View>
+            {pendingPaisa > 0 ? (
+              <Text style={styles.pendingNote}>
+                Includes {formatPaisa(pendingPaisa)} still syncing.
+              </Text>
+            ) : null}
           </View>
 
           {fuelSuspect ? (
@@ -308,6 +382,16 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
             </Pressable>
           ) : null}
 
+          {job.status === 'closed' ? (
+            <View style={styles.closedBanner}>
+              <Ionicons name="checkmark-circle" size={20} color="#166534" />
+              <Text style={styles.closedBannerText}>
+                Closed — proof video attached. The ledger above is final.
+              </Text>
+            </View>
+          ) : null}
+
+          {job.status !== 'closed' ? (<>
           {/* 🤝 NEGOTIATION */}
           <View style={styles.negotiationContainer}>
             <Text style={styles.inputLabel}>Negotiated</Text>
@@ -410,6 +494,28 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
             </Text>
           ) : null}
 
+          {/* ✅ CLOSE THE LOOP (F16) — only once the completion exists; the
+              server enforces the closing-video gate either way. */}
+          {completion ? (
+            <>
+              <View style={styles.heavyDivider} />
+              <Pressable
+                style={[styles.closeBtn, busy === 'close' && styles.btnBusy]}
+                disabled={!!busy}
+                onPress={() => void closeJob()}
+              >
+                <Ionicons name="videocam" size={18} color="white" style={{ marginRight: 8 }} />
+                <Text style={styles.closeBtnText}>
+                  {busy === 'close' ? 'Closing…' : 'Close job — record handover video'}
+                </Text>
+              </Pressable>
+              <Text style={styles.closeHint}>
+                The proof clip is required to close; a balance can stay open.
+              </Text>
+            </>
+          ) : null}
+          </>) : null}
+
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           {info ? <Text style={styles.infoText}>{info}</Text> : null}
 
@@ -452,6 +558,13 @@ const styles = StyleSheet.create({
 
   staleBanner: { backgroundColor: '#fef3c7', borderColor: '#fde68a', borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 16 },
   staleText: { color: '#92400e', fontSize: 12, fontWeight: '700' },
+
+  pendingNote: { fontSize: 12, fontWeight: '700', color: '#b45309', marginTop: 6 },
+  closedBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#f0fdf4', borderColor: '#bbf7d0', borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 16 },
+  closedBannerText: { flex: 1, color: '#166534', fontSize: 13, fontWeight: '700' },
+  closeBtn: { flexDirection: 'row', backgroundColor: '#0f172a', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  closeBtnText: { color: 'white', fontSize: 15, fontWeight: '800' },
+  closeHint: { fontSize: 12, color: '#94a3b8', fontWeight: '500', textAlign: 'center', marginTop: 8 },
   fuelWarn: { backgroundColor: '#fef3c7', borderColor: '#f59e0b', borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 16 },
   fuelWarnText: { color: '#92400e', fontSize: 13, fontWeight: '700' },
 

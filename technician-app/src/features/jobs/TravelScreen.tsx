@@ -64,7 +64,13 @@ export function TravelScreen({ route, navigation }: Props) {
     };
   }, [id]);
 
-  const hasDepart = job?.locations.some((l) => l.kind === "depart_workshop") ?? false;
+  // Punches pair up into trips: a depart without its arrive means the tech is
+  // on the road. Counting (not `some`) lets a re-visit — reschedule, part
+  // pickup, customer-unreachable retry — start a NEW trip after an earlier
+  // arrival, instead of the first arrive punch hiding START TRAVEL forever.
+  const departs = job?.locations.filter((l) => l.kind === "depart_workshop").length ?? 0;
+  const arrives = job?.locations.filter((l) => l.kind === "arrive_customer").length ?? 0;
+  const inTransit = departs > arrives;
 
   const punch = useCallback(
     async (kind: LocationKind) => {
@@ -219,7 +225,7 @@ export function TravelScreen({ route, navigation }: Props) {
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
         {info ? <Text style={styles.infoText}>{info}</Text> : null}
 
-        {!hasDepart ? (
+        {!inTransit ? (
           <>
             <Text style={styles.instructionText}>
               Punch out of the workshop — your route is recorded for the fuel bill.
