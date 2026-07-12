@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Pressable, TextInput, Keyboard } from 'react-native';
 
+import { customersApi, type CustomerLookup } from '../../../lib/customersApi';
+
 interface Step1Props {
   phone: string;
   setPhone: (val: string | ((prev: string) => string)) => void;
@@ -12,19 +14,34 @@ interface Step1Props {
 }
 
 export function CreateJobStep1({ phone, setPhone, name, setName, isExisting, setIsExisting, onNext }: Step1Props) {
-  const [showMatch, setShowMatch] = useState(false);
+  const [match, setMatch] = useState<CustomerLookup | null>(null);
   const [showNumpad, setShowNumpad] = useState(true);
 
+  // Real repeat-customer lookup: debounce ~400 ms once the number is dialable,
+  // then ask the server. A null answer (unknown / offline / ambiguous) simply
+  // shows no card — the tech carries on as a new customer.
   useEffect(() => {
-    if (phone === '0312' || phone === '0312447') {
-      setShowMatch(true);
-      if (isExisting !== true) setIsExisting(null); 
-    } else if (phone.length < 4) {
-      setShowMatch(false);
-      setName('');
-      setIsExisting(null);
+    if (phone.length < 10) {
+      setMatch(null);
+      if (isExisting !== true) setIsExisting(null);
+      return;
     }
-  }, [phone, isExisting, setIsExisting, setName]);
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void customersApi
+        .lookup(phone)
+        .then((found) => {
+          if (!cancelled) setMatch(found);
+        })
+        .catch(() => {
+          if (!cancelled) setMatch(null); // offline / error → no card, silently
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [phone, isExisting, setIsExisting]);
 
   const handleKeyPress = (key: string) => {
     if (key === 'back') {
@@ -39,7 +56,7 @@ export function CreateJobStep1({ phone, setPhone, name, setName, isExisting, set
     setPhone('');
     setName('');
     setIsExisting(null);
-    setShowMatch(false);
+    setMatch(null);
   };
 
   const isStep1Valid = phone.length >= 10 && name.trim().length > 0;
@@ -69,16 +86,16 @@ export function CreateJobStep1({ phone, setPhone, name, setName, isExisting, set
         )}
       </Pressable>
 
-      {showMatch && isExisting === null && (
+      {match && isExisting === null && (
         <View style={styles.matchCard}>
           <Text style={styles.matchText}>
-            <Text style={{ fontWeight: '700' }}>Bilal</Text> — Gulshan · seen Mar '26
+            <Text style={{ fontWeight: '700' }}>{match.full_name}</Text> — repeat customer
           </Text>
           <View style={styles.matchActions}>
-            <Pressable style={styles.btnYes} onPress={() => { setIsExisting(true); setName('Bilal'); setShowNumpad(false); }}>
-              <Text style={styles.btnYesText}>Yes, him</Text>
+            <Pressable style={styles.btnYes} onPress={() => { setIsExisting(true); setName(match.full_name); setShowNumpad(false); }}>
+              <Text style={styles.btnYesText}>Yes, them</Text>
             </Pressable>
-            <Pressable style={styles.btnNo} onPress={() => { setIsExisting(false); setName(''); setShowNumpad(false); }}>
+            <Pressable style={styles.btnNo} onPress={() => { setIsExisting(false); setShowNumpad(false); }}>
               <Text style={styles.btnNoText}>No, new</Text>
             </Pressable>
           </View>
