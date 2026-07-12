@@ -29,6 +29,7 @@ const job = (over: Partial<Job> = {}): Job => ({
   client_id: null,
   customer_lat: null,
   customer_lng: null,
+  category_id: null,
   customer_name: "Yusuf Khan",
   customer_phone: "0312-6677889",
   customer_address: "House 31, Phase 2, DHA, Karachi",

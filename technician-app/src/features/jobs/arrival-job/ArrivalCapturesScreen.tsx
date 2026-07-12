@@ -1,26 +1,42 @@
+/**
+ * Step 1 — the arrival evidence gates (F8): serial plate → 2 condition snaps
+ * → error code (y/n + photo) → the before-video as the last gate. State
+ * lives in the wizard's persisted draft; every capture uploads eagerly via
+ * the wizard (offline → pending-media queue). No skip: these ARE the gates.
+ */
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, Pressable, SafeAreaView, ScrollView, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 
+import type { MediaType, Phase } from '../../../lib/api';
+import type { ArrivalDraft, UploadState } from './arrivalDraft';
+
 interface Step1Props {
+  draft: ArrivalDraft;
+  /** Register a capture: patch the draft AND kick its eager upload. */
+  onCapture: (
+    slot: string,
+    patch: Partial<ArrivalDraft>,
+    phase: Phase,
+    type: MediaType,
+    uri: string,
+    contentType: string,
+  ) => void;
+  onPatch: (patch: Partial<ArrivalDraft>) => void;
   onNext: () => void;
 }
 
-export function ArrivalCapturesScreen({ onNext }: Step1Props) {
-  const [serialUri, setSerialUri] = useState<string | null>(null);
-  const [conditionUris, setConditionUris] = useState<string[]>([]);
-  const [errorCodeStatus, setErrorCodeStatus] = useState<'pending' | 'no' | 'yes_pending' | 'done'>('pending');
-  const [errorCodeUri, setErrorCodeUri] = useState<string | null>(null);
-  const [videoUri, setVideoUri] = useState<string | null>(null);
+export function ArrivalCapturesScreen({ draft, onCapture, onPatch, onNext }: Step1Props) {
+  const { serialUri, conditionUris, errorCodeStatus, videoUri, uploads } = draft;
   const [isLaunchingCamera, setIsLaunchingCamera] = useState(false);
 
   const getActiveStep = () => {
-    if (!serialUri) return 1; 
-    if (conditionUris.length < 2) return 2; 
-    if (errorCodeStatus === 'pending' || errorCodeStatus === 'yes_pending') return 3; 
-    if (!videoUri) return 4; 
-    return 5; 
+    if (!serialUri) return 1;
+    if (conditionUris.length < 2) return 2;
+    if (errorCodeStatus === 'pending' || errorCodeStatus === 'yes_pending') return 3;
+    if (!videoUri) return 4;
+    return 5;
   };
 
   const activeStep = getActiveStep();
@@ -37,20 +53,34 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
 
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.5, 
+        quality: 0.5,
       });
 
       const asset = result.canceled ? undefined : result.assets[0];
       if (asset?.uri) {
         const uri = asset.uri;
+        const contentType = asset.mimeType ?? 'image/jpeg';
 
         if (type === 'serial') {
-          setSerialUri(uri);
+          onCapture('serial', { serialUri: uri }, 'before', 'photo', uri, contentType);
         } else if (type === 'condition') {
-          setConditionUris(prev => [...prev, uri]);
+          onCapture(
+            `condition-${conditionUris.length}`,
+            { conditionUris: [...conditionUris, uri] },
+            'condition',
+            'photo',
+            uri,
+            contentType,
+          );
         } else if (type === 'errorCode') {
-          setErrorCodeUri(uri);
-          setErrorCodeStatus('done');
+          onCapture(
+            'error-code',
+            { errorCodeUri: uri, errorCodeStatus: 'done' },
+            'before',
+            'photo',
+            uri,
+            contentType,
+          );
         }
       }
     } finally {
@@ -66,18 +96,31 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
 
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-        videoMaxDuration: 15, 
+        videoMaxDuration: 15,
         quality: 0.5,
       });
 
       const asset = result.canceled ? undefined : result.assets[0];
       if (asset?.uri) {
-        setVideoUri(asset.uri);
+        onCapture(
+          'before-video',
+          { videoUri: asset.uri },
+          'before',
+          'video',
+          asset.uri,
+          asset.mimeType ?? 'video/mp4',
+        );
       }
     } finally {
       setIsLaunchingCamera(false);
     }
   };
+
+  // Honest upload summary — captures are local-first, sync state is visible.
+  const states = Object.values(uploads) as UploadState[];
+  const uploading = states.filter((s) => s === 'uploading').length;
+  const queued = states.filter((s) => s === 'queued').length;
+  const failed = states.filter((s) => s === 'failed').length;
 
   const renderActionHub = () => {
     if (isLaunchingCamera) {
@@ -113,10 +156,16 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
               <Ionicons name="alert-circle-outline" size={48} color="#d97706" style={{ marginBottom: 12 }} />
               <Text style={styles.actionTitle}>Is there an error code?</Text>
               <View style={styles.buttonRow}>
-                <Pressable style={[styles.choiceBtn, { backgroundColor: '#f1f5f9' }]} onPress={() => setErrorCodeStatus('no')}>
+                <Pressable
+                  style={[styles.choiceBtn, { backgroundColor: '#f1f5f9' }]}
+                  onPress={() => onPatch({ errorCodeStatus: 'no' })}
+                >
                   <Text style={styles.choiceBtnText}>No</Text>
                 </Pressable>
-                <Pressable style={[styles.choiceBtn, { backgroundColor: '#2563eb' }]} onPress={() => setErrorCodeStatus('yes_pending')}>
+                <Pressable
+                  style={[styles.choiceBtn, { backgroundColor: '#2563eb' }]}
+                  onPress={() => onPatch({ errorCodeStatus: 'yes_pending' })}
+                >
                   <Text style={[styles.choiceBtnText, { color: 'white' }]}>Yes</Text>
                 </Pressable>
               </View>
@@ -133,7 +182,7 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
         }
       case 4:
         return (
-          <Pressable style={styles.actionBoxActive} onPress={recordVideo}>
+          <Pressable style={styles.actionBoxActive} onPress={() => void recordVideo()}>
             <Ionicons name="videocam-outline" size={48} color="#2563eb" style={{ marginBottom: 12 }} />
             <Text style={styles.actionTitle}>Record Before-Video</Text>
             <Text style={styles.actionSubtext}>Tap to start 15s video</Text>
@@ -145,10 +194,6 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
             <Ionicons name="checkmark-circle" size={56} color="#16a34a" style={{ marginBottom: 8 }} />
             <Text style={[styles.actionTitle, { color: '#166534' }]}>Evidence Secured</Text>
             <Text style={styles.actionSubtext}>All gates cleared.</Text>
-            
-            <View style={styles.ocrPill}>
-              <Text style={styles.ocrPillText}>OCR: FRG-8817 extracted</Text>
-            </View>
           </View>
         );
     }
@@ -157,7 +202,7 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        
+
         <View style={styles.headerRow}>
           <Text style={styles.title}>Arrival – captures</Text>
           <View style={styles.stepBadge}>
@@ -168,7 +213,7 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
         {renderActionHub()}
 
         <View style={styles.checklistContainer}>
-          
+
           <View style={styles.checkRow}>
             <Ionicons name={activeStep > 1 ? "checkmark-circle" : "ellipse-outline"} size={28} color={activeStep > 1 ? "#16a34a" : "#cbd5e1"} />
             <Text style={[styles.checkText, activeStep === 1 && styles.checkTextFocus, activeStep > 1 && styles.checkTextDone]}>
@@ -199,25 +244,29 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
 
         </View>
 
+        {uploading + queued + failed > 0 ? (
+          <View style={[styles.uploadBanner, failed > 0 && styles.uploadBannerFailed]}>
+            <Text style={[styles.uploadBannerText, failed > 0 && styles.uploadBannerTextFailed]}>
+              {failed > 0
+                ? `${failed} upload${failed === 1 ? '' : 's'} rejected — recapture before leaving`
+                : queued > 0
+                  ? `${queued} capture${queued === 1 ? '' : 's'} saved — uploading when reconnected`
+                  : `${uploading} uploading…`}
+            </Text>
+          </View>
+        ) : null}
+
         <View style={styles.footerMottoContainer}>
           <Text style={styles.footerMottoText}>automated progression, zero typing</Text>
         </View>
-        
+
       </ScrollView>
 
-      {/* DEV SKIP BUTTON */}
-      <Pressable
-        style={styles.devSkipBtn}
-        onPress={onNext}
-      >
-        <Text style={styles.devSkipBtnText}>[DEV ONLY] Skip Captures</Text>
-      </Pressable>
-
       <View style={styles.stickyFooter}>
-        <Pressable 
+        <Pressable
           style={[styles.nextBtn, !isComplete && styles.nextBtnDisabled]}
           disabled={!isComplete}
-          onPress={onNext} 
+          onPress={onNext}
         >
           <Text style={styles.nextBtnText}>Continue to Voice Summary</Text>
         </Pressable>
@@ -229,7 +278,7 @@ export function ArrivalCapturesScreen({ onNext }: Step1Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff' },
   scrollContent: { paddingHorizontal: 24, paddingTop: Platform.OS === 'android' ? 40 : 20, paddingBottom: 40 },
-  
+
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
   title: { fontSize: 28, fontWeight: '800', fontStyle: 'italic', color: '#0f172a' },
   stepBadge: { backgroundColor: '#eff6ff', paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#bfdbfe' },
@@ -239,26 +288,24 @@ const styles = StyleSheet.create({
   actionBoxActive: { backgroundColor: '#eff6ff', minHeight: 220, borderRadius: 20, borderWidth: 2, borderColor: '#3b82f6', borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center', marginBottom: 32, padding: 20 },
   actionTitle: { fontSize: 18, fontWeight: '700', color: '#0f172a', marginBottom: 6 },
   actionSubtext: { fontSize: 14, fontWeight: '500', color: '#64748b' },
-  
+
   buttonRow: { flexDirection: 'row', gap: 12, marginTop: 20 },
   choiceBtn: { paddingVertical: 12, paddingHorizontal: 32, borderRadius: 12 },
   choiceBtnText: { fontSize: 16, fontWeight: '700', color: '#475569' },
 
-  ocrPill: { marginTop: 16, backgroundColor: '#ffffff', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#22c55e' },
-  ocrPillText: { color: '#166534', fontWeight: '700', fontSize: 13 },
-
-  checklistContainer: { gap: 20, marginBottom: 40 },
+  checklistContainer: { gap: 20, marginBottom: 24 },
   checkRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 16 },
   checkText: { marginLeft: 16, fontSize: 16, color: '#94a3b8', fontWeight: '500', flex: 1 },
   checkTextFocus: { color: '#0f172a', fontWeight: '700' },
   checkTextDone: { color: '#475569', fontWeight: '500', textDecorationLine: 'line-through' },
 
+  uploadBanner: { backgroundColor: '#fef3c7', borderColor: '#fde68a', borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 16 },
+  uploadBannerFailed: { backgroundColor: '#fee2e2', borderColor: '#fecaca' },
+  uploadBannerText: { color: '#92400e', fontSize: 12, fontWeight: '700', textAlign: 'center' },
+  uploadBannerTextFailed: { color: '#b91c1c' },
+
   footerMottoContainer: { alignItems: 'center', marginTop: 10 },
   footerMottoText: { fontSize: 13, color: '#94a3b8', fontWeight: '600', letterSpacing: 0.5 },
-
-  // DEV SKIP STYLES
-  devSkipBtn: { backgroundColor: '#fee2e2', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12, alignItems: 'center', marginHorizontal: 24, marginBottom: 12, borderWidth: 1, borderColor: '#f87171' },
-  devSkipBtnText: { color: '#b91c1c', fontSize: 14, fontWeight: '800' },
 
   stickyFooter: { paddingVertical: 16, paddingHorizontal: 24, paddingBottom: Platform.OS === 'ios' ? 32 : 16, backgroundColor: '#ffffff', borderTopWidth: 1, borderTopColor: '#f1f5f9' },
   nextBtn: { backgroundColor: '#1c1917', paddingVertical: 18, borderRadius: 24, alignItems: 'center' },

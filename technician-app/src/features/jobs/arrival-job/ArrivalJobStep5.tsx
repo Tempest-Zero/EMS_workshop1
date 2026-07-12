@@ -4,17 +4,21 @@ import { Ionicons } from '@expo/vector-icons';
 
 interface Step5Props {
   arrivalTime: number;
-  onComplete: () => void;
+  submitting: boolean;
+  /** Submit the completion: outcome, on-site minutes, and (when the tech
+   * overrode the stopwatch) the mandatory adjustment reason. */
+  onComplete: (outcome: string, timeSpentMins: number, adjustReason: string | null) => void;
 }
 
 const OUTCOMES = ['Repaired', 'Not repairable', 'Needs part'];
 
-export function ArrivalJobStep5({ arrivalTime, onComplete }: Step5Props) {
+export function ArrivalJobStep5({ arrivalTime, submitting, onComplete }: Step5Props) {
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
-  
+
   const [isAdjustingTime, setIsAdjustingTime] = useState(false);
   const [timeReason, setTimeReason] = useState('');
-  
+  const [adjustedMins, setAdjustedMins] = useState('');
+
   // ⏱️ Live Timer State
   const [elapsedMs, setElapsedMs] = useState(0);
 
@@ -42,7 +46,19 @@ export function ArrivalJobStep5({ arrivalTime, onComplete }: Step5Props) {
     return `${s}s`;
   };
 
-  const isComplete = selectedOutcome !== null && (!isAdjustingTime || timeReason.trim().length > 0);
+  const adjustedMinsNum = parseInt(adjustedMins.replace(/[^0-9]/g, ''), 10);
+  const adjustValid = !isAdjustingTime || (timeReason.trim().length > 0 && adjustedMinsNum > 0);
+  const isComplete = selectedOutcome !== null && adjustValid && !submitting;
+
+  const submit = () => {
+    if (!selectedOutcome) return;
+    const stopwatchMins = elapsedMs / 60_000;
+    if (isAdjustingTime) {
+      onComplete(selectedOutcome, adjustedMinsNum, timeReason.trim());
+    } else {
+      onComplete(selectedOutcome, stopwatchMins, null);
+    }
+  };
 
   return (
     <KeyboardAvoidingView 
@@ -108,13 +124,27 @@ export function ArrivalJobStep5({ arrivalTime, onComplete }: Step5Props) {
               <View style={styles.adjustReasonContainer}>
                 <TextInput
                   style={styles.reasonInput}
+                  placeholder="Actual minutes on site..."
+                  placeholderTextColor="#94a3b8"
+                  keyboardType="number-pad"
+                  value={adjustedMins}
+                  onChangeText={setAdjustedMins}
+                  autoFocus
+                />
+                <TextInput
+                  style={[styles.reasonInput, { marginTop: 8 }]}
                   placeholder="Reason for time adjustment..."
                   placeholderTextColor="#94a3b8"
                   value={timeReason}
                   onChangeText={setTimeReason}
-                  autoFocus
                 />
-                <Pressable onPress={() => { setIsAdjustingTime(false); setTimeReason(''); }}>
+                <Pressable
+                  onPress={() => {
+                    setIsAdjustingTime(false);
+                    setTimeReason('');
+                    setAdjustedMins('');
+                  }}
+                >
                   <Text style={styles.cancelAdjust}>Cancel adjustment</Text>
                 </Pressable>
               </View>
@@ -125,12 +155,14 @@ export function ArrivalJobStep5({ arrivalTime, onComplete }: Step5Props) {
 
         {/* 🚀 STICKY FOOTER NAVIGATION */}
         <View style={styles.stickyFooter}>
-          <Pressable 
+          <Pressable
             style={[styles.submitBtn, !isComplete && styles.submitBtnDisabled]}
             disabled={!isComplete}
-            onPress={onComplete}
+            onPress={submit}
           >
-            <Text style={styles.submitBtnText}>Submit → bill opens</Text>
+            <Text style={styles.submitBtnText}>
+              {submitting ? "Submitting…" : "Submit → bill opens"}
+            </Text>
           </Pressable>
         </View>
       </SafeAreaView>

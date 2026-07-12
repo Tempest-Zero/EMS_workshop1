@@ -13,11 +13,15 @@ function fmt(ms: number): string {
 }
 
 interface Step2Props {
+  /** The recorded work-summary URI — owned by the wizard's persisted draft. */
+  voiceUri: string | null;
+  /** Fires once per finished recording; the wizard uploads it (phase remark). */
+  onRecorded: (uri: string) => void;
+  onDeleted: () => void;
   onNext: () => void;
 }
 
-export function ArrivalJobStep2({ onNext }: Step2Props) {
-  const [voiceUri, setVoiceUri] = useState<string | null>(null);
+export function ArrivalJobStep2({ voiceUri, onRecorded, onDeleted, onNext }: Step2Props) {
 
   // Audio Recorder State
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -84,7 +88,7 @@ export function ArrivalJobStep2({ onNext }: Step2Props) {
       if (out) {
         const info = await FileSystem.getInfoAsync(out, { size: true });
         const ok = info.exists && (!("size" in info) || info.size > 0);
-        if (mounted.current && ok) setVoiceUri(out);
+        if (mounted.current && ok) onRecorded(out);
       }
     } catch (e) {
       // Handle error silently for UI flow
@@ -107,7 +111,7 @@ export function ArrivalJobStep2({ onNext }: Step2Props) {
 
   const deleteRecording = () => {
     void soundRef.current?.pauseAsync().catch(() => {});
-    setVoiceUri(null);
+    onDeleted();
   };
 
   // Lifecycle management for the audio player

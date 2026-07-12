@@ -23,6 +23,9 @@ export interface Job {
   /** Home pin from the intake map (0036) — the travel map reads it. */
   customer_lat: number | null;
   customer_lng: number | null;
+  /** Appliance category slug (0023, echoed since 0036) — scopes the
+   * fault/action/parts pickers. */
+  category_id: string | null;
   appliance_type: string;
   appliance_brand: string | null;
   appliance_model: string | null;
@@ -132,9 +135,14 @@ export interface JobCreateInput {
 export interface CompletionInput {
   materials: Material[];
   time_spent_mins: number;
-  fuel_paisa: number;
+  /** OMIT for auto: the server bills the derived round-trip route fuel
+   * (0035). An explicit value — including 0 — is the tech's figure and wins. */
+  fuel_paisa?: number;
   remarks_text?: string;
   remarks_audio_media_id?: string;
+  /** W5 tap-picker slugs — only ever ids that came from the catalog API. */
+  fault_code_id?: string;
+  action_code_id?: string;
 }
 
 function qs(params?: Record<string, string | undefined>): string {

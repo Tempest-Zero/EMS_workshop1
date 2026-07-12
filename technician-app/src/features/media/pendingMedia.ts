@@ -21,6 +21,9 @@ export interface PendingMediaItem {
   id: string;
   /** The create's client_id — the join key to the eventual server job. */
   jobClientId: string;
+  /** Known job token (media is keyed on it). Set for uploads against an
+   * EXISTING job (arrival evidence) — skips the client_id roster join. */
+  jobToken?: string;
   phase: Phase;
   type: "audio" | "photo" | "video";
   uri: string;
@@ -100,22 +103,25 @@ export async function drainPendingMedia(): Promise<void> {
     const items = await load();
     if (items.length === 0) return;
 
-    // One roster fetch resolves every entry's client_id → token join.
-    let jobs;
-    try {
-      jobs = await jobsApi.list();
-    } catch {
-      return; // offline — every entry keeps waiting
+    // One roster fetch resolves the client_id → token join — only needed for
+    // entries whose job was itself created offline (no token known yet).
+    let jobs = null;
+    if (items.some((i) => i.jobToken == null && i.attempts < MAX_ATTEMPTS)) {
+      try {
+        jobs = await jobsApi.list();
+      } catch {
+        jobs = null; // offline for the join; token-carrying entries still try
+      }
     }
 
     for (const item of items) {
       if (item.attempts >= MAX_ATTEMPTS) continue; // parked — visible via list
-      const job = jobs.find((j) => j.client_id === item.jobClientId);
-      if (!job) continue; // its create hasn't synced yet
+      const token = item.jobToken ?? String(jobs?.find((j) => j.client_id === item.jobClientId)?.token ?? "");
+      if (!token) continue; // its create hasn't synced yet (or roster fetch failed)
 
       try {
         await uploadMedia({
-          jobId: String(job.token),
+          jobId: token,
           phase: item.phase,
           type: item.type,
           uri: item.uri,

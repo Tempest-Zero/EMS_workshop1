@@ -1,33 +1,63 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, Pressable, SafeAreaView, ScrollView, Platform } from 'react-native';
+/**
+ * Step 3 — diagnosis (F12/W5). Fault + action chips come from the seeded
+ * catalog vocabulary (scoped to the job's category), so the picked ids are
+ * the same slugs the reliability analytics run on. Offline the pickers are
+ * unavailable — codes stay optional-forever (flag-never-block), so the tech
+ * can proceed and add them later from the completion form.
+ */
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View, Pressable, SafeAreaView, ScrollView, Platform } from 'react-native';
+
+import { catalogApi, type CatalogActionCode, type CatalogFaultCode } from '../../../lib/catalogApi';
 
 interface Step3Props {
+  categoryId: string | null;
+  faultId: string | null;
+  actionId: string | null;
+  onPick: (faultId: string | null, actionId: string | null) => void;
   onNext: () => void;
 }
 
-// Data matching your F12 wireframe (English + Urdu)
-const FAULTS = [
-  { id: 'compressor', en: 'Compressor', ur: 'کمپریسر' },
-  { id: 'gas_leak', en: 'Gas leak', ur: 'گیس لیک' },
-  { id: 'thermostat', en: 'Thermostat', ur: '' },
-  { id: 'pcb', en: 'PCB', ur: '' },
-  { id: 'fan', en: 'Fan', ur: '' },
-  { id: 'door_seal', en: 'Door seal', ur: '' },
-];
+export function ArrivalJobStep3({ categoryId, faultId, actionId, onPick, onNext }: Step3Props) {
+  const [faults, setFaults] = useState<CatalogFaultCode[] | null>(null);
+  const [actions, setActions] = useState<CatalogActionCode[] | null>(null);
+  const [offline, setOffline] = useState(false);
 
-const ACTIONS = ['Regas', 'Replace part', 'Repair'];
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [f, a] = await Promise.all([
+          catalogApi.faultCodes(categoryId),
+          catalogApi.actionCodes(categoryId),
+        ]);
+        if (!cancelled) {
+          setFaults(f);
+          setActions(a);
+          setOffline(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setFaults([]);
+          setActions([]);
+          setOffline(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [categoryId]);
 
-export function ArrivalJobStep3({ onNext }: Step3Props) {
-  const [selectedFault, setSelectedFault] = useState<string | null>(null);
-  const [selectedAction, setSelectedAction] = useState<string | null>(null);
-
-  // Soft-mandatory: They must pick a fault and action to proceed normally
-  const isComplete = selectedFault !== null && selectedAction !== null;
+  const loading = faults === null || actions === null;
+  const haveCodes = !loading && !offline && (faults.length > 0 || actions.length > 0);
+  // Soft-mandatory when the vocabulary is available; free pass when it isn't.
+  const isComplete = !haveCodes || (faultId !== null && actionId !== null);
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView 
-        contentContainerStyle={styles.scrollContent} 
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
         {/* 🟢 HEADER */}
@@ -38,62 +68,90 @@ export function ArrivalJobStep3({ onNext }: Step3Props) {
           </View>
         </View>
 
-        {/* 🛑 FAULT CHIPS */}
-        <Text style={styles.sectionTitle}>Fault —</Text>
-        <View style={styles.chipGrid}>
-          {FAULTS.map((fault) => {
-            const isActive = selectedFault === fault.id;
-            return (
-              <Pressable 
-                key={fault.id}
-                style={[styles.chip, isActive && styles.chipActive]}
-                onPress={() => setSelectedFault(fault.id)}
-              >
-                <Text style={[styles.chipTextEn, isActive && styles.chipTextActive]}>
-                  {fault.en}
-                </Text>
-                {fault.ur ? (
-                  <Text style={[styles.chipTextUr, isActive && styles.chipTextActive]}>
-                    {' '}{fault.ur}
-                  </Text>
-                ) : null}
-              </Pressable>
-            );
-          })}
-        </View>
+        {loading ? (
+          <View style={styles.loadingBox}>
+            <ActivityIndicator size="large" color="#2563eb" />
+          </View>
+        ) : offline || (faults.length === 0 && actions.length === 0) ? (
+          <View style={styles.offlineBox}>
+            <Text style={styles.offlineText}>
+              {offline
+                ? "Diagnosis codes need a connection — continue, and add them later from the completion form."
+                : "No diagnosis vocabulary is seeded for this appliance yet — continue without codes."}
+            </Text>
+          </View>
+        ) : (
+          <>
+            {/* 🛑 FAULT CHIPS */}
+            <Text style={styles.sectionTitle}>Fault —</Text>
+            <View style={styles.chipGrid}>
+              {faults.map((fault) => {
+                const isActive = faultId === fault.id;
+                return (
+                  <Pressable
+                    key={fault.id}
+                    style={[styles.chip, isActive && styles.chipActive]}
+                    onPress={() => onPick(fault.id, actionId)}
+                  >
+                    <Text style={[styles.chipTextEn, isActive && styles.chipTextActive]}>
+                      {fault.label_en ?? fault.id}
+                    </Text>
+                    {fault.label_ur ? (
+                      <Text style={[styles.chipTextUr, isActive && styles.chipTextActive]}>
+                        {' '}{fault.label_ur}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
 
-        <View style={styles.divider} />
+            <View style={styles.divider} />
 
-        {/* 🛠️ ACTION CHIPS */}
-        <Text style={styles.sectionTitle}>Action —</Text>
-        <View style={styles.chipGrid}>
-          {ACTIONS.map((action) => {
-            const isActive = selectedAction === action;
-            return (
-              <Pressable 
-                key={action}
-                style={[styles.chip, isActive && styles.chipActive]}
-                onPress={() => setSelectedAction(action)}
-              >
-                <Text style={[styles.chipTextEn, isActive && styles.chipTextActive]}>
-                  {action}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+            {/* 🛠️ ACTION CHIPS */}
+            <Text style={styles.sectionTitle}>Action —</Text>
+            <View style={styles.chipGrid}>
+              {actions.map((action) => {
+                const isActive = actionId === action.id;
+                return (
+                  <Pressable
+                    key={action.id}
+                    style={[styles.chip, isActive && styles.chipActive]}
+                    onPress={() => onPick(faultId, action.id)}
+                  >
+                    <Text style={[styles.chipTextEn, isActive && styles.chipTextActive]}>
+                      {action.label_en ?? action.id}
+                    </Text>
+                    {action.label_ur ? (
+                      <Text style={[styles.chipTextUr, isActive && styles.chipTextActive]}>
+                        {' '}{action.label_ur}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        )}
 
       </ScrollView>
 
       {/* 🚀 STICKY FOOTER NAVIGATION */}
       <View style={styles.stickyFooter}>
-        
-        {/* Skip button (soft gate fallback) */}
-        <Pressable style={styles.skipBtn} onPress={() => console.log('Open skip reason logged')}>
-          <Text style={styles.skipBtnText}>skip — pick a reason (logged)</Text>
-        </Pressable>
 
-        <Pressable 
+        {haveCodes ? (
+          <Pressable
+            style={styles.skipBtn}
+            onPress={() => {
+              onPick(null, null);
+              onNext();
+            }}
+          >
+            <Text style={styles.skipBtnText}>skip — codes stay optional</Text>
+          </Pressable>
+        ) : null}
+
+        <Pressable
           style={[styles.nextBtn, !isComplete && styles.nextBtnDisabled]}
           disabled={!isComplete}
           onPress={onNext}
@@ -108,12 +166,16 @@ export function ArrivalJobStep3({ onNext }: Step3Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff' },
   scrollContent: { paddingHorizontal: 24, paddingTop: Platform.OS === 'android' ? 40 : 20, paddingBottom: 40 },
-  
+
   // Header
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 },
   title: { fontSize: 28, fontWeight: '800', fontStyle: 'italic', color: '#0f172a' },
   stepBadge: { backgroundColor: '#eff6ff', paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#bfdbfe' },
   stepBadgeText: { color: '#2563eb', fontWeight: '800', fontSize: 14, fontVariant: ['tabular-nums'] },
+
+  loadingBox: { paddingVertical: 60, alignItems: 'center' },
+  offlineBox: { backgroundColor: '#fef3c7', borderColor: '#fde68a', borderWidth: 1, borderRadius: 12, padding: 16 },
+  offlineText: { color: '#92400e', fontSize: 14, fontWeight: '600', lineHeight: 20 },
 
   // Sections
   sectionTitle: { fontSize: 18, color: '#475569', fontWeight: '600', marginBottom: 16, fontStyle: 'italic' },
@@ -129,7 +191,7 @@ const styles = StyleSheet.create({
 
   // Sticky Footer
   stickyFooter: { paddingVertical: 16, paddingHorizontal: 24, paddingBottom: Platform.OS === 'ios' ? 32 : 16, backgroundColor: '#ffffff', borderTopWidth: 1, borderTopColor: '#f1f5f9' },
-  
+
   skipBtn: { alignItems: 'center', marginBottom: 16, paddingVertical: 8 },
   skipBtnText: { color: '#64748b', fontSize: 14, fontWeight: '500', textDecorationLine: 'underline' },
 
