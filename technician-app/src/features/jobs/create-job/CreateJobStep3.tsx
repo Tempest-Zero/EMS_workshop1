@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform, Modal } from 'react-native';
+import { StyleSheet, Text, View, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 
 import { getLocation } from '../../attendance/location';
+import { SchedulePickerModal } from '../SchedulePickerModal';
 
 interface Step3Props {
   /** The customer address — held by the wizard so submit can send it. */
@@ -28,16 +29,8 @@ const DEFAULT_REGION = {
   longitudeDelta: 0.08,
 };
 
-// 📅 Helper data for our custom calendar
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-const TIME_SLOTS = ['Morning (9a - 12p)', 'Afternoon (1p - 5p)', 'Evening (5p - 8p)'];
-
 export function CreateJobStep3({ location, setLocation, customerLat, customerLng, setCustomerPin, serviceType, setServiceType, timeWindow, setTimeWindow, onNext }: Step3Props) {
-  // 🪄 NEW: Calendar Modal States
   const [showCalendar, setShowCalendar] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<number | null>(null);
-  const [selectedTimeSlot, setSelectedTimeSlot] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
 
   const isVisit = serviceType !== 'Carry-in';
@@ -62,25 +55,6 @@ export function CreateJobStep3({ location, setLocation, customerLat, customerLng
 
   // Checks if the active time window is a custom date rather than the default presets
   const isCustomTime = timeWindow !== 'Today 4-6' && timeWindow !== 'Tmrw AM' && timeWindow !== '';
-
-  // 📅 Generate Calendar Grid Data
-  const today = new Date();
-  const currentMonth = MONTHS[today.getMonth()];
-  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).getDay();
-  
-  // Creates empty slots for the days before the 1st of the month
-  const blanks = Array.from({ length: firstDayOfMonth }, (_, i) => i);
-  // Creates the actual days of the month (1 to 31)
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-
-  // Saves the custom date and closes the popup
-  const handleConfirmCalendar = () => {
-    if (selectedDate && selectedTimeSlot) {
-      setTimeWindow(`${currentMonth} ${selectedDate} - ${selectedTimeSlot.split(' ')[0]}`);
-      setShowCalendar(false);
-    }
-  };
 
   return (
     <KeyboardAvoidingView 
@@ -202,74 +176,15 @@ export function CreateJobStep3({ location, setLocation, customerLat, customerLng
         </Pressable>
       </View>
 
-      {/* 🗓️ THE CALENDAR MODAL */}
-      <Modal
+      <SchedulePickerModal
         visible={showCalendar}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowCalendar(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setShowCalendar(false)} />
-          
-          <View style={styles.bottomSheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Schedule Task</Text>
-              <Pressable onPress={() => setShowCalendar(false)}>
-                <Text style={styles.sheetClose}>Close</Text>
-              </Pressable>
-            </View>
-
-            <Text style={styles.monthTitle}>{currentMonth} {today.getFullYear()}</Text>
-
-            {/* Weekday Headers */}
-            <View style={styles.weekRow}>
-              {WEEKDAYS.map(day => (
-                <Text key={day} style={styles.weekDayText}>{day}</Text>
-              ))}
-            </View>
-
-            {/* Calendar Grid */}
-            <View style={styles.daysGrid}>
-              {blanks.map(b => <View key={`blank-${b}`} style={styles.dayBox} />)}
-              {days.map(day => (
-                <Pressable 
-                  key={`day-${day}`} 
-                  style={[styles.dayBox, selectedDate === day && styles.dayBoxActive]}
-                  onPress={() => setSelectedDate(day)}
-                >
-                  <Text style={[styles.dayText, selectedDate === day && styles.dayTextActive]}>{day}</Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {/* Time Slot Selection (Appears after picking a date) */}
-            {selectedDate && (
-              <View style={styles.timeSlotsContainer}>
-                <Text style={styles.timeTitle}>Available Times</Text>
-                {TIME_SLOTS.map(slot => (
-                  <Pressable 
-                    key={slot}
-                    style={[styles.timeSlot, selectedTimeSlot === slot && styles.timeSlotActive]}
-                    onPress={() => setSelectedTimeSlot(slot)}
-                  >
-                    <Text style={[styles.timeSlotText, selectedTimeSlot === slot && styles.timeSlotTextActive]}>{slot}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-
-            {/* Confirm Button */}
-            <Pressable 
-              style={[styles.confirmBtn, (!selectedDate || !selectedTimeSlot) && styles.confirmBtnDisabled]}
-              disabled={!selectedDate || !selectedTimeSlot}
-              onPress={handleConfirmCalendar}
-            >
-              <Text style={styles.confirmBtnText}>Confirm Date</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+        title="Schedule Task"
+        onClose={() => setShowCalendar(false)}
+        onConfirm={(_iso, label) => {
+          setTimeWindow(label);
+          setShowCalendar(false);
+        }}
+      />
 
     </KeyboardAvoidingView>
   );
@@ -302,32 +217,4 @@ const styles = StyleSheet.create({
   nextBtn: { backgroundColor: '#1c1917', paddingVertical: 18, borderRadius: 24, alignItems: 'center' },
   nextBtnDisabled: { backgroundColor: '#cbd5e1' },
   nextBtnText: { color: 'white', fontSize: 16, fontWeight: '700' },
-
-  // 🗓️ MODAL CALENDAR STYLES
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject },
-  bottomSheet: { backgroundColor: '#ffffff', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: Platform.OS === 'ios' ? 40 : 24 },
-  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  sheetTitle: { fontSize: 20, fontWeight: '800', color: '#0f172a' },
-  sheetClose: { fontSize: 15, color: '#64748b', fontWeight: '600' },
-  
-  monthTitle: { fontSize: 16, fontWeight: '700', color: '#1e293b', marginBottom: 12, textAlign: 'center' },
-  weekRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 },
-  weekDayText: { width: 40, textAlign: 'center', fontSize: 13, color: '#94a3b8', fontWeight: '600' },
-  daysGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-around' },
-  dayBox: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center', marginBottom: 8, borderRadius: 20 },
-  dayBoxActive: { backgroundColor: '#3b82f6' },
-  dayText: { fontSize: 15, color: '#1e293b', fontWeight: '500' },
-  dayTextActive: { color: '#ffffff', fontWeight: '800' },
-
-  timeSlotsContainer: { marginTop: 16, borderTopWidth: 1, borderTopColor: '#e2e8f0', paddingTop: 16 },
-  timeTitle: { fontSize: 14, fontWeight: '700', color: '#64748b', marginBottom: 12 },
-  timeSlot: { paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, borderWidth: 1, borderColor: '#cbd5e1', marginBottom: 8 },
-  timeSlotActive: { backgroundColor: '#f0fdf4', borderColor: '#22c55e' },
-  timeSlotText: { fontSize: 14, color: '#334155', fontWeight: '500' },
-  timeSlotTextActive: { color: '#15803d', fontWeight: '700' },
-
-  confirmBtn: { backgroundColor: '#10b981', paddingVertical: 16, borderRadius: 20, alignItems: 'center', marginTop: 24 },
-  confirmBtnDisabled: { backgroundColor: '#cbd5e1' },
-  confirmBtnText: { color: 'white', fontSize: 16, fontWeight: '700' },
 });

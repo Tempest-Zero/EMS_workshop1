@@ -241,6 +241,36 @@ describe("flushOutbox classification", () => {
     expect((await outboxCounts()).queued).toBe(0);
   });
 
+  it("replays a queued unreachable transition (wait) with its reason", async () => {
+    await queueOne({
+      id: "transition:wait:job-1",
+      kind: "transition",
+      payload: { action: "wait", reason: "gate locked" },
+    });
+    mockTransition.mockResolvedValue(detail);
+    await flushOutbox();
+    expect(mockTransition).toHaveBeenCalledWith("job-1", "wait", "gate locked", {
+      preferred_date: undefined,
+      time_window: undefined,
+    });
+    expect((await outboxCounts()).queued).toBe(0);
+  });
+
+  it("replays a queued reschedule transition with date + window", async () => {
+    await queueOne({
+      id: "transition:reschedule:job-1",
+      kind: "transition",
+      payload: { action: "reschedule", preferred_date: "2026-07-20", time_window: "July 20 · Morning" },
+    });
+    mockTransition.mockResolvedValue(detail);
+    await flushOutbox();
+    expect(mockTransition).toHaveBeenCalledWith("job-1", "reschedule", undefined, {
+      preferred_date: "2026-07-20",
+      time_window: "July 20 · Morning",
+    });
+    expect((await outboxCounts()).queued).toBe(0);
+  });
+
   // ── Dead-letter: a poison server error must not block the queue forever ──────
   it("dead-letters a poison 5xx item after the attempt cap, never deleting it", async () => {
     await queueOne();

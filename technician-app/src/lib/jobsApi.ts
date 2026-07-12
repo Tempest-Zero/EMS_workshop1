@@ -147,7 +147,7 @@ export interface JobDetail extends Job {
   route: Route | null;
 }
 
-export type TransitionAction = "ready" | "close" | "abandon" | "reschedule" | "haul";
+export type TransitionAction = "ready" | "wait" | "close" | "abandon" | "reschedule" | "haul";
 
 /** Body for `POST /api/jobs` — mobile intake (0036). `client_id` is the
  * outbox idempotency key: a replayed queued create returns the existing job. */
@@ -217,10 +217,15 @@ export const jobsApi = {
       body: JSON.stringify({ text }),
     }),
 
-  transition: (id: string, action: TransitionAction, reason?: string) =>
+  transition: (
+    id: string,
+    action: TransitionAction,
+    reason?: string,
+    schedule?: { preferred_date?: string; time_window?: string },
+  ) =>
     request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}/transition`, {
       method: "POST",
-      body: JSON.stringify({ action, reason }),
+      body: JSON.stringify({ action, reason, ...schedule }),
     }),
 
   // ── Completion + bill + cash (Module 3 post-job / Module 4) ──────────

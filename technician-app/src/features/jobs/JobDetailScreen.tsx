@@ -19,6 +19,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -31,7 +32,7 @@ import { getLocation } from "../attendance/location";
 import { JobMediaCapture } from "../media/JobMediaCapture";
 import { uploadMedia } from "../media/uploadMedia";
 import { ApiError } from "../../lib/api";
-import { jobsApi, type JobDetail } from "../../lib/jobsApi";
+import { jobsApi, type JobDetail, type TransitionAction } from "../../lib/jobsApi";
 import { cacheStamp, loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
 import { messagingApi, type WhatsAppKind } from "../../lib/messagingApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
@@ -46,6 +47,7 @@ import {
 import { sendOrQueue, type PaymentPayload } from "../../lib/outboxSync";
 import { useJobOutbox } from "../../lib/useJobOutbox";
 import { jobTypeBadge } from "./jobType";
+import { SchedulePickerModal } from "./SchedulePickerModal";
 import type { JobsStackParamList } from "./types";
 
 const OFFLINE_MSG = "Saved offline — will sync when reconnected.";
@@ -76,6 +78,13 @@ function itemLabel(item: OutboxItem): string {
       return "Mark Ready";
     case "note":
       return "Note";
+    case "transition": {
+      const a = (item.payload as { action: string }).action;
+      if (a === "wait") return "Put on hold";
+      if (a === "reschedule") return "Reschedule";
+      if (a === "haul") return "Convert to carry-in";
+      return "Status change";
+    }
   }
 }
 
@@ -97,6 +106,7 @@ type Busy =
   | "depart"
   | "arrive"
   | "whatsapp"
+  | "transition"
   | null;
 type PayMethod = "cash" | "card" | "online";
 
@@ -125,6 +135,11 @@ export function JobDetailScreen({ route, navigation }: Props) {
   // Abandon (the no-completion exit the close guard assumes exists).
   const [abandoning, setAbandoning] = useState(false);
   const [abandonReason, setAbandonReason] = useState("");
+
+  // Customer-unreachable actions (hold / reschedule / haul-to-workshop).
+  const [unreachableOpen, setUnreachableOpen] = useState(false);
+  const [holdReason, setHoldReason] = useState("");
+  const [scheduleOpen, setScheduleOpen] = useState(false);
 
   // Set when the detail on screen is the offline cache, not server truth.
   const [cachedAt, setCachedAt] = useState<string | null>(null);
@@ -180,6 +195,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const pendingCompletion = outboxView.queued.some((i) => i.kind === "completion");
   const pendingNegotiate = outboxView.queued.find((i) => i.kind === "negotiate");
   const pendingReady = outboxView.queued.some((i) => i.kind === "ready");
+  const pendingTransition = outboxView.queued.find((i) => i.kind === "transition");
 
   const submitNote = useCallback(async () => {
     const text = note.trim();
@@ -331,6 +347,49 @@ export function JobDetailScreen({ route, navigation }: Props) {
       setBusy(null);
     }
   }, [id, abandonReason, busy]);
+
+  // The customer-unreachable transitions (wait / reschedule / haul). Each rides
+  // the outbox so an offline decision survives; the id is per-action so a
+  // repeated tap is last-write-wins, never a double.
+  const queueTransition = useCallback(
+    async (
+      action: TransitionAction,
+      extra?: { reason?: string; preferred_date?: string; time_window?: string },
+    ) => {
+      if (busy) return;
+      setBusy("transition");
+      setError(null);
+      setInfo(null);
+      try {
+        const detail = await sendOrQueue(
+          makeItem({
+            id: `transition:${action}:${id}`,
+            kind: "transition",
+            jobId: id,
+            payload: { action, ...extra },
+          }),
+          () =>
+            jobsApi.transition(id, action, extra?.reason, {
+              preferred_date: extra?.preferred_date,
+              time_window: extra?.time_window,
+            }),
+        );
+        if (detail) setJob(detail);
+        else setInfo(OFFLINE_MSG);
+        setUnreachableOpen(false);
+        setHoldReason("");
+      } catch (e) {
+        if (e instanceof ApiError) {
+          setError(apiDetail(e) ?? "Couldn't update the job — try again.");
+        } else {
+          setError("Couldn't update the job — try again.");
+        }
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, busy],
+  );
 
   const negotiateBill = useCallback(async () => {
     const paisa = rupeesToPaisa(negotiate);
@@ -725,6 +784,15 @@ export function JobDetailScreen({ route, navigation }: Props) {
             </Pressable>
           )
         ) : null}
+
+        {open && isVisit && !abandoning ? (
+          <Pressable style={styles.unreachableLink} onPress={() => setUnreachableOpen(true)}>
+            <Text style={styles.unreachableLinkText}>Customer unreachable…</Text>
+          </Pressable>
+        ) : null}
+        {pendingTransition ? (
+          <Text style={styles.pendingNote}>{itemLabel(pendingTransition)} · syncing…</Text>
+        ) : null}
       </View>
 
       {outboxView.failed.length > 0 ? (
@@ -1097,6 +1165,90 @@ export function JobDetailScreen({ route, navigation }: Props) {
           ))
         )}
       </View>
+
+      {/* Customer-unreachable sheet: hold / reschedule / haul-to-workshop. */}
+      <Modal
+        visible={unreachableOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setUnreachableOpen(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setUnreachableOpen(false)} />
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>Customer unreachable</Text>
+            <Text style={styles.sheetSub}>
+              Not home or not answering — keep the job honest without abandoning it.
+            </Text>
+
+            <Text style={styles.sheetSectionLabel}>PUT ON HOLD</Text>
+            <TextInput
+              style={styles.input}
+              value={holdReason}
+              onChangeText={setHoldReason}
+              placeholder="Why is it on hold? (required)"
+              editable={busy !== "transition"}
+            />
+            <Pressable
+              style={[
+                styles.btn,
+                styles.btnDark,
+                (busy === "transition" || !holdReason.trim()) && styles.btnBusy,
+              ]}
+              onPress={() => void queueTransition("wait", { reason: holdReason.trim() })}
+              disabled={busy === "transition" || !holdReason.trim()}
+            >
+              <Text style={styles.btnDarkText}>
+                {busy === "transition" ? "…" : "Put on hold"}
+              </Text>
+            </Pressable>
+
+            <View style={styles.sheetDivider} />
+            <Pressable
+              style={[styles.btn, styles.btnOutline]}
+              onPress={() => setScheduleOpen(true)}
+              disabled={busy === "transition"}
+            >
+              <Text style={styles.btnOutlineText}>Reschedule the visit…</Text>
+            </Pressable>
+
+            <View style={styles.sheetDivider} />
+            <Pressable
+              style={[styles.btn, styles.btnOutline]}
+              disabled={busy === "transition"}
+              onPress={() =>
+                Alert.alert(
+                  "Convert to carry-in?",
+                  "The customer will bring the unit to the workshop. This drops the visit — the travel flow disappears.",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    { text: "Convert", onPress: () => void queueTransition("haul") },
+                  ],
+                )
+              }
+            >
+              <Text style={styles.btnOutlineText}>Convert to carry-in (haul to shop)</Text>
+            </Pressable>
+
+            <Pressable style={styles.sheetCancel} onPress={() => setUnreachableOpen(false)}>
+              <Text style={styles.sheetCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <SchedulePickerModal
+        visible={scheduleOpen}
+        title="Reschedule visit"
+        onClose={() => setScheduleOpen(false)}
+        onConfirm={(preferredDateISO, windowLabel) => {
+          setScheduleOpen(false);
+          void queueTransition("reschedule", {
+            preferred_date: preferredDateISO,
+            time_window: windowLabel,
+          });
+        }}
+      />
     </ScrollView>
   );
 }
@@ -1193,6 +1345,30 @@ const styles = StyleSheet.create({
   voidBox: { marginTop: 10, backgroundColor: "#fef2f2", borderRadius: 8, padding: 10 },
   abandonLink: { marginTop: 10, alignItems: "center", paddingVertical: 6 },
   abandonLinkText: { color: "#b91c1c", fontWeight: "700", fontSize: 13 },
+  unreachableLink: { marginTop: 4, alignItems: "center", paddingVertical: 6 },
+  unreachableLinkText: { color: "#b45309", fontWeight: "700", fontSize: 13 },
+  sheetOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" },
+  sheetBackdrop: { ...StyleSheet.absoluteFillObject },
+  sheet: {
+    backgroundColor: "white",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 32,
+    gap: 8,
+  },
+  sheetTitle: { fontSize: 20, fontWeight: "800", color: "#0f172a" },
+  sheetSub: { fontSize: 13, color: "#64748b", marginBottom: 6 },
+  sheetSectionLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#94a3b8",
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+  sheetDivider: { height: 1, backgroundColor: "#f1f5f9", marginVertical: 6 },
+  sheetCancel: { alignItems: "center", paddingVertical: 10, marginTop: 4 },
+  sheetCancelText: { color: "#64748b", fontWeight: "700", fontSize: 14 },
   offlineBanner: {
     backgroundColor: "#fef3c7",
     borderColor: "#fde68a",

@@ -35,7 +35,13 @@ import {
   type OutboxItem,
   type OutboxKind,
 } from "./outbox";
-import { jobsApi, type JobCreateInput, type JobDetail, type LocationInput } from "./jobsApi";
+import {
+  jobsApi,
+  type JobCreateInput,
+  type JobDetail,
+  type LocationInput,
+  type TransitionAction,
+} from "./jobsApi";
 import {
   failureReason,
   isAuthFailure,
@@ -68,6 +74,12 @@ interface LocationPayload {
 interface NotePayload {
   text: string;
 }
+interface TransitionPayload {
+  action: TransitionAction;
+  reason?: string;
+  preferred_date?: string;
+  time_window?: string;
+}
 
 /** Replay one queued item via the matching jobs API call. (Creates return a
  * `Job`, everything else a `JobDetail` — the flush only cares that it lands.) */
@@ -96,6 +108,13 @@ async function send(item: OutboxItem): Promise<unknown> {
       return jobsApi.transition(item.jobId, "ready");
     case "note":
       return jobsApi.addNote(item.jobId, (item.payload as NotePayload).text);
+    case "transition": {
+      const p = item.payload as TransitionPayload;
+      return jobsApi.transition(item.jobId, p.action, p.reason, {
+        preferred_date: p.preferred_date,
+        time_window: p.time_window,
+      });
+    }
   }
 }
 
@@ -201,5 +220,6 @@ export type {
   NegotiatePayload,
   LocationPayload,
   NotePayload,
+  TransitionPayload,
   OutboxKind,
 };

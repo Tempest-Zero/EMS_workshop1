@@ -28,7 +28,8 @@ export type OutboxKind =
   | "negotiate"
   | "location"
   | "ready"
-  | "note";
+  | "note"
+  | "transition";
 
 export type OutboxStatus = "queued" | "failed";
 
