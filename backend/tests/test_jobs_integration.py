@@ -295,6 +295,9 @@ async def test_intake_power_warranty_fields_persist(
     job = await session.get(Job, created.json()["id"])
     assert job is not None
     assert job.job_type == "pickup-delivery"
+    # Pickup-delivery travels both ways → it keeps the address like a home-visit
+    # (only carry-in drops it).
+    assert job.customer_address == _INTAKE["customer_address"]
     assert job.intake_channel == "whatsapp"
     assert job.type_reason == "customer can't transport a 2-door fridge"
     assert job.power_protection == "stabilizer"

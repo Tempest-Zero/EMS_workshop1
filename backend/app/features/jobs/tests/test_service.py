@@ -228,6 +228,31 @@ async def test_create_carry_in_drops_home_pin(svc: tuple[JobService, MagicMock])
     assert job.time_window is None
 
 
+async def test_create_pickup_delivery_keeps_visit_fields(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """Pickup-delivery is a travel job too — the shop drives both ways — so it
+    keeps the address, home pin and schedule exactly like a home-visit. Only a
+    carry-in drops them."""
+    service, _ = svc
+    job = await service.create_job(
+        JobCreate(
+            job_type="pickup-delivery",
+            customer_name="Yusuf",
+            customer_address="House 31, DHA",
+            appliance_type="Washing Machine",
+            time_window="11 AM – 1 PM",
+            customer_lat=24.8607,
+            customer_lng=67.0011,
+        )
+    )
+    assert job.job_type == "pickup-delivery"
+    assert job.customer_address == "House 31, DHA"
+    assert job.time_window == "11 AM – 1 PM"
+    assert job.customer_lat == pytest.approx(24.8607)
+    assert job.customer_lng == pytest.approx(67.0011)
+
+
 async def test_get_missing_raises_not_found(svc: tuple[JobService, MagicMock]) -> None:
     service, repo = svc
     repo.get.return_value = None

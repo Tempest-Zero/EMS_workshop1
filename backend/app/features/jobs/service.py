@@ -501,7 +501,10 @@ class JobService:
         # a clean session and degrade to an unlinked job instead of a 500.
         customer_id = await self._link_customer(body, actor=actor)
         token = await self._repo.next_token()
-        is_visit = body.job_type == "home-visit"
+        # A "visit" is anything the shop travels for. Both home-visit AND
+        # pickup-delivery keep the customer's address/pin/schedule; only a
+        # carry-in (customer brings the unit in) has no travel and drops them.
+        is_visit = body.job_type != "carry-in"
         row = JobRow(
             token=token,
             shop_id=body.shop_id,
