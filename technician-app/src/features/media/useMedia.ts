@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type MediaList, type MediaType, type Phase } from "../../lib/api";
 import { uploadMedia } from "./uploadMedia";
 
-const EMPTY: MediaList = { before: [], after: [] };
+const EMPTY: MediaList = { before: [], after: [], closing: [], condition: [] };
 
 export interface UseMediaState {
   list: MediaList;

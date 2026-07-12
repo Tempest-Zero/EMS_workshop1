@@ -7,7 +7,17 @@
 import { config } from "./config";
 import { getToken, setToken } from "./auth";
 
-export type Phase = "before" | "after" | "remark" | "closing";
+// before/after = repair evidence; condition = arrival condition snaps;
+// remark/intake/approval = the completion / problem / estimate voice notes;
+// closing = the required closing video. Mirrors the backend's 0036 set.
+export type Phase =
+  | "before"
+  | "after"
+  | "remark"
+  | "closing"
+  | "condition"
+  | "approval"
+  | "intake";
 export type MediaType = "video" | "photo" | "audio";
 export type MediaStatus = "pending" | "uploaded";
 
@@ -29,6 +39,8 @@ export interface MediaItem {
 export interface MediaList {
   before: MediaItem[];
   after: MediaItem[];
+  closing: MediaItem[];
+  condition: MediaItem[];
 }
 
 export interface MediaUploadResponse {

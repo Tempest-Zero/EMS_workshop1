@@ -92,7 +92,10 @@ export function CompleteJobScreen({ route, navigation }: Props) {
       const body = {
         materials: cleanMaterials,
         time_spent_mins: timeSpentMins,
-        fuel_paisa: fuelPaisa,
+        // Empty field = "auto": omitting fuel_paisa lets the server bill the
+        // derived round-trip route fuel (0035). Any typed figure — including
+        // an explicit 0 — is the tech's manual number and wins.
+        ...(fuelRs.trim() === "" ? {} : { fuel_paisa: fuelPaisa }),
         remarks_text: remarks.trim() || undefined,
         remarks_audio_media_id: audioId,
       };
@@ -172,7 +175,7 @@ export function CompleteJobScreen({ route, navigation }: Props) {
             style={styles.input}
             value={fuelRs}
             onChangeText={setFuelRs}
-            placeholder="0"
+            placeholder="auto from route"
             keyboardType="number-pad"
           />
         </View>

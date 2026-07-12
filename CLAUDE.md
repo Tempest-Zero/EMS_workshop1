@@ -30,7 +30,7 @@ layout (the same capability is a same-named folder in each runtime).
 | **Database**                                       | **Supabase = managed Postgres ONLY**, via the IPv4 **session pooler**; schema owned by **Alembic**                                                                                                                                                                                                                                           | **NOT** Supabase-native: no RLS, no GoTrue, no PostgREST, no Edge Functions, no pgTAP, no `supabase/` dir |
 | **Auth**                                           | **Custom FastAPI JWT** — name/PIN login, PBKDF2-hashed PIN, `token_version` revocation, per-IP throttle + lockout (`backend/app/features/identity/`). Authorization enforced in the **service layer** (`CurrentPrincipal`/`CurrentManager`). Roles: `tech`, `manager`. (The ops console is gated separately by a shared proxy token, not a DB role.)                                    | **NOT** Supabase GoTrue                                                                                   |
 | **Media bytes**                                    | **Cloudflare R2**, signed PUT, private bucket + signed GET ($0 egress). Phone never holds R2 creds                                                                                                                                                                                                                                           | **NOT** Supabase Storage                                                                                  |
-| **Offline (mobile)**                               | **Hand-rolled**: jobs outbox (`technician-app/src/lib/outbox.ts`, `outboxSync.ts`), attendance punch queue + geofence-presence queue (`technician-app/src/features/attendance/{queue,sync,punch}.ts`, `{presenceQueue,presenceSync}.ts`), read cache (`lib/jobsCache.ts`) — all tested in plain Jest by mocking AsyncStorage/NetInfo/jobsApi | **NOT** WatermelonDB / Realm / a sync engine                                                              |
+| **Offline (mobile)**                               | **Hand-rolled**: jobs outbox (`technician-app/src/lib/outbox.ts`, `outboxSync.ts` — incl. the idempotent `create` kind), attendance punch queue + geofence-presence queue (`technician-app/src/features/attendance/{queue,sync,punch}.ts`, `{presenceQueue,presenceSync}.ts`), travel-breadcrumb queue (`features/jobs/{travelQueue,travelSync,travelTracker}.ts`), pending-media queue (`features/media/pendingMedia.ts` — voice notes waiting for their offline-created job), read cache (`lib/jobsCache.ts`) — all tested in plain Jest by mocking AsyncStorage/NetInfo/jobsApi | **NOT** WatermelonDB / Realm / a sync engine                                                              |
 | **Sync model**                                     | Server is source of truth; client reconciles the returned row. Safety = **idempotency** (`client_id` dedupe) + **atomic conditional UPDATE** server-side (jobs `try_claim`)                                                                                                                                                                  | **NOT** bidirectional pull/push with conflict resolution                                                  |
 | **Push**                                           | Firebase FCM                                                                                                                                                                                                                                                                                                                                 | —                                                                                                         |
 | **Deploy**                                         | **Railway**, **manual `railway up`** (NOT GitHub-connected) — three services: `efficient-tenderness` (backend), `web`, `ops`. Mobile via **EAS Build**                                                                                                                                                                                       | not auto-deploy on merge                                                                                  |
@@ -84,14 +84,16 @@ layout (the same capability is a same-named folder in each runtime).
   `no-restricted-imports`); a new edge must be added to the allow-list consciously.
 - **The outbox never deletes a write.** Success removes; definitive 4xx → visible "failed" list;
   anything ambiguous (offline/5xx/timeout) is kept and retried. Don't "simplify" this away. The
-  attendance **punch and presence** queues carry the *same* contract (see
-  `lib/syncClassification.ts`, shared with the jobs outbox). On-duty **pings are the one
-  exception — deliberately droppable**: a definitive-4xx ping batch is dropped (coverage degrades
-  to an honest `no_data` gap), never parked.
-- **On-duty ping tracking is time-bounded, not just clock-bounded.** Location sampling stops at
-  `config.attendance.maxDutyHours` (14h) even if the tech never clocked out — a forgotten
-  clock-out must not track someone all evening. All privacy layers route through `dutyStatus`
-  (`pingTracker.ts`); don't add a path that samples without it. Ping `captured_at` is likewise
+  attendance **punch and presence** queues and the **pending-media** queue carry the *same*
+  contract (see `lib/syncClassification.ts`, shared with the jobs outbox). On-duty **pings and
+  job-travel breadcrumbs are the exceptions — deliberately droppable**: a definitive-4xx batch is
+  dropped (coverage degrades to an honest `no_data` gap / the fuel estimate stands in), never
+  parked.
+- **Location tracking is time-bounded, not just event-bounded.** On-duty sampling stops at
+  `config.attendance.maxDutyHours` (14h) even if the tech never clocked out, and job-travel
+  breadcrumb sampling stops at `MAX_TRAVEL_MS` (4h) even if the arrival punch never came. All
+  privacy layers route through `dutyStatus` (`pingTracker.ts`) / the travel state
+  (`travelTracker.ts`); don't add a path that samples without them. Ping `captured_at` is likewise
   trust-windowed server-side (rejected outside ~48h back / 2min forward) so it can't be back-dated
   to rewrite an attendance day.
 

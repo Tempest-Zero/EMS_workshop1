@@ -10,7 +10,7 @@
  * never double-records (the backend dedups on it).
  */
 
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, type CompositeScreenProps } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
 import * as ImagePicker from "expo-image-picker";
@@ -18,6 +18,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Linking,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,9 +32,11 @@ import { getLocation } from "../attendance/location";
 import { JobMediaCapture } from "../media/JobMediaCapture";
 import { uploadMedia } from "../media/uploadMedia";
 import { ApiError } from "../../lib/api";
-import { jobsApi, type JobDetail } from "../../lib/jobsApi";
+import { jobsApi, type JobDetail, type TransitionAction } from "../../lib/jobsApi";
 import { cacheStamp, loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
+import { messagingApi, type WhatsAppKind } from "../../lib/messagingApi";
 import { formatPaisa, rupeesToPaisa } from "../../lib/money";
+import type { RootStackParamList } from "../../lib/navigation";
 import {
   discardItem,
   makeItem,
@@ -42,6 +46,8 @@ import {
 } from "../../lib/outbox";
 import { sendOrQueue, type PaymentPayload } from "../../lib/outboxSync";
 import { useJobOutbox } from "../../lib/useJobOutbox";
+import { jobTypeBadge } from "./jobType";
+import { SchedulePickerModal } from "./SchedulePickerModal";
 import type { JobsStackParamList } from "./types";
 
 const OFFLINE_MSG = "Saved offline — will sync when reconnected.";
@@ -54,6 +60,8 @@ function apiDetail(e: ApiError): string | null {
 /** Human label for a queued/failed outbox entry in the overlay lists. */
 function itemLabel(item: OutboxItem): string {
   switch (item.kind) {
+    case "create":
+      return "New job (intake)";
     case "payment": {
       const p = item.payload as PaymentPayload;
       return `Payment ${formatPaisa(p.amountPaisa)} (${p.method})`;
@@ -70,10 +78,22 @@ function itemLabel(item: OutboxItem): string {
       return "Mark Ready";
     case "note":
       return "Note";
+    case "transition": {
+      const a = (item.payload as { action: string }).action;
+      if (a === "wait") return "Put on hold";
+      if (a === "reschedule") return "Reschedule";
+      if (a === "haul") return "Convert to carry-in";
+      return "Status change";
+    }
   }
 }
 
-type Props = NativeStackScreenProps<JobsStackParamList, "JobDetail">;
+// Composite: this screen lives in the Jobs stack but also opens the ROOT
+// stack's arrival-wizard modal (the post-arrival evidence flow).
+type Props = CompositeScreenProps<
+  NativeStackScreenProps<JobsStackParamList, "JobDetail">,
+  NativeStackScreenProps<RootStackParamList>
+>;
 
 type Busy =
   | "note"
@@ -85,6 +105,8 @@ type Busy =
   | "void"
   | "depart"
   | "arrive"
+  | "whatsapp"
+  | "transition"
   | null;
 type PayMethod = "cash" | "card" | "online";
 
@@ -113,6 +135,11 @@ export function JobDetailScreen({ route, navigation }: Props) {
   // Abandon (the no-completion exit the close guard assumes exists).
   const [abandoning, setAbandoning] = useState(false);
   const [abandonReason, setAbandonReason] = useState("");
+
+  // Customer-unreachable actions (hold / reschedule / haul-to-workshop).
+  const [unreachableOpen, setUnreachableOpen] = useState(false);
+  const [holdReason, setHoldReason] = useState("");
+  const [scheduleOpen, setScheduleOpen] = useState(false);
 
   // Set when the detail on screen is the offline cache, not server truth.
   const [cachedAt, setCachedAt] = useState<string | null>(null);
@@ -168,6 +195,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const pendingCompletion = outboxView.queued.some((i) => i.kind === "completion");
   const pendingNegotiate = outboxView.queued.find((i) => i.kind === "negotiate");
   const pendingReady = outboxView.queued.some((i) => i.kind === "ready");
+  const pendingTransition = outboxView.queued.find((i) => i.kind === "transition");
 
   const submitNote = useCallback(async () => {
     const text = note.trim();
@@ -320,6 +348,49 @@ export function JobDetailScreen({ route, navigation }: Props) {
     }
   }, [id, abandonReason, busy]);
 
+  // The customer-unreachable transitions (wait / reschedule / haul). Each rides
+  // the outbox so an offline decision survives; the id is per-action so a
+  // repeated tap is last-write-wins, never a double.
+  const queueTransition = useCallback(
+    async (
+      action: TransitionAction,
+      extra?: { reason?: string; preferred_date?: string; time_window?: string },
+    ) => {
+      if (busy) return;
+      setBusy("transition");
+      setError(null);
+      setInfo(null);
+      try {
+        const detail = await sendOrQueue(
+          makeItem({
+            id: `transition:${action}:${id}`,
+            kind: "transition",
+            jobId: id,
+            payload: { action, ...extra },
+          }),
+          () =>
+            jobsApi.transition(id, action, extra?.reason, {
+              preferred_date: extra?.preferred_date,
+              time_window: extra?.time_window,
+            }),
+        );
+        if (detail) setJob(detail);
+        else setInfo(OFFLINE_MSG);
+        setUnreachableOpen(false);
+        setHoldReason("");
+      } catch (e) {
+        if (e instanceof ApiError) {
+          setError(apiDetail(e) ?? "Couldn't update the job — try again.");
+        } else {
+          setError("Couldn't update the job — try again.");
+        }
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, busy],
+  );
+
   const negotiateBill = useCallback(async () => {
     const paisa = rupeesToPaisa(negotiate);
     if (paisa <= 0 || busy) return;
@@ -428,6 +499,40 @@ export function JobDetailScreen({ route, navigation }: Props) {
     [id, voidReason, busy],
   );
 
+  // v1 WhatsApp is click-to-chat: the backend composes the text + wa.me link
+  // (consent-gated), the phone opens WhatsApp, and send-log witnesses it on
+  // the job timeline. Online-only by nature — there is no offline wa.me.
+  const sendWhatsApp = useCallback(
+    async (kind: WhatsAppKind) => {
+      if (busy) return;
+      setBusy("whatsapp");
+      setError(null);
+      setInfo(null);
+      try {
+        const preview = await messagingApi.preview(id, kind);
+        if (!preview.consent) {
+          setError("No WhatsApp consent on record for this customer.");
+          return;
+        }
+        if (!preview.wa_me_url) {
+          setError("No WhatsApp-capable phone number on this job.");
+          return;
+        }
+        await Linking.openURL(preview.wa_me_url);
+        setJob(await messagingApi.logSend(id, kind));
+      } catch (e) {
+        if (e instanceof ApiError) {
+          setError(apiDetail(e) ?? "Couldn't prepare the WhatsApp message — try again.");
+        } else {
+          setError("Couldn't open WhatsApp — check your connection and try again.");
+        }
+      } finally {
+        setBusy(null);
+      }
+    },
+    [id, busy],
+  );
+
   const recordPunch = useCallback(
     async (kind: "depart_workshop" | "arrive_customer") => {
       if (busy) return;
@@ -492,16 +597,31 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const hasBill = job.bill_original_paisa != null;
   const negotiatePaisa = rupeesToPaisa(negotiate);
   const payPaisa = rupeesToPaisa(payAmount);
-  const isVisit = job.job_type === "home-visit";
+  // A "visit" is any job the shop travels for — home-visit AND pickup-delivery
+  // (the shop drives both ways). Only a carry-in has no travel leg. Matches the
+  // backend's create-time rule.
+  const isVisit = job.job_type !== "carry-in";
   const hasDepart = job.locations.some((l) => l.kind === "depart_workshop");
   const hasArrive = job.locations.some((l) => l.kind === "arrive_customer");
+  // Auto fuel that resolved to a near-zero route on a travel job → almost
+  // always a missed depart punch; nudge toward a manual fuel figure.
+  const fuelAuto =
+    job.completion?.fuel_basis === "estimate" || job.completion?.fuel_basis === "breadcrumbs";
+  const fuelSuspect = isVisit && fuelAuto && (job.completion?.fuel_distance_m ?? 0) < 1000;
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <View style={styles.headerRow}>
         <Text style={styles.token}>#{job.token}</Text>
-        <View style={[styles.chip, { backgroundColor: statusColor + "1a" }]}>
-          <Text style={[styles.chipText, { color: statusColor }]}>{job.status}</Text>
+        <View style={styles.headerChips}>
+          <View style={styles.typeChip}>
+            <Text style={styles.typeChipText}>
+              {jobTypeBadge(job.job_type).icon} {jobTypeBadge(job.job_type).label}
+            </Text>
+          </View>
+          <View style={[styles.chip, { backgroundColor: statusColor + "1a" }]}>
+            <Text style={[styles.chipText, { color: statusColor }]}>{job.status}</Text>
+          </View>
         </View>
       </View>
       <Text style={styles.appliance}>
@@ -529,6 +649,41 @@ export function JobDetailScreen({ route, navigation }: Props) {
         <Text style={styles.label}>PROBLEM</Text>
         <Text style={styles.value}>{job.problem}</Text>
       </View>
+
+      {/* The hub flow: travel first (home visits), then the on-site wizard.
+          "Arrived" is server truth — the arrive_customer punch — not a nav
+          param, so a killed app or second device shows the same state. */}
+      {open ? (
+        <View style={styles.card}>
+          {isVisit && !hasArrive ? (
+            <>
+              <Text style={styles.label}>TRAVEL</Text>
+              <Text style={styles.sub}>
+                Head out, then punch your arrival at the customer's door.
+              </Text>
+              <Pressable
+                style={styles.travelBtn}
+                onPress={() => navigation.navigate("Travel", { id, token })}
+              >
+                <Text style={styles.travelBtnText}>🚀 START TRAVEL</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text style={styles.label}>{isVisit ? "ON-SITE WORK" : "WORKSHOP WORK"}</Text>
+              <Text style={styles.sub}>
+                Capture the evidence and diagnosis with the step-by-step wizard.
+              </Text>
+              <Pressable
+                style={styles.wizardBtn}
+                onPress={() => navigation.navigate("ArrivalWizard", { id, token })}
+              >
+                <Text style={styles.btnDarkText}>📋 Open Job Wizard</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.label}>ACTIONS</Text>
@@ -633,6 +788,15 @@ export function JobDetailScreen({ route, navigation }: Props) {
               <Text style={styles.abandonLinkText}>Abandon job (nothing to bill)…</Text>
             </Pressable>
           )
+        ) : null}
+
+        {open && isVisit && !abandoning ? (
+          <Pressable style={styles.unreachableLink} onPress={() => setUnreachableOpen(true)}>
+            <Text style={styles.unreachableLinkText}>Customer unreachable…</Text>
+          </Pressable>
+        ) : null}
+        {pendingTransition ? (
+          <Text style={styles.pendingNote}>{itemLabel(pendingTransition)} · syncing…</Text>
         ) : null}
       </View>
 
@@ -812,6 +976,18 @@ export function JobDetailScreen({ route, navigation }: Props) {
           </View>
         ) : null}
 
+        {fuelSuspect ? (
+          <Pressable
+            style={styles.fuelWarn}
+            onPress={() => navigation.navigate("CompleteJob", { id, token })}
+          >
+            <Text style={styles.fuelWarnText}>
+              ⚠ Route looks wrong ({((job.completion?.fuel_distance_m ?? 0) / 1000).toFixed(1)} km) —
+              tap to fix the fuel
+            </Text>
+          </Pressable>
+        ) : null}
+
         {open ? (
           <Pressable
             style={styles.completeBtn}
@@ -823,6 +999,48 @@ export function JobDetailScreen({ route, navigation }: Props) {
           </Pressable>
         ) : null}
       </View>
+
+      {open && job.customer_phone ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>CUSTOMER MESSAGING · WHATSAPP</Text>
+          <Text style={styles.sub}>
+            Opens WhatsApp with the composed message; the send is logged on the timeline.
+            Consent-gated — blocked unless the customer opted in.
+          </Text>
+          <View style={styles.statusRow}>
+            {hasBill ? (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("bill")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>{busy === "whatsapp" ? "…" : "Send bill"}</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("intake_ack")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>
+                  {busy === "whatsapp" ? "…" : "Acknowledge intake"}
+                </Text>
+              </Pressable>
+            )}
+            {isReady ? (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("ready")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>
+                  {busy === "whatsapp" ? "…" : "Ready for pickup"}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
 
       {hasBill || job.payments.length > 0 || pendingPayments.length > 0 ? (
         <View style={styles.card}>
@@ -964,6 +1182,90 @@ export function JobDetailScreen({ route, navigation }: Props) {
           ))
         )}
       </View>
+
+      {/* Customer-unreachable sheet: hold / reschedule / haul-to-workshop. */}
+      <Modal
+        visible={unreachableOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setUnreachableOpen(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setUnreachableOpen(false)} />
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>Customer unreachable</Text>
+            <Text style={styles.sheetSub}>
+              Not home or not answering — keep the job honest without abandoning it.
+            </Text>
+
+            <Text style={styles.sheetSectionLabel}>PUT ON HOLD</Text>
+            <TextInput
+              style={styles.input}
+              value={holdReason}
+              onChangeText={setHoldReason}
+              placeholder="Why is it on hold? (required)"
+              editable={busy !== "transition"}
+            />
+            <Pressable
+              style={[
+                styles.btn,
+                styles.btnDark,
+                (busy === "transition" || !holdReason.trim()) && styles.btnBusy,
+              ]}
+              onPress={() => void queueTransition("wait", { reason: holdReason.trim() })}
+              disabled={busy === "transition" || !holdReason.trim()}
+            >
+              <Text style={styles.btnDarkText}>
+                {busy === "transition" ? "…" : "Put on hold"}
+              </Text>
+            </Pressable>
+
+            <View style={styles.sheetDivider} />
+            <Pressable
+              style={[styles.btn, styles.btnOutline]}
+              onPress={() => setScheduleOpen(true)}
+              disabled={busy === "transition"}
+            >
+              <Text style={styles.btnOutlineText}>Reschedule the visit…</Text>
+            </Pressable>
+
+            <View style={styles.sheetDivider} />
+            <Pressable
+              style={[styles.btn, styles.btnOutline]}
+              disabled={busy === "transition"}
+              onPress={() =>
+                Alert.alert(
+                  "Convert to carry-in?",
+                  "The customer will bring the unit to the workshop. This drops the visit — the travel flow disappears.",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    { text: "Convert", onPress: () => void queueTransition("haul") },
+                  ],
+                )
+              }
+            >
+              <Text style={styles.btnOutlineText}>Convert to carry-in (haul to shop)</Text>
+            </Pressable>
+
+            <Pressable style={styles.sheetCancel} onPress={() => setUnreachableOpen(false)}>
+              <Text style={styles.sheetCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <SchedulePickerModal
+        visible={scheduleOpen}
+        title="Reschedule visit"
+        onClose={() => setScheduleOpen(false)}
+        onConfirm={(preferredDateISO, windowLabel) => {
+          setScheduleOpen(false);
+          void queueTransition("reschedule", {
+            preferred_date: preferredDateISO,
+            time_window: windowLabel,
+          });
+        }}
+      />
     </ScrollView>
   );
 }
@@ -976,9 +1278,19 @@ const styles = StyleSheet.create({
   inlineError: { color: "#b91c1c", fontSize: 13, fontWeight: "600", marginTop: 8 },
   inlineInfo: { color: "#b45309", fontSize: 13, fontWeight: "600", marginTop: 8 },
   headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerChips: { flexDirection: "row", alignItems: "center", gap: 6 },
   token: { fontSize: 24, fontWeight: "800", color: "#0f172a" },
   chip: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 },
   chipText: { fontSize: 12, fontWeight: "800", textTransform: "capitalize" },
+  typeChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  typeChipText: { fontSize: 12, fontWeight: "800", color: "#475569" },
   appliance: { fontSize: 13, fontWeight: "600", color: "#64748b", marginTop: 2, marginBottom: 12 },
   card: {
     backgroundColor: "white",
@@ -1011,6 +1323,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   completeBtnText: { color: "white", fontWeight: "800", fontSize: 15 },
+  fuelWarn: {
+    marginTop: 12,
+    backgroundColor: "#fef3c7",
+    borderColor: "#f59e0b",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  fuelWarnText: { color: "#92400e", fontSize: 13, fontWeight: "700" },
   input: {
     backgroundColor: "#f8fafc",
     borderColor: "#cbd5e1",
@@ -1050,6 +1371,30 @@ const styles = StyleSheet.create({
   voidBox: { marginTop: 10, backgroundColor: "#fef2f2", borderRadius: 8, padding: 10 },
   abandonLink: { marginTop: 10, alignItems: "center", paddingVertical: 6 },
   abandonLinkText: { color: "#b91c1c", fontWeight: "700", fontSize: 13 },
+  unreachableLink: { marginTop: 4, alignItems: "center", paddingVertical: 6 },
+  unreachableLinkText: { color: "#b45309", fontWeight: "700", fontSize: 13 },
+  sheetOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" },
+  sheetBackdrop: { ...StyleSheet.absoluteFillObject },
+  sheet: {
+    backgroundColor: "white",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 32,
+    gap: 8,
+  },
+  sheetTitle: { fontSize: 20, fontWeight: "800", color: "#0f172a" },
+  sheetSub: { fontSize: 13, color: "#64748b", marginBottom: 6 },
+  sheetSectionLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#94a3b8",
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+  sheetDivider: { height: 1, backgroundColor: "#f1f5f9", marginVertical: 6 },
+  sheetCancel: { alignItems: "center", paddingVertical: 10, marginTop: 4 },
+  sheetCancelText: { color: "#64748b", fontWeight: "700", fontSize: 14 },
   offlineBanner: {
     backgroundColor: "#fef3c7",
     borderColor: "#fde68a",
@@ -1083,4 +1428,20 @@ const styles = StyleSheet.create({
   failedReason: { fontSize: 11, color: "#b91c1c", marginTop: 1 },
   failedAction: { paddingHorizontal: 8, paddingVertical: 4 },
   retryText: { color: "#1d4ed8", fontWeight: "800", fontSize: 13 },
+  travelBtn: {
+    marginTop: 12,
+    backgroundColor: "#0f172a",
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  travelBtnText: { color: "white", fontSize: 16, fontWeight: "800", letterSpacing: 0.5 },
+  wizardBtn: {
+    marginTop: 12,
+    backgroundColor: "#2563eb",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  btnWhatsApp: { backgroundColor: "#16a34a" },
 });

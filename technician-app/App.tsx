@@ -1,33 +1,33 @@
 import { Feather } from "@expo/vector-icons";
 import { NavigationContainer } from "@react-navigation/native";
-import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ClockScreen } from "./src/features/attendance/ClockScreen";
 import { useAttendanceBackground } from "./src/features/attendance/useAttendanceBackground";
 import { AuthProvider, useAuth } from "./src/features/auth/AuthContext";
 import { LoginScreen } from "./src/features/auth/LoginScreen";
+import { DashboardScreen } from "./src/features/dashboard/DashboardScreen";
+import { ArrivalJobBillScreen } from "./src/features/jobs/arrival-job/ArrivalJobBillScreen";
+import { ArrivalJobWizard } from "./src/features/jobs/arrival-job/ArrivalJobWizard";
 import { JobsStack } from "./src/features/jobs/JobsStack";
+import { syncTravelSamples } from "./src/features/jobs/travelSync";
+import { ensureTravelTracking } from "./src/features/jobs/travelTracker";
+import { usePendingMediaDrain } from "./src/features/media/usePendingMediaDrain";
 import { OnboardingScreen } from "./src/features/onboarding/OnboardingScreen";
 import { isOnboarded } from "./src/features/onboarding/permissions";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
-import { navigationRef } from "./src/lib/navigation";
+import { navigationRef, type RootStackParamList } from "./src/lib/navigation";
 import { initSentry } from "./src/lib/sentry";
 import { useOutboxSync } from "./src/lib/useOutboxSync";
 import { usePushRegistration } from "./src/lib/usePushRegistration";
 
 initSentry();
 
-const Tab = createBottomTabNavigator();
-
-const TAB_ICON: Record<string, keyof typeof Feather.glyphMap> = {
-  "My Jobs": "clipboard",
-  Clock: "clock",
-  Profile: "user",
-};
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 // Shown app-wide while job writes (completion / cash / punches) are queued
 // offline (amber) or were rejected and need the technician's decision (red —
@@ -49,29 +49,62 @@ function OfflineBanner({ queued, failed }: { queued: number; failed: number }) {
   );
 }
 
-function Tabs() {
+// The authed app: a native stack rooted at the Dashboard hub (the old bottom
+// tabs became hub cards). The arrival wizard + bill sheet are root-level
+// modals so the travel flow and the jobs stack can both open them.
+function AuthedStack() {
   // Mounted once for the whole authenticated app so the outbox keeps draining
   // even after the tech leaves the screen that queued a write.
   const { queued, failed } = useOutboxSync();
+  const { technician } = useAuth();
   usePushRegistration();
   useAttendanceBackground();
+  usePendingMediaDrain();
+
+  // Travel breadcrumbs: reconcile the OS task on launch/foreground (re-arm
+  // after an app kill, stop an expired/orphaned session) and drain the queue.
+  useEffect(() => {
+    void ensureTravelTracking();
+    if (technician) void syncTravelSamples(technician.id);
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "active") {
+        void ensureTravelTracking();
+        if (technician) void syncTravelSamples(technician.id);
+      }
+    });
+    return () => sub.remove();
+  }, [technician]);
+
   return (
     <View style={styles.flex}>
       {queued > 0 || failed > 0 ? <OfflineBanner queued={queued} failed={failed} /> : null}
-      <Tab.Navigator
-        screenOptions={({ route }) => ({
-          headerShown: route.name !== "My Jobs", // the Jobs stack draws its own headers
-          tabBarActiveTintColor: "#0f172a",
-          tabBarInactiveTintColor: "#94a3b8",
-          tabBarIcon: ({ color, size }) => (
-            <Feather name={TAB_ICON[route.name] ?? "square"} size={size} color={color} />
-          ),
-        })}
+      <Stack.Navigator
+        initialRouteName="DashboardHub"
+        screenOptions={{
+          headerStyle: { backgroundColor: "#1e293b" },
+          headerTintColor: "#ffffff",
+          headerTitleStyle: { fontWeight: "600" },
+        }}
       >
-        <Tab.Screen name="My Jobs" component={JobsStack} />
-        <Tab.Screen name="Clock" component={ClockScreen} />
-        <Tab.Screen name="Profile" component={ProfileScreen} />
-      </Tab.Navigator>
+        <Stack.Screen
+          name="DashboardHub"
+          component={DashboardScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen name="My Jobs" component={JobsStack} options={{ headerShown: false }} />
+        <Stack.Screen name="Clock" component={ClockScreen} options={{ title: "Attendance" }} />
+        <Stack.Screen name="Profile" component={ProfileScreen} options={{ title: "Profile" }} />
+        <Stack.Screen
+          name="ArrivalWizard"
+          component={ArrivalJobWizard}
+          options={{ headerShown: false, presentation: "modal" }}
+        />
+        <Stack.Screen
+          name="BillSheet"
+          component={ArrivalJobBillScreen}
+          options={{ headerShown: false }}
+        />
+      </Stack.Navigator>
     </View>
   );
 }
@@ -109,7 +142,7 @@ function AuthedApp() {
   }, []);
   if (onboarded === null) return <Spinner />;
   if (!onboarded) return <OnboardingScreen onDone={() => setOnboarded(true)} />;
-  return <Tabs />;
+  return <AuthedStack />;
 }
 
 function Root() {

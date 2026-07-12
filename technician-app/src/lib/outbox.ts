@@ -21,13 +21,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createMutex } from "./mutex";
 
 export type OutboxKind =
+  | "create"
   | "completion"
   | "payment"
   | "void"
   | "negotiate"
   | "location"
   | "ready"
-  | "note";
+  | "note"
+  | "transition";
 
 export type OutboxStatus = "queued" | "failed";
 

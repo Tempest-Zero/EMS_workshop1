@@ -10,7 +10,7 @@ half of a vertical slice whose other half lives in `backend/app/features/`.
 
 ```
 technician-app/
-  App.tsx                       # root: auth gate → tabs (My Jobs · Clock · Profile)
+  App.tsx                       # root: auth gate → dashboard-hub stack (Jobs · Clock · Profile + wizard modals)
   index.ts                      # Expo entry — registerRootComponent
   app.json                      # Expo config (Android-only, permissions)
   eas.json                      # EAS build profiles (development = APK, preview = demo)
