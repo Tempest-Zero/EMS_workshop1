@@ -11,17 +11,43 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
-from app.features.customers.schemas import ConsentRequest, ConsentState
-from app.features.customers.service import CustomerNotFoundError, record_consent
+from app.features.customers.schemas import ConsentRequest, ConsentState, CustomerLookupOut
+from app.features.customers.service import (
+    CustomerNotFoundError,
+    lookup_customer_by_phone,
+    record_consent,
+)
 from app.features.identity.deps import CurrentPrincipal
+from app.shared.tenancy import DEFAULT_SHOP_ID
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+ShopId = Annotated[str, Query(max_length=64)]
+
+
+@router.get(
+    "/lookup",
+    response_model=CustomerLookupOut | None,
+    summary="Repeat-customer lookup by phone (any authenticated caller)",
+)
+async def lookup_customer(
+    session: SessionDep,
+    principal: CurrentPrincipal,
+    phone: Annotated[str, Query(max_length=32)],
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> CustomerLookupOut | None:
+    # The intake "is this a repeat customer?" chip. Returns null for an unknown,
+    # unrecognizable, or ambiguous (household-shared) number — never an error,
+    # so the phone can call it on every keystroke without special-casing 404s.
+    customer = await lookup_customer_by_phone(session, phone, shop_id)
+    if customer is None:
+        return None
+    return CustomerLookupOut(id=customer.id, full_name=customer.full_name)
 
 
 @router.post(
