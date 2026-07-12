@@ -66,6 +66,7 @@ def _persist(job: JobRow) -> JobRow:
 def svc() -> Iterator[tuple[JobService, MagicMock]]:
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
+    repo.get_by_client_id = AsyncMock(return_value=None)
     repo.list_jobs = AsyncMock(return_value=[])
     repo.next_token = AsyncMock(return_value=1052)
     repo.create = AsyncMock(side_effect=_persist)
@@ -152,7 +153,104 @@ async def test_create_carry_in_drops_visit_only_fields(svc: tuple[JobService, Ma
         )
     )
     assert job.customer_address is None
+
+
+async def test_create_dedupes_on_client_id(svc: tuple[JobService, MagicMock]) -> None:
+    """A replayed offline create (same client_id) returns the existing job —
+    no second row, no second token, no duplicate 'create' event."""
+    service, repo = svc
+    client_id = uuid4()
+    existing = _open_job()
+    existing.client_id = client_id
+    repo.get_by_client_id.return_value = existing
+
+    job = await service.create_job(
+        JobCreate(customer_name="Yusuf", appliance_type="Split AC", client_id=client_id)
+    )
+
+    assert job.id == existing.id
+    repo.create.assert_not_awaited()
+    repo.add_event.assert_not_awaited()
+
+
+async def test_create_client_id_race_recovers_as_dedupe(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """Two concurrent sends of one queued create: the loser's IntegrityError on
+    uq_job_client_id resolves to the winner's row, never a 500 or a retry."""
+    service, repo = svc
+    client_id = uuid4()
+    winner = _open_job()
+    winner.client_id = client_id
+    # Fast-path miss, then the post-IntegrityError re-check finds the winner.
+    repo.get_by_client_id.side_effect = [None, winner]
+    repo.create.side_effect = IntegrityError("dup", None, Exception("uq_job_client_id"))
+
+    job = await service.create_job(
+        JobCreate(customer_name="Yusuf", appliance_type="Split AC", client_id=client_id)
+    )
+
+    assert job.id == winner.id
+    repo.rollback.assert_awaited_once()
+    repo.add_event.assert_not_awaited()
+
+
+async def test_create_home_visit_stores_home_pin(svc: tuple[JobService, MagicMock]) -> None:
+    service, _ = svc
+    job = await service.create_job(
+        JobCreate(
+            job_type="home-visit",
+            customer_name="Yusuf",
+            customer_address="House 31, DHA",
+            appliance_type="Split AC",
+            customer_lat=24.8607,
+            customer_lng=67.0011,
+        )
+    )
+    assert job.customer_lat == pytest.approx(24.8607)
+    assert job.customer_lng == pytest.approx(67.0011)
+
+
+async def test_create_carry_in_drops_home_pin(svc: tuple[JobService, MagicMock]) -> None:
+    """The pin rides the same visit-only rule as the address."""
+    service, _ = svc
+    job = await service.create_job(
+        JobCreate(
+            job_type="carry-in",
+            customer_name="Zainab",
+            appliance_type="Washing Machine",
+            customer_lat=24.8607,
+            customer_lng=67.0011,
+        )
+    )
+    assert job.customer_lat is None
+    assert job.customer_lng is None
     assert job.time_window is None
+
+
+async def test_create_pickup_delivery_keeps_visit_fields(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """Pickup-delivery is a travel job too — the shop drives both ways — so it
+    keeps the address, home pin and schedule exactly like a home-visit. Only a
+    carry-in drops them."""
+    service, _ = svc
+    job = await service.create_job(
+        JobCreate(
+            job_type="pickup-delivery",
+            customer_name="Yusuf",
+            customer_address="House 31, DHA",
+            appliance_type="Washing Machine",
+            time_window="11 AM – 1 PM",
+            customer_lat=24.8607,
+            customer_lng=67.0011,
+        )
+    )
+    assert job.job_type == "pickup-delivery"
+    assert job.customer_address == "House 31, DHA"
+    assert job.time_window == "11 AM – 1 PM"
+    assert job.customer_lat == pytest.approx(24.8607)
+    assert job.customer_lng == pytest.approx(67.0011)
 
 
 async def test_get_missing_raises_not_found(svc: tuple[JobService, MagicMock]) -> None:
@@ -938,6 +1036,82 @@ def test_derive_route_ignores_return_leg_samples() -> None:
     assert route.sample_count == 0
 
 
+# ── Workshop-origin fuel fallback (forgot-to-punch robustness) ────────────────
+# The workshop fence centre sits at the depart-pin coordinate; the customer is
+# ~1112 m north (0.01° lat).
+_WORKSHOP = (24.86, 67.0, 150)  # (center_lat, center_lng, radius_m)
+_STRAIGHT_WS = haversine_m(24.86, 67.0, 24.87, 67.0)
+
+
+def _arrive_only(arrive_at: datetime) -> list[JobLocation]:
+    arrive = _loc("arrive_customer", 24.87, 67.0)
+    arrive.captured_at = arrive_at
+    return [arrive]
+
+
+def test_derive_route_missing_depart_uses_workshop_origin() -> None:
+    """Forgot to punch out: only the arrival pin exists. With the workshop
+    circle we still bill an honest straight-line estimate from the shop."""
+    locations = _arrive_only(_T0 + timedelta(minutes=15))
+    route = derive_route(
+        locations, [], rate_paisa_per_km=2000, circuity_factor=1.35, workshop=_WORKSHOP
+    )
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.distance_m == pytest.approx(_STRAIGHT_WS * 1.35)
+    assert route.sample_count == 0
+
+
+def test_derive_route_missing_depart_no_workshop_is_none() -> None:
+    """No depart pin and no workshop → today's behaviour (no route at all)."""
+    locations = _arrive_only(_T0 + timedelta(minutes=15))
+    assert derive_route(locations, [], rate_paisa_per_km=2000, circuity_factor=1.35) is None
+
+
+def test_derive_route_colocated_depart_falls_back_to_workshop() -> None:
+    """Both ends punched at the customer (bogus depart): without the fallback
+    the straight line collapses to ~0 and bills no fuel. The workshop origin
+    restores an honest estimate."""
+    depart = _loc("depart_workshop", 24.87, 67.0)  # co-located with the customer
+    depart.captured_at = _T0 - timedelta(minutes=1)
+    arrive = _loc("arrive_customer", 24.87, 67.0)
+    arrive.captured_at = _T0 + timedelta(minutes=15)
+    route = derive_route(
+        [depart, arrive], [], rate_paisa_per_km=2000, circuity_factor=1.35, workshop=_WORKSHOP
+    )
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.distance_m == pytest.approx(_STRAIGHT_WS * 1.35)  # not ~0
+
+
+def test_derive_route_normal_depart_unaffected_by_workshop() -> None:
+    """A depart punch at the workshop is trusted as the origin — passing the
+    circle changes nothing for the honest path."""
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    route = derive_route(
+        pins, _drive(3), rate_paisa_per_km=2000, circuity_factor=1.35, workshop=_WORKSHOP
+    )
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.distance_m == pytest.approx(_STRAIGHT_WS * 1.35)
+
+
+def test_derive_route_breadcrumbs_still_win_with_workshop() -> None:
+    """Genuine breadcrumbs from a workshop-anchored depart still upgrade the
+    basis — the fallback never suppresses a real trail."""
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    route = derive_route(
+        pins,
+        _drive(11, zigzag=True),
+        rate_paisa_per_km=2000,
+        circuity_factor=1.35,
+        workshop=_WORKSHOP,
+    )
+    assert route is not None
+    assert route.basis == "breadcrumbs"
+    assert route.sample_count == 11
+
+
 async def test_record_travel_samples_requires_assignment(
     svc: tuple[JobService, MagicMock],
 ) -> None:
@@ -1070,6 +1244,30 @@ async def test_completion_autofill_zero_without_route(svc: tuple[JobService, Mag
     assert completion.fuel_paisa == 0
     assert completion.fuel_basis is None
     repo.list_travel_samples.assert_not_awaited()  # no pins → the query is skipped
+
+
+async def test_completion_uses_workshop_origin_when_depart_missing(
+    svc: tuple[JobService, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forgot to punch out — only the arrival pin exists. The completion fuel
+    falls back to the workshop-origin estimate instead of silently billing 0."""
+    from app.features.jobs import service as jobs_service
+
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    arrive = _loc("arrive_customer", 24.87, 67.0)
+    arrive.captured_at = _now()
+    repo.list_locations.return_value = [arrive]  # no depart pin
+    monkeypatch.setattr(jobs_service, "workshop_circle", AsyncMock(return_value=(24.86, 67.0, 150)))
+
+    body = CompletionRequest(time_spent_mins=60)  # fuel omitted → auto-derive
+    await service.submit_completion(job_id=job.id, shop_id="default", body=body, actor="t1")
+
+    completion = repo.add_completion.await_args.args[0]
+    assert completion.fuel_basis == "estimate"
+    assert completion.fuel_paisa > 0  # 0 without the workshop fallback
+    repo.list_travel_samples.assert_not_awaited()  # no depart pin → no breadcrumb query
 
 
 async def test_completion_resubmit_derives_with_the_snapshot_rate(

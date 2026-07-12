@@ -37,6 +37,11 @@ class JobRepository:
     async def get(self, job_id: UUID) -> Job | None:
         return await self._session.get(Job, job_id)
 
+    async def get_by_client_id(self, client_id: UUID) -> Job | None:
+        """Idempotent-create lookup (0036): the job a queued create already made."""
+        result = await self._session.execute(select(Job).where(Job.client_id == client_id))
+        return result.scalar_one_or_none()
+
     async def rollback(self) -> None:
         """Roll back the in-flight transaction (IntegrityError recovery)."""
         await self._session.rollback()

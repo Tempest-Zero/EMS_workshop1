@@ -29,3 +29,12 @@ class ConsentState(BaseModel):
     customer_id: UUID
     whatsapp_opt_in_at: datetime | None = None
     consent_contact_at: datetime | None = None
+
+
+class CustomerLookupOut(BaseModel):
+    """The minimal "is this a repeat customer?" answer for the intake phone
+    lookup. Deliberately thin — just enough to prefill the name and show a
+    recognition chip; no phone list, no consent, no history."""
+
+    id: UUID
+    full_name: str

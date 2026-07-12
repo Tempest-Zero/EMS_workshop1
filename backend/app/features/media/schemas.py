@@ -12,9 +12,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# before/after = repair evidence; remark = voice note (audio); closing = the
-# required closing video on job closure (Phase 3).
-Phase = Literal["before", "after", "remark", "closing"]
+# before/after = repair evidence; condition = arrival condition snaps (gallery
+# family, F8); remark = the completion voice note (audio); intake/approval =
+# the intake problem + estimate voice notes (audio — referenced from their
+# owning forms, never the gallery); closing = the required closing video on
+# job closure (Phase 3). The DB check (0036) is the same set.
+Phase = Literal["before", "after", "remark", "closing", "condition", "approval", "intake"]
 MediaType = Literal["video", "photo", "audio"]
 MediaStatus = Literal["pending", "uploaded"]
 
@@ -80,9 +83,11 @@ class MediaItem(BaseModel):
 
 class MediaList(BaseModel):
     """Grouped media response for `GET /api/jobs/{job_id}/media`. ``closing`` is
-    the closure video (Phase 3); ``remark`` audio is intentionally not surfaced
-    here (it's played from the completion form, not the evidence gallery)."""
+    the closure video (Phase 3); ``condition`` is the arrival condition snaps
+    (F8). ``remark``/``intake``/``approval`` audio is intentionally not
+    surfaced here (each is played from its owning form, not the gallery)."""
 
     before: list[MediaItem]
     after: list[MediaItem]
     closing: list[MediaItem] = []
+    condition: list[MediaItem] = []

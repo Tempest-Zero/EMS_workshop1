@@ -24,9 +24,16 @@ class JobCreate(BaseModel):
     the server."""
 
     job_type: JobType = "carry-in"
+    # Idempotency (0036): the phone's outbox sends the same client-minted UUID
+    # on every retry of one queued create — a replay returns the existing job.
+    client_id: UUID | None = None
     customer_name: str = Field(..., min_length=1, max_length=128)
     customer_phone: str | None = Field(default=None, max_length=32)
     customer_address: str | None = Field(default=None, max_length=256)
+    # Home pin dropped on the intake map (0036) — home-visit jobs; the travel
+    # screen's map + navigation hand-off read it back.
+    customer_lat: float | None = Field(default=None, ge=-90, le=90)
+    customer_lng: float | None = Field(default=None, ge=-180, le=180)
     appliance_type: str = Field(..., min_length=1, max_length=64)
     appliance_brand: str | None = Field(default=None, max_length=64)
     appliance_model: str | None = Field(default=None, max_length=64)
@@ -296,6 +303,14 @@ class Job(BaseModel):
     customer_name: str
     customer_phone: str | None = None
     customer_address: str | None = None
+    # Home pin from the intake map (0036) — the travel screen's map reads it.
+    customer_lat: float | None = None
+    customer_lng: float | None = None
+    # Echoed so an offline-queued create can reconcile to its server row.
+    client_id: UUID | None = None
+    # Category slug (0023) — the phone scopes its fault/action/parts pickers
+    # to it (echoed since 0036).
+    category_id: str | None = None
     appliance_type: str
     appliance_brand: str | None = None
     appliance_model: str | None = None

@@ -36,10 +36,16 @@ def normalize_phone_e164(raw: str | None) -> str | None:
     return to_e164_pk(raw)
 
 
-async def match_customer_by_phone(
+async def lookup_customer_by_phone(
     session: AsyncSession, raw_phone: str | None, shop_id: str
-) -> UUID | None:
-    """The customer id iff exactly one shop customer owns this phone, else None."""
+) -> Customer | None:
+    """The customer row iff exactly one shop customer owns this phone, else None.
+
+    Same rule as ``match_customer_by_phone`` (0 or ambiguous → None), but returns
+    the resolved winner row so callers can show the customer's name (the intake
+    "is this a repeat customer?" lookup). Merge losers are followed to the
+    winner via ``resolve_customer``.
+    """
     normalized = normalize_phone_e164(raw_phone)
     if normalized is None:
         return None
@@ -52,9 +58,17 @@ async def match_customer_by_phone(
     # Resolve merge pointers to the winner, then dedupe: a household with two
     # customer rows sharing a number is ambiguous → no match.
     winners = {c.merged_into_customer_id or c.id for c in customers}
-    if len(winners) == 1:
-        return next(iter(winners))
-    return None
+    if len(winners) != 1:
+        return None
+    return await resolve_customer(session, next(iter(winners)))
+
+
+async def match_customer_by_phone(
+    session: AsyncSession, raw_phone: str | None, shop_id: str
+) -> UUID | None:
+    """The customer id iff exactly one shop customer owns this phone, else None."""
+    customer = await lookup_customer_by_phone(session, raw_phone, shop_id)
+    return customer.id if customer is not None else None
 
 
 async def resolve_customer(session: AsyncSession, customer_id: UUID) -> Customer | None:

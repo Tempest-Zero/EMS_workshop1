@@ -42,6 +42,7 @@ from app.features.attendance.repository import AttendanceRepository
 from app.features.attendance.router import router as attendance_router
 from app.features.attendance.schemas import DEFAULT_SHOP_ID
 from app.features.attendance.service import AttendanceService
+from app.features.catalog.router import router as catalog_router
 from app.features.customer_messaging.deps import get_messaging_service
 from app.features.customer_messaging.router import router as messaging_router
 from app.features.customer_messaging.router import webhook_router as whatsapp_webhook_router
@@ -276,6 +277,7 @@ def create_app() -> FastAPI:
     app.include_router(media_router, prefix="/api")
     app.include_router(attendance_router, prefix="/api")
     app.include_router(jobs_router, prefix="/api")
+    app.include_router(catalog_router, prefix="/api")
     app.include_router(customers_router, prefix="/api")
     app.include_router(messaging_router, prefix="/api")
     app.include_router(whatsapp_webhook_router, prefix="/api")

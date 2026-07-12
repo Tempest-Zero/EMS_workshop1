@@ -68,6 +68,54 @@ async def test_job_create_links_customer_by_phone(
     assert job.customer_id == customer.id
 
 
+async def test_lookup_returns_customer_for_known_phone(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    customer = await _seed_customer(session, full_name="Ayesha", phone_e164="+923004445555")
+    resp = await app_client.get(
+        "/api/customers/lookup",
+        params={"phone": "0300-4445555"},  # a differently-formatted spelling still matches
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body is not None
+    assert body["id"] == str(customer.id)
+    assert body["full_name"] == "Ayesha"
+
+
+async def test_lookup_returns_null_for_unknown_or_ambiguous(
+    app_client: AsyncClient, auth_headers: Headers, session: AsyncSession
+) -> None:
+    # Unknown number → null (never a 404, so the phone can poll on keystrokes).
+    unknown = await app_client.get(
+        "/api/customers/lookup", params={"phone": "0300-0001111"}, headers=auth_headers
+    )
+    assert unknown.status_code == 200
+    assert unknown.json() is None
+
+    # Household-shared number is ambiguous → null, same as the matcher.
+    await _seed_customer(session, full_name="Ali", phone_e164="+923002223333")
+    await _seed_customer(session, full_name="Sara", phone_e164="+923002223333")
+    ambiguous = await app_client.get(
+        "/api/customers/lookup", params={"phone": "03002223333"}, headers=auth_headers
+    )
+    assert ambiguous.status_code == 200
+    assert ambiguous.json() is None
+
+    # Garbage / non-Pakistani-mobile → null (normalizer returns None).
+    garbage = await app_client.get(
+        "/api/customers/lookup", params={"phone": "not-a-phone"}, headers=auth_headers
+    )
+    assert garbage.status_code == 200
+    assert garbage.json() is None
+
+
+async def test_lookup_requires_auth(app_client: AsyncClient) -> None:
+    resp = await app_client.get("/api/customers/lookup", params={"phone": "0300-1234567"})
+    assert resp.status_code == 401
+
+
 async def test_appliance_unit_links_to_customer_and_job(session: AsyncSession) -> None:
     # W4 asset layer: a unit anchors to a customer + category, and a job can
     # reference it (all three FKs + the partial serial index in one round-trip).

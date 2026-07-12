@@ -122,6 +122,9 @@ ignore_imports = [
   # Jobs' intake best-effort links a new job to an existing customer by phone
   # (and records the F5 WhatsApp-consent chip against that customer).
   "app.features.jobs.service -> app.features.customers.service",
+  # Route-fuel reads the workshop geofence circle as its origin fallback when
+  # the depart-workshop GPS punch is missing/bogus (forgotten "start travel").
+  "app.features.jobs.service -> app.features.attendance.service",
   # Manager-assign pushes through the notifications surface.
   "app.features.jobs.router -> app.features.notifications.deps",
   # Customer messaging composes from the job read model, witnesses sends on

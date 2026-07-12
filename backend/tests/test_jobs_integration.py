@@ -91,6 +91,33 @@ async def test_sequential_creates_get_distinct_increasing_tokens(
     assert tokens == sorted(tokens)  # monotonically increasing
 
 
+async def test_create_replay_with_client_id_dedupes(
+    app_client: AsyncClient, auth_headers: Headers
+) -> None:
+    """The phone's outbox replaying one queued create (same client_id) gets the
+    SAME job back — one row, one token, no duplicate (0036)."""
+    intake = {
+        **_INTAKE,
+        "client_id": str(uuid4()),
+        "customer_lat": 24.8607,
+        "customer_lng": 67.0011,
+    }
+    first = await app_client.post("/api/jobs", json=intake, headers=auth_headers)
+    assert first.status_code == 201, first.text
+    assert first.json()["customer_lat"] == pytest.approx(24.8607)  # home pin round-trips
+
+    replay = await app_client.post("/api/jobs", json=intake, headers=auth_headers)
+    assert replay.status_code == 201, replay.text
+    assert replay.json()["id"] == first.json()["id"]
+    assert replay.json()["token"] == first.json()["token"]
+
+    # Distinct client_ids still create distinct jobs.
+    other = await app_client.post(
+        "/api/jobs", json={**intake, "client_id": str(uuid4())}, headers=auth_headers
+    )
+    assert other.json()["id"] != first.json()["id"]
+
+
 async def test_carry_in_drops_visit_only_fields(
     app_client: AsyncClient, auth_headers: Headers
 ) -> None:
@@ -268,6 +295,9 @@ async def test_intake_power_warranty_fields_persist(
     job = await session.get(Job, created.json()["id"])
     assert job is not None
     assert job.job_type == "pickup-delivery"
+    # Pickup-delivery travels both ways → it keeps the address like a home-visit
+    # (only carry-in drops it).
+    assert job.customer_address == _INTAKE["customer_address"]
     assert job.intake_channel == "whatsapp"
     assert job.type_reason == "customer can't transport a 2-door fridge"
     assert job.power_protection == "stabilizer"
