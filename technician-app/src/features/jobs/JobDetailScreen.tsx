@@ -1,13 +1,16 @@
 /**
- * Job Detail — customer, appliance, problem, the live timeline, and the SOP
- * actions a technician drives on-site:
- *   - add a note (Module 3 remarks) · mark Ready / Close (status)
- *   - Complete Job → auto-bill (P2d)
- *   - negotiate the bill, log cash, and correct (void) a payment (P2e, Module 4)
- *   - GPS punches for the home-visit route → distance + fuel estimate (P3b)
- * Every action calls the live backend and re-renders from the authoritative
- * JobDetail it returns. Cash + punches carry a client_id so an offline retry
- * never double-records (the backend dedups on it).
+ * Job Detail — the lean hub of the job flow (F9). It shows customer, problem,
+ * evidence and the live timeline, and holds ONLY the actions no other screen
+ * owns:
+ *   - the flow entry points: Travel and the on-site arrival wizard
+ *   - notes · Mark Ready · Close + video · Abandon · Customer unreachable
+ *   - void/correct a payment, and the failed-outbox recovery list
+ * Everything else moved to its dedicated home: capture + diagnosis +
+ * completion live in the arrival wizard, negotiate/payments/WhatsApp-bill/
+ * close live on the BillSheet ("View bill / take payment"), and route punches
+ * live on the Travel screen. Every action calls the live backend and
+ * re-renders from the authoritative JobDetail it returns; writes ride the
+ * outbox with a client_id so an offline retry never double-records.
  */
 
 import { useFocusEffect, type CompositeScreenProps } from "@react-navigation/native";
@@ -27,13 +30,12 @@ import {
   View,
 } from "react-native";
 
-import { getLocation } from "../attendance/location";
-import { JobMediaCapture } from "../media/JobMediaCapture";
+import { EvidenceStrip } from "../media/EvidenceStrip";
 import { ApiError } from "../../lib/api";
 import { jobsApi, type JobDetail, type TransitionAction } from "../../lib/jobsApi";
 import { cacheStamp, loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
 import { messagingApi, type WhatsAppKind } from "../../lib/messagingApi";
-import { formatPaisa, rupeesToPaisa } from "../../lib/money";
+import { formatPaisa } from "../../lib/money";
 import type { RootStackParamList } from "../../lib/navigation";
 import {
   discardItem,
@@ -99,15 +101,10 @@ type Busy =
   | "ready"
   | "close"
   | "abandon"
-  | "negotiate"
-  | "payment"
   | "void"
-  | "depart"
-  | "arrive"
   | "whatsapp"
   | "transition"
   | null;
-type PayMethod = "cash" | "card" | "online";
 
 const STATUS_COLOR: Record<string, string> = {
   open: "#2563eb",
@@ -124,10 +121,8 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
 
-  // P2e money inputs.
-  const [negotiate, setNegotiate] = useState("");
-  const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState<PayMethod>("cash");
+  // Void/correct a payment — the one money write that has no other home
+  // (the BillSheet only logs payments; corrections stay here on the hub).
   const [voidingId, setVoidingId] = useState<string | null>(null);
   const [voidReason, setVoidReason] = useState("");
 
@@ -192,7 +187,6 @@ export function JobDetailScreen({ route, navigation }: Props) {
     0,
   );
   const pendingCompletion = outboxView.queued.some((i) => i.kind === "completion");
-  const pendingNegotiate = outboxView.queued.find((i) => i.kind === "negotiate");
   const pendingReady = outboxView.queued.some((i) => i.kind === "ready");
   const pendingTransition = outboxView.queued.find((i) => i.kind === "transition");
 
@@ -345,84 +339,6 @@ export function JobDetailScreen({ route, navigation }: Props) {
     [id, busy],
   );
 
-  const negotiateBill = useCallback(async () => {
-    const paisa = rupeesToPaisa(negotiate);
-    if (paisa <= 0 || busy) return;
-    setBusy("negotiate");
-    setError(null);
-    setInfo(null);
-    try {
-      const detail = await sendOrQueue(
-        makeItem({
-          id: `negotiate:${id}`,
-          kind: "negotiate",
-          jobId: id,
-          payload: { amountPaisa: paisa },
-        }),
-        () => jobsApi.negotiateBill(id, paisa),
-      );
-      if (detail) setJob(detail);
-      else setInfo(OFFLINE_MSG);
-      setNegotiate("");
-    } catch {
-      setError("Couldn't save the negotiated amount — try again.");
-    } finally {
-      setBusy(null);
-    }
-  }, [id, negotiate, busy]);
-
-  const submitPayment = useCallback(
-    async (paisa: number) => {
-      setBusy("payment");
-      setError(null);
-      setInfo(null);
-      try {
-        // client_id → the backend dedups, so a queued/retried payment never doubles.
-        const clientId = Crypto.randomUUID();
-        const detail = await sendOrQueue(
-          makeItem({
-            id: clientId,
-            kind: "payment",
-            jobId: id,
-            payload: { amountPaisa: paisa, method: payMethod, clientId },
-          }),
-          () => jobsApi.logPayment(id, paisa, payMethod, clientId),
-        );
-        if (detail) setJob(detail);
-        else setInfo(OFFLINE_MSG);
-        setPayAmount("");
-      } catch {
-        setError("Couldn't log the payment — try again.");
-      } finally {
-        setBusy(null);
-      }
-    },
-    [id, payMethod],
-  );
-
-  const logPayment = useCallback(async () => {
-    const paisa = rupeesToPaisa(payAmount);
-    if (paisa <= 0 || busy) return;
-    // The double-charge guard: the server dedups a *retried* tap, but a doubting
-    // tech tapping twice mints a fresh client_id each time — only the UI can
-    // catch that. Warn when the same amount is already waiting to sync.
-    const duplicate = pendingPayments.some(
-      (i) => (i.payload as PaymentPayload).amountPaisa === paisa,
-    );
-    if (duplicate) {
-      Alert.alert(
-        "Possible duplicate",
-        `A payment of ${formatPaisa(paisa)} is already waiting to sync on this job. Log another one?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Log anyway", style: "destructive", onPress: () => void submitPayment(paisa) },
-        ],
-      );
-      return;
-    }
-    await submitPayment(paisa);
-  }, [payAmount, busy, pendingPayments, submitPayment]);
-
   const voidPayment = useCallback(
     async (paymentId: string) => {
       const reason = voidReason.trim();
@@ -487,48 +403,6 @@ export function JobDetailScreen({ route, navigation }: Props) {
     [id, busy],
   );
 
-  const recordPunch = useCallback(
-    async (kind: "depart_workshop" | "arrive_customer") => {
-      if (busy) return;
-      setBusy(kind === "depart_workshop" ? "depart" : "arrive");
-      setError(null);
-      setInfo(null);
-      try {
-        const loc = await getLocation();
-        if (loc.lat == null || loc.lng == null) {
-          setError("Couldn't get your location — enable GPS/location and try again.");
-          return;
-        }
-        // client_id → the backend dedups, so a queued/retried punch never doubles.
-        const body = {
-          kind,
-          lat: loc.lat,
-          lng: loc.lng,
-          accuracy_m: loc.accuracy_m,
-          is_mock: loc.is_mock_location,
-          device_time: new Date().toISOString(),
-          client_id: Crypto.randomUUID(),
-        };
-        const detail = await sendOrQueue(
-          makeItem({
-            id: `location:${kind}:${id}`,
-            kind: "location",
-            jobId: id,
-            payload: { body },
-          }),
-          () => jobsApi.recordLocation(id, body),
-        );
-        if (detail) setJob(detail);
-        else setInfo(OFFLINE_MSG);
-      } catch {
-        setError("Couldn't record the location — try again.");
-      } finally {
-        setBusy(null);
-      }
-    },
-    [id, busy],
-  );
-
   if (error && !job) {
     return (
       <View style={styles.center}>
@@ -549,19 +423,11 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const canClose = job.status !== "closed";
   const open = job.status !== "closed";
   const hasBill = job.bill_original_paisa != null;
-  const negotiatePaisa = rupeesToPaisa(negotiate);
-  const payPaisa = rupeesToPaisa(payAmount);
   // A "visit" is any job the shop travels for — home-visit AND pickup-delivery
   // (the shop drives both ways). Only a carry-in has no travel leg. Matches the
   // backend's create-time rule.
   const isVisit = job.job_type !== "carry-in";
-  const hasDepart = job.locations.some((l) => l.kind === "depart_workshop");
   const hasArrive = job.locations.some((l) => l.kind === "arrive_customer");
-  // Auto fuel that resolved to a near-zero route on a travel job → almost
-  // always a missed depart punch; nudge toward a manual fuel figure.
-  const fuelAuto =
-    job.completion?.fuel_basis === "estimate" || job.completion?.fuel_basis === "breadcrumbs";
-  const fuelSuspect = isVisit && fuelAuto && (job.completion?.fuel_distance_m ?? 0) < 1000;
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -797,218 +663,40 @@ export function JobDetailScreen({ route, navigation }: Props) {
         </View>
       ) : null}
 
-      {isVisit ? (
+      {/* The money surface, lean: totals + payment history + void/correct.
+          Negotiation, logging payments, the WhatsApp bill and the close all
+          live on the BillSheet (F15/F16) — this button is the hub's way in.
+          A completion queued offline shows here so the tech knows the bill
+          is coming even before the server builds it. */}
+      {hasBill || pendingCompletion || job.payments.length > 0 || pendingPayments.length > 0 ? (
         <View style={styles.card}>
-          <Text style={styles.label}>ROUTE &amp; FUEL</Text>
-          {job.route ? (
-            <View style={styles.billGrid}>
-              <View style={styles.billBox}>
-                <Text style={styles.billBoxLabel}>Distance</Text>
-                <Text style={styles.billBoxValue}>
-                  {(job.route.distance_m / 1000).toFixed(1)} km
-                </Text>
-              </View>
-              <View style={styles.billBox}>
-                <Text style={styles.billBoxLabel}>Fuel est.</Text>
-                <Text style={styles.billBoxValue}>{formatPaisa(job.route.fuel_paisa)}</Text>
-              </View>
-            </View>
-          ) : (
-            <Text style={styles.sub}>Punch both ends to estimate route distance and fuel.</Text>
-          )}
-
-          {job.locations.length > 0 ? (
-            <View style={styles.pinList}>
-              {job.locations.map((loc) => (
-                <View key={loc.id} style={styles.event}>
-                  <Text style={styles.eventText}>
-                    {loc.kind === "depart_workshop" ? "Left workshop" : "Arrived at customer"}
-                    {loc.is_mock ? " · ⚠ mock location" : ""}
-                  </Text>
-                  <Text style={styles.eventTime}>
-                    {loc.captured_at.slice(0, 16).replace("T", " ")}
+          <Text style={styles.label}>BILL &amp; PAYMENTS</Text>
+          {pendingCompletion ? (
+            <Text style={styles.pendingNote}>Completion saved offline — syncing…</Text>
+          ) : null}
+          {hasBill ? (
+            <>
+              <View style={styles.billGrid}>
+                <View style={styles.billBox}>
+                  <Text style={styles.billBoxLabel}>Received</Text>
+                  <Text style={styles.billBoxValue}>
+                    {formatPaisa(job.received_paisa + pendingPaisa)}
                   </Text>
                 </View>
-              ))}
-            </View>
+                <View style={styles.billBox}>
+                  <Text style={styles.billBoxLabel}>Balance</Text>
+                  <Text style={styles.billBoxValue}>
+                    {formatPaisa(job.balance_paisa - pendingPaisa)}
+                  </Text>
+                </View>
+              </View>
+              {pendingPaisa > 0 ? (
+                <Text style={styles.pendingNote}>
+                  Includes {formatPaisa(pendingPaisa)} still syncing.
+                </Text>
+              ) : null}
+            </>
           ) : null}
-
-          {open ? (
-            <View style={styles.statusRow}>
-              <Pressable
-                style={[
-                  styles.btn,
-                  styles.btnOutline,
-                  styles.grow,
-                  busy === "depart" && styles.btnBusy,
-                ]}
-                onPress={() => void recordPunch("depart_workshop")}
-                disabled={!!busy}
-              >
-                <Text style={styles.btnOutlineText}>
-                  {busy === "depart" ? "…" : hasDepart ? "✓ Leaving" : "Leaving workshop"}
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.btn,
-                  styles.btnOutline,
-                  styles.grow,
-                  busy === "arrive" && styles.btnBusy,
-                ]}
-                onPress={() => void recordPunch("arrive_customer")}
-                disabled={!!busy}
-              >
-                <Text style={styles.btnOutlineText}>
-                  {busy === "arrive" ? "…" : hasArrive ? "✓ Arrived" : "Arrived at customer"}
-                </Text>
-              </Pressable>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-
-      <View style={styles.card}>
-        <Text style={styles.label}>WORK &amp; BILL</Text>
-        {pendingCompletion ? (
-          <Text style={styles.pendingNote}>Completion saved offline — syncing…</Text>
-        ) : null}
-        {hasBill ? (
-          <>
-            <View style={styles.billGrid}>
-              <View style={styles.billBox}>
-                <Text style={styles.billBoxLabel}>Original</Text>
-                <Text style={styles.billBoxValue}>{formatPaisa(job.bill_original_paisa)}</Text>
-              </View>
-              <View style={styles.billBox}>
-                <Text style={styles.billBoxLabel}>Negotiated</Text>
-                <Text style={styles.billBoxValue}>
-                  {pendingNegotiate
-                    ? `${formatPaisa((pendingNegotiate.payload as { amountPaisa: number }).amountPaisa)} ⏳`
-                    : job.bill_negotiated_paisa != null
-                      ? formatPaisa(job.bill_negotiated_paisa)
-                      : "—"}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.billGrid}>
-              <View style={styles.billBox}>
-                <Text style={styles.billBoxLabel}>Received</Text>
-                <Text style={styles.billBoxValue}>
-                  {formatPaisa(job.received_paisa + pendingPaisa)}
-                </Text>
-              </View>
-              <View style={styles.billBox}>
-                <Text style={styles.billBoxLabel}>Balance</Text>
-                <Text style={styles.billBoxValue}>
-                  {formatPaisa(job.balance_paisa - pendingPaisa)}
-                </Text>
-              </View>
-            </View>
-            {pendingPaisa > 0 ? (
-              <Text style={styles.pendingNote}>
-                Includes {formatPaisa(pendingPaisa)} still syncing.
-              </Text>
-            ) : null}
-          </>
-        ) : (
-          <Text style={styles.sub}>Not completed yet — log materials, time and fuel.</Text>
-        )}
-
-        {hasBill && open ? (
-          <View style={styles.inlineRow}>
-            <TextInput
-              style={[styles.input, styles.grow, styles.inlineInput]}
-              value={negotiate}
-              onChangeText={setNegotiate}
-              placeholder="Negotiated Rs"
-              keyboardType="number-pad"
-              editable={busy !== "negotiate"}
-            />
-            <Pressable
-              style={[
-                styles.btn,
-                styles.btnDark,
-                styles.inlineBtn,
-                (busy === "negotiate" || negotiatePaisa <= 0) && styles.btnBusy,
-              ]}
-              onPress={() => void negotiateBill()}
-              disabled={busy === "negotiate" || negotiatePaisa <= 0}
-            >
-              <Text style={styles.btnDarkText}>{busy === "negotiate" ? "…" : "Save"}</Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {fuelSuspect ? (
-          <Pressable
-            style={styles.fuelWarn}
-            onPress={() => navigation.navigate("CompleteJob", { id, token })}
-          >
-            <Text style={styles.fuelWarnText}>
-              ⚠ Route looks wrong ({((job.completion?.fuel_distance_m ?? 0) / 1000).toFixed(1)} km) —
-              tap to fix the fuel
-            </Text>
-          </Pressable>
-        ) : null}
-
-        {open ? (
-          <Pressable
-            style={styles.completeBtn}
-            onPress={() => navigation.navigate("CompleteJob", { id, token })}
-          >
-            <Text style={styles.completeBtnText}>
-              {job.completion ? "Edit completion" : "Complete Job"}
-            </Text>
-          </Pressable>
-        ) : null}
-      </View>
-
-      {open && job.customer_phone ? (
-        <View style={styles.card}>
-          <Text style={styles.label}>CUSTOMER MESSAGING · WHATSAPP</Text>
-          <Text style={styles.sub}>
-            Opens WhatsApp with the composed message; the send is logged on the timeline.
-            Consent-gated — blocked unless the customer opted in.
-          </Text>
-          <View style={styles.statusRow}>
-            {hasBill ? (
-              <Pressable
-                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
-                onPress={() => void sendWhatsApp("bill")}
-                disabled={!!busy}
-              >
-                <Text style={styles.btnReadyText}>{busy === "whatsapp" ? "…" : "Send bill"}</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
-                onPress={() => void sendWhatsApp("intake_ack")}
-                disabled={!!busy}
-              >
-                <Text style={styles.btnReadyText}>
-                  {busy === "whatsapp" ? "…" : "Acknowledge intake"}
-                </Text>
-              </Pressable>
-            )}
-            {isReady ? (
-              <Pressable
-                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
-                onPress={() => void sendWhatsApp("ready")}
-                disabled={!!busy}
-              >
-                <Text style={styles.btnReadyText}>
-                  {busy === "whatsapp" ? "…" : "Ready for pickup"}
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
-        </View>
-      ) : null}
-
-      {hasBill || job.payments.length > 0 || pendingPayments.length > 0 ? (
-        <View style={styles.card}>
-          <Text style={styles.label}>CASH &amp; REVENUE</Text>
 
           {pendingPayments.map((i) => {
             const p = i.payload as PaymentPayload;
@@ -1088,50 +776,55 @@ export function JobDetailScreen({ route, navigation }: Props) {
             </View>
           ) : null}
 
-          {open ? (
-            <>
-              <View style={styles.methodRow}>
-                {(["cash", "card", "online"] as const).map((m) => (
-                  <Pressable
-                    key={m}
-                    style={[styles.methodChip, payMethod === m && styles.methodChipActive]}
-                    onPress={() => setPayMethod(m)}
-                  >
-                    <Text style={[styles.methodText, payMethod === m && styles.methodTextActive]}>
-                      {m}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              <View style={styles.inlineRow}>
-                <TextInput
-                  style={[styles.input, styles.grow, styles.inlineInput]}
-                  value={payAmount}
-                  onChangeText={setPayAmount}
-                  placeholder="Amount Rs"
-                  keyboardType="number-pad"
-                  editable={busy !== "payment"}
-                />
-                <Pressable
-                  style={[
-                    styles.btn,
-                    styles.btnReady,
-                    styles.inlineBtn,
-                    (busy === "payment" || payPaisa <= 0) && styles.btnBusy,
-                  ]}
-                  onPress={() => void logPayment()}
-                  disabled={busy === "payment" || payPaisa <= 0}
-                >
-                  <Text style={styles.btnReadyText}>{busy === "payment" ? "…" : "Log payment"}</Text>
-                </Pressable>
-              </View>
-            </>
-          ) : null}
+          <Pressable
+            style={styles.billBtn}
+            onPress={() => navigation.navigate("BillSheet", { id, token })}
+          >
+            <Text style={styles.btnDarkText}>
+              💳 {open ? "View bill / take payment" : "View final bill"}
+            </Text>
+          </Pressable>
         </View>
       ) : null}
 
-      <Text style={styles.sectionHeader}>PHOTOS · BEFORE / AFTER</Text>
-      <JobMediaCapture jobKey={String(job.token)} />
+      {/* Intake-ack and ready-for-pickup are the hub's ONLY WhatsApp sends —
+          the bill message lives on the BillSheet. Consent-gated server-side. */}
+      {open && job.customer_phone && (!hasBill || isReady) ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>CUSTOMER MESSAGING · WHATSAPP</Text>
+          <Text style={styles.sub}>
+            Opens WhatsApp with the composed message; the send is logged on the timeline.
+            Consent-gated — blocked unless the customer opted in.
+          </Text>
+          <View style={styles.statusRow}>
+            {!hasBill ? (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("intake_ack")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>
+                  {busy === "whatsapp" ? "…" : "Acknowledge intake"}
+                </Text>
+              </Pressable>
+            ) : null}
+            {isReady ? (
+              <Pressable
+                style={[styles.btn, styles.btnWhatsApp, styles.grow, busy === "whatsapp" && styles.btnBusy]}
+                onPress={() => void sendWhatsApp("ready")}
+                disabled={!!busy}
+              >
+                <Text style={styles.btnReadyText}>
+                  {busy === "whatsapp" ? "…" : "Ready for pickup"}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
+      {/* Read-only evidence thumbnails — capture lives in the arrival wizard. */}
+      <EvidenceStrip jobKey={String(job.token)} />
 
       <View style={styles.card}>
         <Text style={styles.label}>TIMELINE</Text>
@@ -1265,37 +958,19 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   label: { fontSize: 11, fontWeight: "800", color: "#94a3b8", letterSpacing: 0.5, marginBottom: 4 },
-  sectionHeader: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#94a3b8",
-    letterSpacing: 0.5,
-    marginBottom: 8,
-    marginLeft: 2,
-  },
   value: { fontSize: 15, fontWeight: "600", color: "#1e293b" },
   sub: { fontSize: 13, color: "#64748b", marginTop: 2 },
   billGrid: { flexDirection: "row", gap: 8, marginTop: 8 },
   billBox: { flex: 1, backgroundColor: "#f8fafc", borderRadius: 8, padding: 10 },
   billBoxLabel: { fontSize: 10, fontWeight: "800", color: "#94a3b8", letterSpacing: 0.5 },
   billBoxValue: { fontSize: 16, fontWeight: "800", color: "#0f172a", marginTop: 2 },
-  completeBtn: {
+  billBtn: {
     marginTop: 12,
-    backgroundColor: "#059669",
+    backgroundColor: "#0f172a",
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: "center",
   },
-  completeBtnText: { color: "white", fontWeight: "800", fontSize: 15 },
-  fuelWarn: {
-    marginTop: 12,
-    backgroundColor: "#fef3c7",
-    borderColor: "#f59e0b",
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-  },
-  fuelWarnText: { color: "#92400e", fontSize: 13, fontWeight: "700" },
   input: {
     backgroundColor: "#f8fafc",
     borderColor: "#cbd5e1",
@@ -1308,9 +983,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 8,
   },
-  inlineRow: { flexDirection: "row", gap: 8, marginTop: 10, alignItems: "center" },
   inlineInput: { marginTop: 0, marginBottom: 0 },
-  inlineBtn: { justifyContent: "center", paddingHorizontal: 18 },
   btn: { borderRadius: 10, paddingVertical: 11, alignItems: "center" },
   btnBusy: { opacity: 0.5 },
   grow: { flex: 1 },
@@ -1368,20 +1041,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   offlineText: { color: "#92400e", fontSize: 12, fontWeight: "700" },
-  methodRow: { flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 2 },
-  methodChip: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    alignItems: "center",
-    backgroundColor: "white",
-  },
-  methodChipActive: { backgroundColor: "#0f172a", borderColor: "#0f172a" },
-  methodText: { fontSize: 13, fontWeight: "700", color: "#475569", textTransform: "capitalize" },
-  methodTextActive: { color: "white" },
-  pinList: { marginTop: 8 },
   event: { paddingVertical: 6, borderTopWidth: 1, borderTopColor: "#f1f5f9" },
   eventText: { fontSize: 13, color: "#334155" },
   eventTime: { fontSize: 11, color: "#94a3b8", marginTop: 1 },
