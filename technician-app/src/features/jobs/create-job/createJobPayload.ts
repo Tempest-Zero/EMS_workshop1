@@ -26,6 +26,11 @@ export interface CreateJobDraft {
   consent: boolean;
   customerLat: number | null;
   customerLng: number | null;
+  /** Resolved catalog category id when the appliance came from a catalog chip;
+   * null for a hardcoded-fallback pick (the server text-matches instead). */
+  categoryId: string | null;
+  /** How this job came in — Step-1 chip. */
+  intakeChannel: "walk_in" | "phone" | "whatsapp";
   /** The creating technician self-assigns — they're taking the job. */
   techId: string | null;
 }
@@ -65,10 +70,11 @@ export function createJobPayload(draft: CreateJobDraft, clientId: string): JobCr
     customer_lng: isVisit ? draft.customerLng : null,
     appliance_type: draft.appliance,
     appliance_brand: draft.brand || null,
+    category_id: draft.categoryId,
     problem,
     assigned_tech_id: draft.techId,
     time_window: isVisit ? draft.timeWindow || null : null,
-    intake_channel: "walk_in",
+    intake_channel: draft.intakeChannel,
     whatsapp_consent: draft.consent,
   };
 }

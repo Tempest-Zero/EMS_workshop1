@@ -4,6 +4,9 @@ import { Audio, type AVPlaybackStatus } from "expo-av";
 import * as FileSystem from "expo-file-system";
 import { Ionicons } from '@expo/vector-icons';
 
+import type { IntakeCatalog } from './intakeCatalog';
+
+// Final fallback when neither the catalog API nor its cache is available.
 const APPLIANCES = ['Fridge', 'AC', 'Washing Machine', 'Microwave', 'Water Dispenser', 'Oven'];
 const BRANDS = ['Dawlance', 'Haier', 'Pel', 'Samsung', 'LG', 'Kenwood', 'Gree', 'Orient', 'Other'];
 
@@ -188,11 +191,21 @@ function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (u
 // 📄 STEP 2 SCREEN 
 // ------------------------------------------------------------------
 
+interface ApplianceOption {
+  name: string;
+  icon: string | null;
+  categoryId: string | null;
+}
+
 interface Step2Props {
   appliance: string;
-  setAppliance: (val: string) => void;
+  /** Sets the appliance display name AND its resolved category id (null for a
+   * hardcoded-fallback pick — the server text-matches then). */
+  setCategory: (name: string, categoryId: string | null) => void;
   brand: string;
   setBrand: (val: string) => void;
+  /** Catalog vocabulary (network → cache); null → hardcoded fallback lists. */
+  catalog: IntakeCatalog | null;
   problemText: string;
   setProblemText: (val: string) => void;
   problemAudio: string;
@@ -203,17 +216,32 @@ interface Step2Props {
   onNext: () => void;
 }
 
-export function CreateJobStep2({ 
-  appliance, setAppliance, 
-  brand, setBrand, 
-  problemText, setProblemText, 
+export function CreateJobStep2({
+  appliance, setCategory,
+  brand, setBrand,
+  catalog,
+  problemText, setProblemText,
   problemAudio, setProblemAudio,
   inputMode, setInputMode,
-  isExisting, onNext 
+  isExisting, onNext
 }: Step2Props) {
-  
+
   const [showAllBrands, setShowAllBrands] = useState(false);
-  const visibleBrands = showAllBrands ? BRANDS : BRANDS.slice(0, 5);
+
+  // Catalog-first, hardcoded fallback. Catalog categories carry an id (→
+  // category_id) and an icon; the fallback constants send neither.
+  const applianceOptions: ApplianceOption[] =
+    catalog && catalog.categories.length > 0
+      ? catalog.categories.map((c) => ({
+          name: c.name_en ?? c.id,
+          icon: c.icon,
+          categoryId: c.id,
+        }))
+      : APPLIANCES.map((name) => ({ name, icon: null, categoryId: null }));
+
+  const brandOptions: string[] =
+    catalog && catalog.brands.length > 0 ? catalog.brands.map((b) => b.name) : BRANDS;
+  const visibleBrands = showAllBrands ? brandOptions : brandOptions.slice(0, 5);
 
   const isStep2Valid = appliance !== '' && brand !== '' && (problemText.trim().length > 0 || problemAudio.length > 0);
 
@@ -234,13 +262,15 @@ export function CreateJobStep2({
         {/* 1. APPLIANCE SELECTION */}
         <Text style={styles.sectionHeader}>Select Appliance</Text>
         <View style={styles.chipGrid}>
-          {APPLIANCES.map((item) => (
-            <Pressable 
-              key={item} 
-              style={[styles.chip, appliance === item && styles.chipActive]}
-              onPress={() => setAppliance(item)}
+          {applianceOptions.map((item) => (
+            <Pressable
+              key={item.name}
+              style={[styles.chip, appliance === item.name && styles.chipActive]}
+              onPress={() => setCategory(item.name, item.categoryId)}
             >
-              <Text style={[styles.chipText, appliance === item && styles.chipTextActive]}>{item}</Text>
+              <Text style={[styles.chipText, appliance === item.name && styles.chipTextActive]}>
+                {item.icon ? `${item.icon} ` : ''}{item.name}
+              </Text>
             </Pressable>
           ))}
         </View>
@@ -251,15 +281,15 @@ export function CreateJobStep2({
         <Text style={styles.sectionHeader}>Select Brand</Text>
         <View style={styles.chipRow}>
           {visibleBrands.map((item) => (
-            <Pressable 
-              key={item} 
+            <Pressable
+              key={item}
               style={[styles.chip, brand === item && styles.chipActive]}
               onPress={() => setBrand(item)}
             >
               <Text style={[styles.chipText, brand === item && styles.chipTextActive]}>{item}</Text>
             </Pressable>
           ))}
-          {!showAllBrands && (
+          {!showAllBrands && brandOptions.length > 5 && (
             <Pressable style={styles.chip} onPress={() => setShowAllBrands(true)}>
               <Text style={styles.chipText}>More...</Text>
             </Pressable>

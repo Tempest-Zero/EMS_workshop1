@@ -6,7 +6,7 @@
  */
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, Pressable, SafeAreaView, StatusBar, Alert, Text, Platform } from 'react-native';
 
 import { ApiError } from "../../../lib/api";
@@ -17,6 +17,8 @@ import { useAuth } from "../../auth/AuthContext";
 import { enqueuePendingMedia } from "../../media/pendingMedia";
 import type { JobsStackParamList } from "../types";
 import { createJobPayload } from './createJobPayload';
+import { loadIntakeCatalog, type IntakeCatalog } from './intakeCatalog';
+import type { IntakeChannel } from './CreateJobStep1Screen';
 // 🔌 Child Steps
 import { CreateJobStep1 } from './CreateJobStep1Screen';
 import { CreateJobStep2 } from './CreateJobStep2';
@@ -35,13 +37,28 @@ export function CreateJobWizard({ navigation }: Props) {
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
   const [isExisting, setIsExisting] = useState<boolean | null>(null);
-  
+  const [intakeChannel, setIntakeChannel] = useState<IntakeChannel>('walk_in');
+
   // Shared Data - Step 2
   const [appliance, setAppliance] = useState('');
   const [brand, setBrand] = useState('');
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [problemText, setProblemText] = useState('');
   const [problemAudio, setProblemAudio] = useState(''); // 🎙️ NEW: Stores the problem audio file URI
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
+
+  // Catalog vocabulary for the appliance/brand chips (network → cache →
+  // hardcoded fallback in Step 2). Null until the first load resolves.
+  const [catalog, setCatalog] = useState<IntakeCatalog | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void loadIntakeCatalog().then((c) => {
+      if (!cancelled) setCatalog(c);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   
   // Shared Data - Step 3
   const [location, setLocation] = useState('');
@@ -122,6 +139,8 @@ export function CreateJobWizard({ navigation }: Props) {
           consent,
           customerLat,
           customerLng,
+          categoryId,
+          intakeChannel,
           techId: technician?.id ?? null,
         },
         clientId,
@@ -201,20 +220,23 @@ export function CreateJobWizard({ navigation }: Props) {
       {/* 🖥️ STEP RENDERER */}
       <View style={styles.contentArea}>
         {currentStep === 1 && (
-          <CreateJobStep1 
+          <CreateJobStep1
             phone={phone} setPhone={setPhone} name={name} setName={setName}
             isExisting={isExisting} setIsExisting={setIsExisting}
+            intakeChannel={intakeChannel} setIntakeChannel={setIntakeChannel}
             onNext={() => {
               setCurrentStep(2);
               setHighestStep(Math.max(highestStep, 2));
-            }} 
+            }}
           />
         )}
 
         {currentStep === 2 && (
-          <CreateJobStep2 
-            appliance={appliance} setAppliance={setAppliance} 
+          <CreateJobStep2
+            appliance={appliance}
+            setCategory={(name, catId) => { setAppliance(name); setCategoryId(catId); }}
             brand={brand} setBrand={setBrand}
+            catalog={catalog}
             problemText={problemText} setProblemText={setProblemText}
             problemAudio={problemAudio} setProblemAudio={setProblemAudio} // 🎙️ NEW: Passed down to Step 2
             inputMode={inputMode} setInputMode={setInputMode}
@@ -222,7 +244,7 @@ export function CreateJobWizard({ navigation }: Props) {
             onNext={() => {
               setCurrentStep(3);
               setHighestStep(Math.max(highestStep, 3));
-            }} 
+            }}
           />
         )}
 

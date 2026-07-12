@@ -161,6 +161,9 @@ export interface JobCreateInput {
   customer_lng?: number | null;
   appliance_type: string;
   appliance_brand?: string | null;
+  /** Resolved catalog category id when the appliance came from a catalog chip;
+   * omitted for a hardcoded-fallback pick, where the server text-matches. */
+  category_id?: string | null;
   problem?: string;
   assigned_tech_id?: string | null;
   time_window?: string | null;

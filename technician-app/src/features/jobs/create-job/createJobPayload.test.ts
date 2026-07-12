@@ -15,6 +15,8 @@ const DRAFT: CreateJobDraft = {
   consent: true,
   customerLat: 24.8607,
   customerLng: 67.0011,
+  categoryId: "refrigerator",
+  intakeChannel: "walk_in",
   techId: "t3",
 };
 
@@ -67,6 +69,18 @@ describe("createJobPayload", () => {
       "cid-5",
     );
     expect(body.problem).toBe("(voice note attached)");
+  });
+
+  it("passes the resolved catalog category id through", () => {
+    expect(createJobPayload(DRAFT, "cid-6").category_id).toBe("refrigerator");
+    // Hardcoded-fallback pick → no id (server text-matches).
+    expect(createJobPayload({ ...DRAFT, categoryId: null }, "cid-7").category_id).toBeNull();
+  });
+
+  it("carries the selected intake channel", () => {
+    expect(createJobPayload({ ...DRAFT, intakeChannel: "whatsapp" }, "cid-8").intake_channel).toBe(
+      "whatsapp",
+    );
   });
 });
 

@@ -3,6 +3,16 @@ import { StyleSheet, Text, View, Pressable, TextInput, Keyboard } from 'react-na
 
 import { customersApi, type CustomerLookup } from '../../../lib/customersApi';
 
+/** The intake channels the tech can pick at Step 1. Subset of the backend's
+ * intake_channel enum — the phone only originates these three. */
+export type IntakeChannel = 'walk_in' | 'phone' | 'whatsapp';
+
+const CHANNELS: { value: IntakeChannel; label: string }[] = [
+  { value: 'walk_in', label: 'Walk-in' },
+  { value: 'phone', label: 'Phone' },
+  { value: 'whatsapp', label: 'WhatsApp' },
+];
+
 interface Step1Props {
   phone: string;
   setPhone: (val: string | ((prev: string) => string)) => void;
@@ -10,10 +20,12 @@ interface Step1Props {
   setName: (val: string) => void;
   isExisting: boolean | null;
   setIsExisting: (val: boolean | null) => void;
+  intakeChannel: IntakeChannel;
+  setIntakeChannel: (val: IntakeChannel) => void;
   onNext: () => void;
 }
 
-export function CreateJobStep1({ phone, setPhone, name, setName, isExisting, setIsExisting, onNext }: Step1Props) {
+export function CreateJobStep1({ phone, setPhone, name, setName, isExisting, setIsExisting, intakeChannel, setIntakeChannel, onNext }: Step1Props) {
   const [match, setMatch] = useState<CustomerLookup | null>(null);
   const [showNumpad, setShowNumpad] = useState(true);
 
@@ -112,6 +124,21 @@ export function CreateJobStep1({ phone, setPhone, name, setName, isExisting, set
         onFocus={() => setShowNumpad(false)}
       />
 
+      {/* How did this job come in? Defaults to walk-in. */}
+      <View style={styles.channelRow}>
+        {CHANNELS.map((c) => (
+          <Pressable
+            key={c.value}
+            style={[styles.channelChip, intakeChannel === c.value && styles.channelChipActive]}
+            onPress={() => setIntakeChannel(c.value)}
+          >
+            <Text style={[styles.channelText, intakeChannel === c.value && styles.channelTextActive]}>
+              {c.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
       <View style={styles.spacer} />
 
       {showNumpad && (
@@ -161,6 +188,13 @@ const styles = StyleSheet.create({
   btnNoText: { color: '#475569', fontWeight: '600', fontSize: 13 },
   
   nameInput: { borderWidth: 1, borderColor: '#94a3b8', borderRadius: 12, paddingHorizontal: 16, height: 56, fontSize: 16, color: '#0f172a', marginBottom: 16, backgroundColor: '#f8fafc' },
+
+  channelRow: { flexDirection: 'row', gap: 8 },
+  channelChip: { flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: '#cbd5e1', backgroundColor: '#ffffff', alignItems: 'center' },
+  channelChipActive: { backgroundColor: '#1c1917', borderColor: '#1c1917' },
+  channelText: { fontSize: 14, fontWeight: '600', color: '#475569' },
+  channelTextActive: { color: '#ffffff' },
+
   spacer: { flex: 1 },
   
   keypad: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, marginBottom: 24 },
