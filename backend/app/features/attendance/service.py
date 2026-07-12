@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.storage import DEFAULT_UPLOAD_TTL, StorageClient
 from app.features.attendance.derive import (
@@ -100,6 +101,23 @@ AWAY_FLAG_MINUTES = 30
 # How far back the selfie-gaps reconciliation looks. Bounds the list so punches
 # from before the selfie-evidence policy don't surface forever.
 SELFIE_GAP_LOOKBACK_DAYS = 14
+
+
+async def workshop_circle(
+    session: AsyncSession, *, shop_id: str
+) -> tuple[float, float, int] | None:
+    """The active workshop geofence as ``(center_lat, center_lng, radius_m)``.
+
+    The public cross-slice surface: the jobs slice reads it to give route-fuel
+    a trustworthy origin when the depart-workshop GPS punch is missing or bogus
+    (a forgotten "start travel" would otherwise degenerate the estimate to ~0).
+    ``None`` when no active fence is configured — callers fall back to today's
+    depart-punch-only behaviour. Read-only; never blocks.
+    """
+    row = await AttendanceRepository(session).get_active_geofence(shop_id=shop_id)
+    if row is None:
+        return None
+    return (row.center_lat, row.center_lng, row.radius_m)
 
 
 class AttendanceNotFoundError(LookupError):

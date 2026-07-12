@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import settings
+from app.features.attendance.service import workshop_circle
 from app.features.customers.service import (
     create_customer_with_phone,
     match_customer_by_phone,
@@ -154,17 +155,30 @@ def derive_route(
     *,
     rate_paisa_per_km: int,
     circuity_factor: float,
+    workshop: tuple[float, float, int] | None = None,
 ) -> RouteOut | None:
-    """The billable ONE-WAY route between the latest depart + arrive pins.
-    ``None`` until both pins exist — a route existing means travel provably
-    happened, exactly as before.
+    """The billable ONE-WAY route from the workshop to the customer. ``None``
+    until an ``arrive_customer`` pin exists — a route means travel provably
+    happened.
+
+    Origin: normally the latest ``depart_workshop`` punch. But a forgotten
+    "start travel" (no depart punch) or a bogus one co-located with the
+    customer (both ends punched on arrival) would otherwise collapse the
+    straight-line estimate to ~0 and silently bill no fuel. When the caller
+    supplies the ``workshop`` circle ``(center_lat, center_lng, radius_m)`` we
+    fall back to the fence centre as the origin: (a) when there is no depart
+    punch at all, or (b) when the depart punch sits farther than
+    ``max(2×radius_m, 500 m)`` from the fence centre. Without a ``workshop`` the
+    behaviour is exactly as before (no depart pin → ``None``).
 
     Distance ladder: (a) path-sum of trusted outbound breadcrumbs clipped to
     the punch window — actual driven metres; (b) otherwise straight-line ×
     ``circuity_factor``. The window-clip is load-bearing: ``_latest_location``
     means a rescheduled job driven twice must count only the latest drive's
     samples. A "path" shorter than the straight line is physically impossible
-    without heavy sample loss, so the estimate wins there too.
+    without heavy sample loss, so the estimate wins there too. Breadcrumbs are
+    only ever summed when a real depart punch exists (the sampler is armed by
+    that punch) — a workshop-origin fallback is always an estimate.
 
     Leg semantics (wired for the future): outbound = ``leg='outbound'`` within
     depart_workshop→arrive_customer. The return leg (depart_customer→
@@ -172,15 +186,40 @@ def derive_route(
     it exists, so the billed round trip is outbound × 2."""
     depart = _latest_location(locations, "depart_workshop")
     arrive = _latest_location(locations, "arrive_customer")
-    if depart is None or arrive is None:
+    if arrive is None:
         return None
-    straight_m = haversine_m(depart.lat, depart.lng, arrive.lat, arrive.lng)
 
-    lo = depart.captured_at - _TRAVEL_WINDOW_SLACK
-    hi = arrive.captured_at + _TRAVEL_WINDOW_SLACK
-    candidates = [s for s in samples if s.leg == "outbound" and lo <= s.captured_at <= hi]
+    # Resolve the route origin (and whether breadcrumbs are eligible).
+    origin_lat: float
+    origin_lng: float
+    trust_breadcrumbs: bool
+    if depart is not None:
+        origin_lat, origin_lng, trust_breadcrumbs = depart.lat, depart.lng, True
+        if workshop is not None:
+            center_lat, center_lng, radius_m = workshop
+            gap_m = haversine_m(depart.lat, depart.lng, center_lat, center_lng)
+            if gap_m > max(2 * radius_m, 500.0):
+                # The depart punch isn't at the workshop — trust the fence
+                # centre instead. Breadcrumbs still get their shot below; a
+                # stationary trail loses to the (now larger) straight line.
+                origin_lat, origin_lng = center_lat, center_lng
+    elif workshop is not None:
+        # No depart punch ⇒ the sampler never armed ⇒ no trail to sum.
+        origin_lat, origin_lng, _radius = workshop
+        trust_breadcrumbs = False
+    else:
+        return None  # today's behaviour: no depart pin, no origin → no route
 
-    path = path_sum_m(candidates)
+    straight_m = haversine_m(origin_lat, origin_lng, arrive.lat, arrive.lng)
+
+    candidates: list[JobTravelSample] = []
+    path: float | None = None
+    if trust_breadcrumbs and depart is not None:
+        lo = depart.captured_at - _TRAVEL_WINDOW_SLACK
+        hi = arrive.captured_at + _TRAVEL_WINDOW_SLACK
+        candidates = [s for s in samples if s.leg == "outbound" and lo <= s.captured_at <= hi]
+        path = path_sum_m(candidates)
+
     basis: Literal["estimate", "breadcrumbs"]
     if path is not None and path >= straight_m:
         basis, distance = "breadcrumbs", path
@@ -546,6 +585,16 @@ class JobService:
             logger.exception("customer phone match failed at job intake; leaving customer_id NULL")
             return None
 
+    async def _workshop(self, shop_id: str) -> tuple[float, float, int] | None:
+        """The workshop geofence circle for route-fuel's origin fallback.
+        Failure-tolerant: any error → ``None`` → today's depart-punch-only
+        behaviour, never a 500 in a billing path."""
+        try:
+            return await workshop_circle(self._repo.session, shop_id=shop_id)
+        except Exception:
+            logger.exception("workshop geofence lookup failed; route fuel falls back to depart pin")
+            return None
+
     async def _link_customer(self, body: JobCreate, *, actor: str | None) -> UUID | None:
         """Resolve the job's customer link, honouring the F5 consent chip.
 
@@ -754,6 +803,7 @@ class JobService:
                 samples,
                 rate_paisa_per_km=completion.fuel_rate_paisa_per_km,
                 circuity_factor=settings.fuel_route_circuity_factor,
+                workshop=await self._workshop(row.shop_id),
             )
             if route is not None and route.round_trip_fuel_paisa is not None:
                 fuel_paisa = route.round_trip_fuel_paisa
@@ -1022,6 +1072,7 @@ class JobService:
             samples,
             rate_paisa_per_km=settings.fuel_rate_paisa_per_km,
             circuity_factor=settings.fuel_route_circuity_factor,
+            workshop=await self._workshop(row.shop_id),
         )
         return TravelSampleBatchResponse(
             accepted=accepted,
@@ -1121,5 +1172,6 @@ class JobService:
             samples,
             rate_paisa_per_km=settings.fuel_rate_paisa_per_km,
             circuity_factor=settings.fuel_route_circuity_factor,
+            workshop=await self._workshop(row.shop_id),
         )
         return detail

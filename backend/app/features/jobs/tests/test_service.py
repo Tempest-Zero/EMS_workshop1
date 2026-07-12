@@ -1036,6 +1036,82 @@ def test_derive_route_ignores_return_leg_samples() -> None:
     assert route.sample_count == 0
 
 
+# ── Workshop-origin fuel fallback (forgot-to-punch robustness) ────────────────
+# The workshop fence centre sits at the depart-pin coordinate; the customer is
+# ~1112 m north (0.01° lat).
+_WORKSHOP = (24.86, 67.0, 150)  # (center_lat, center_lng, radius_m)
+_STRAIGHT_WS = haversine_m(24.86, 67.0, 24.87, 67.0)
+
+
+def _arrive_only(arrive_at: datetime) -> list[JobLocation]:
+    arrive = _loc("arrive_customer", 24.87, 67.0)
+    arrive.captured_at = arrive_at
+    return [arrive]
+
+
+def test_derive_route_missing_depart_uses_workshop_origin() -> None:
+    """Forgot to punch out: only the arrival pin exists. With the workshop
+    circle we still bill an honest straight-line estimate from the shop."""
+    locations = _arrive_only(_T0 + timedelta(minutes=15))
+    route = derive_route(
+        locations, [], rate_paisa_per_km=2000, circuity_factor=1.35, workshop=_WORKSHOP
+    )
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.distance_m == pytest.approx(_STRAIGHT_WS * 1.35)
+    assert route.sample_count == 0
+
+
+def test_derive_route_missing_depart_no_workshop_is_none() -> None:
+    """No depart pin and no workshop → today's behaviour (no route at all)."""
+    locations = _arrive_only(_T0 + timedelta(minutes=15))
+    assert derive_route(locations, [], rate_paisa_per_km=2000, circuity_factor=1.35) is None
+
+
+def test_derive_route_colocated_depart_falls_back_to_workshop() -> None:
+    """Both ends punched at the customer (bogus depart): without the fallback
+    the straight line collapses to ~0 and bills no fuel. The workshop origin
+    restores an honest estimate."""
+    depart = _loc("depart_workshop", 24.87, 67.0)  # co-located with the customer
+    depart.captured_at = _T0 - timedelta(minutes=1)
+    arrive = _loc("arrive_customer", 24.87, 67.0)
+    arrive.captured_at = _T0 + timedelta(minutes=15)
+    route = derive_route(
+        [depart, arrive], [], rate_paisa_per_km=2000, circuity_factor=1.35, workshop=_WORKSHOP
+    )
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.distance_m == pytest.approx(_STRAIGHT_WS * 1.35)  # not ~0
+
+
+def test_derive_route_normal_depart_unaffected_by_workshop() -> None:
+    """A depart punch at the workshop is trusted as the origin — passing the
+    circle changes nothing for the honest path."""
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    route = derive_route(
+        pins, _drive(3), rate_paisa_per_km=2000, circuity_factor=1.35, workshop=_WORKSHOP
+    )
+    assert route is not None
+    assert route.basis == "estimate"
+    assert route.distance_m == pytest.approx(_STRAIGHT_WS * 1.35)
+
+
+def test_derive_route_breadcrumbs_still_win_with_workshop() -> None:
+    """Genuine breadcrumbs from a workshop-anchored depart still upgrade the
+    basis — the fallback never suppresses a real trail."""
+    pins = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15))
+    route = derive_route(
+        pins,
+        _drive(11, zigzag=True),
+        rate_paisa_per_km=2000,
+        circuity_factor=1.35,
+        workshop=_WORKSHOP,
+    )
+    assert route is not None
+    assert route.basis == "breadcrumbs"
+    assert route.sample_count == 11
+
+
 async def test_record_travel_samples_requires_assignment(
     svc: tuple[JobService, MagicMock],
 ) -> None:
@@ -1168,6 +1244,32 @@ async def test_completion_autofill_zero_without_route(svc: tuple[JobService, Mag
     assert completion.fuel_paisa == 0
     assert completion.fuel_basis is None
     repo.list_travel_samples.assert_not_awaited()  # no pins → the query is skipped
+
+
+async def test_completion_uses_workshop_origin_when_depart_missing(
+    svc: tuple[JobService, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forgot to punch out — only the arrival pin exists. The completion fuel
+    falls back to the workshop-origin estimate instead of silently billing 0."""
+    from app.features.jobs import service as jobs_service
+
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    arrive = _loc("arrive_customer", 24.87, 67.0)
+    arrive.captured_at = _now()
+    repo.list_locations.return_value = [arrive]  # no depart pin
+    monkeypatch.setattr(
+        jobs_service, "workshop_circle", AsyncMock(return_value=(24.86, 67.0, 150))
+    )
+
+    body = CompletionRequest(time_spent_mins=60)  # fuel omitted → auto-derive
+    await service.submit_completion(job_id=job.id, shop_id="default", body=body, actor="t1")
+
+    completion = repo.add_completion.await_args.args[0]
+    assert completion.fuel_basis == "estimate"
+    assert completion.fuel_paisa > 0  # 0 without the workshop fallback
+    repo.list_travel_samples.assert_not_awaited()  # no depart pin → no breadcrumb query
 
 
 async def test_completion_resubmit_derives_with_the_snapshot_rate(
