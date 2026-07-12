@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, View, SafeAreaView, StatusBar } from 'react-native';
 
 import { ApiError, type MediaType, type Phase } from "../../../lib/api";
-import { jobsApi } from "../../../lib/jobsApi";
+import { jobsApi, type JobType } from "../../../lib/jobsApi";
 import type { RootStackParamList } from "../../../lib/navigation";
 import { makeItem } from "../../../lib/outbox";
 import { sendOrQueue } from "../../../lib/outboxSync";
@@ -39,6 +39,7 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
 
   const [draft, setDraft] = useState<ArrivalDraft | null>(null);
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [jobType, setJobType] = useState<JobType | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const draftRef = useRef<ArrivalDraft | null>(null);
   draftRef.current = draft;
@@ -52,9 +53,12 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
       if (!cancelled) setDraft(saved ?? { ...EMPTY_DRAFT });
       try {
         const job = await jobsApi.get(id);
-        if (!cancelled) setCategoryId(job.category_id);
+        if (!cancelled) {
+          setCategoryId(job.category_id);
+          setJobType(job.job_type);
+        }
       } catch {
-        /* offline — pickers fall back to unscoped/local behaviour */
+        /* offline — pickers fall back to unscoped/local behaviour, neutral copy */
       }
     })();
     return () => {
@@ -173,6 +177,7 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
         {draft.step === 1 && (
           <ArrivalCapturesScreen
             draft={draft}
+            jobType={jobType}
             onCapture={(slot, patch, phase, type, uri, contentType) => {
               update(patch);
               void uploadEvidence(slot, phase, type, uri, contentType);

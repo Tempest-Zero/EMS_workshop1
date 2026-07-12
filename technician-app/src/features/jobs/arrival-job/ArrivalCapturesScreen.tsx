@@ -10,10 +10,14 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 
 import type { MediaType, Phase } from '../../../lib/api';
+import type { JobType } from '../../../lib/jobsApi';
 import type { ArrivalDraft, UploadState } from './arrivalDraft';
 
 interface Step1Props {
   draft: ArrivalDraft;
+  /** The job's type — drives the header copy (a carry-in has no "arrival").
+   * Null while the job is still loading or offline → neutral copy. */
+  jobType?: JobType | null;
   /** Register a capture: patch the draft AND kick its eager upload. */
   onCapture: (
     slot: string,
@@ -27,7 +31,11 @@ interface Step1Props {
   onNext: () => void;
 }
 
-export function ArrivalCapturesScreen({ draft, onCapture, onPatch, onNext }: Step1Props) {
+export function ArrivalCapturesScreen({ draft, jobType, onCapture, onPatch, onNext }: Step1Props) {
+  // "Arrival" only makes sense for a job the tech travelled to; a carry-in (or
+  // a not-yet-known type, offline) gets neutral copy.
+  const isArrival = jobType === 'home-visit' || jobType === 'pickup-delivery';
+  const capturesTitle = isArrival ? 'Arrival – captures' : 'Job – captures';
   const { serialUri, conditionUris, errorCodeStatus, videoUri, uploads } = draft;
   const [isLaunchingCamera, setIsLaunchingCamera] = useState(false);
 
@@ -204,7 +212,7 @@ export function ArrivalCapturesScreen({ draft, onCapture, onPatch, onNext }: Ste
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
         <View style={styles.headerRow}>
-          <Text style={styles.title}>Arrival – captures</Text>
+          <Text style={styles.title}>{capturesTitle}</Text>
           <View style={styles.stepBadge}>
             <Text style={styles.stepBadgeText}>1 / 5</Text>
           </View>

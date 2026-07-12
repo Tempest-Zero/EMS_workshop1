@@ -22,6 +22,7 @@ import { ApiError } from "../../lib/api";
 import { jobsApi, type Job } from "../../lib/jobsApi";
 import { cacheStamp, loadJobsList, saveJobsList } from "../../lib/jobsCache";
 import { useAuth } from "../auth/AuthContext";
+import { isVisitType, jobTypeBadge } from "./jobType";
 import type { JobsStackParamList } from "./types";
 
 type ListRoute = "JobsList" | "AvailableTasks" | "OngoingTasks" | "CompletedTasks";
@@ -45,16 +46,27 @@ function JobRow({
   onClaim?: () => void;
   claiming?: boolean;
 }) {
+  const badge = jobTypeBadge(job.job_type);
+  const scheduleBits = isVisitType(job.job_type)
+    ? [job.time_window, job.customer_address].filter(Boolean).join(" · ")
+    : "";
   return (
     <Pressable style={styles.card} onPress={onPress}>
       <View style={styles.cardTop}>
         <Text style={styles.token}>#{job.token}</Text>
-        <View
-          style={[styles.chip, { backgroundColor: (STATUS_COLOR[job.status] ?? "#64748b") + "1a" }]}
-        >
-          <Text style={[styles.chipText, { color: STATUS_COLOR[job.status] ?? "#64748b" }]}>
-            {job.status}
-          </Text>
+        <View style={styles.cardTopRight}>
+          <View style={styles.typeChip}>
+            <Text style={styles.typeChipText}>
+              {badge.icon} {badge.label}
+            </Text>
+          </View>
+          <View
+            style={[styles.chip, { backgroundColor: (STATUS_COLOR[job.status] ?? "#64748b") + "1a" }]}
+          >
+            <Text style={[styles.chipText, { color: STATUS_COLOR[job.status] ?? "#64748b" }]}>
+              {job.status}
+            </Text>
+          </View>
         </View>
       </View>
       <Text style={styles.customer}>{job.customer_name}</Text>
@@ -65,6 +77,11 @@ function JobRow({
       <Text style={styles.problem} numberOfLines={2}>
         {job.problem}
       </Text>
+      {scheduleBits ? (
+        <Text style={styles.schedule} numberOfLines={1}>
+          📍 {scheduleBits}
+        </Text>
+      ) : null}
       {onClaim ? (
         <Pressable
           style={[styles.claimBtn, claiming && styles.claimBtnBusy]}
@@ -270,9 +287,20 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cardTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  cardTopRight: { flexDirection: "row", alignItems: "center", gap: 6 },
   token: { fontSize: 15, fontWeight: "800", color: "#0f172a" },
   chip: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 },
   chipText: { fontSize: 11, fontWeight: "800", textTransform: "capitalize" },
+  typeChip: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  typeChipText: { fontSize: 11, fontWeight: "800", color: "#475569" },
+  schedule: { fontSize: 12, color: "#64748b", fontWeight: "600", marginTop: 6 },
   customer: { fontSize: 15, fontWeight: "700", color: "#1e293b", marginTop: 6 },
   appliance: {
     fontSize: 12,

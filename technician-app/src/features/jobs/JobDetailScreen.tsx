@@ -45,6 +45,7 @@ import {
 } from "../../lib/outbox";
 import { sendOrQueue, type PaymentPayload } from "../../lib/outboxSync";
 import { useJobOutbox } from "../../lib/useJobOutbox";
+import { jobTypeBadge } from "./jobType";
 import type { JobsStackParamList } from "./types";
 
 const OFFLINE_MSG = "Saved offline — will sync when reconnected.";
@@ -548,8 +549,15 @@ export function JobDetailScreen({ route, navigation }: Props) {
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <View style={styles.headerRow}>
         <Text style={styles.token}>#{job.token}</Text>
-        <View style={[styles.chip, { backgroundColor: statusColor + "1a" }]}>
-          <Text style={[styles.chipText, { color: statusColor }]}>{job.status}</Text>
+        <View style={styles.headerChips}>
+          <View style={styles.typeChip}>
+            <Text style={styles.typeChipText}>
+              {jobTypeBadge(job.job_type).icon} {jobTypeBadge(job.job_type).label}
+            </Text>
+          </View>
+          <View style={[styles.chip, { backgroundColor: statusColor + "1a" }]}>
+            <Text style={[styles.chipText, { color: statusColor }]}>{job.status}</Text>
+          </View>
         </View>
       </View>
       <Text style={styles.appliance}>
@@ -598,7 +606,7 @@ export function JobDetailScreen({ route, navigation }: Props) {
             </>
           ) : (
             <>
-              <Text style={styles.label}>ON-SITE WORK</Text>
+              <Text style={styles.label}>{isVisit ? "ON-SITE WORK" : "WORKSHOP WORK"}</Text>
               <Text style={styles.sub}>
                 Capture the evidence and diagnosis with the step-by-step wizard.
               </Text>
@@ -1101,9 +1109,19 @@ const styles = StyleSheet.create({
   inlineError: { color: "#b91c1c", fontSize: 13, fontWeight: "600", marginTop: 8 },
   inlineInfo: { color: "#b45309", fontSize: 13, fontWeight: "600", marginTop: 8 },
   headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerChips: { flexDirection: "row", alignItems: "center", gap: 6 },
   token: { fontSize: 24, fontWeight: "800", color: "#0f172a" },
   chip: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 },
   chipText: { fontSize: 12, fontWeight: "800", textTransform: "capitalize" },
+  typeChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  typeChipText: { fontSize: 12, fontWeight: "800", color: "#475569" },
   appliance: { fontSize: 13, fontWeight: "600", color: "#64748b", marginTop: 2, marginBottom: 12 },
   card: {
     backgroundColor: "white",
