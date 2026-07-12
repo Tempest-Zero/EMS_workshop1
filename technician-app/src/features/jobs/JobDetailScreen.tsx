@@ -13,7 +13,6 @@
 import { useFocusEffect, type CompositeScreenProps } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
-import * as ImagePicker from "expo-image-picker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -30,7 +29,6 @@ import {
 
 import { getLocation } from "../attendance/location";
 import { JobMediaCapture } from "../media/JobMediaCapture";
-import { uploadMedia } from "../media/uploadMedia";
 import { ApiError } from "../../lib/api";
 import { jobsApi, type JobDetail, type TransitionAction } from "../../lib/jobsApi";
 import { cacheStamp, loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
@@ -46,6 +44,7 @@ import {
 } from "../../lib/outbox";
 import { sendOrQueue, type PaymentPayload } from "../../lib/outboxSync";
 import { useJobOutbox } from "../../lib/useJobOutbox";
+import { closeJobWithVideo } from "./closeJobWithVideo";
 import { jobTypeBadge } from "./jobType";
 import { SchedulePickerModal } from "./SchedulePickerModal";
 import type { JobsStackParamList } from "./types";
@@ -242,16 +241,16 @@ export function JobDetailScreen({ route, navigation }: Props) {
     }
   }, [id, busy]);
 
-  // Closing a job requires a closing video (P3c gate). Record it first, upload it
-  // (phase=closing, keyed on the token), then transition to close. Capturing the
-  // clip reserves a media row, so even a slow upload satisfies the gate.
+  // Closing a job requires a closing video (P3c gate) — the capture/upload/
+  // transition flow is the shared closeJobWithVideo (also the bill sheet's
+  // close). Here we keep the pre-check that mirrors the server's Phase-4
+  // close guard BEFORE recording: a normal close needs the completion form.
+  // Checking first means the tech is never sent through a video capture whose
+  // close is doomed to 409 — and no orphan closing clip gets uploaded. A
+  // completion still syncing counts (the server sees it before the close
+  // lands, or the 409 says so).
   const closeWithVideo = useCallback(async () => {
     if (busy) return;
-    // Mirror the server's Phase-4 close guard BEFORE recording: a normal close
-    // needs the completion form. Checking first means the tech is never sent
-    // through a video capture whose close is doomed to 409 — and no orphan
-    // closing clip gets uploaded. A completion still syncing counts (the
-    // server sees it before the close lands, or the 409 below says so).
     if (!job?.completion && !pendingCompletion) {
       Alert.alert(
         "Completion form required",
@@ -271,57 +270,12 @@ export function JobDetailScreen({ route, navigation }: Props) {
       );
       return;
     }
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      setError("Camera permission is needed to record the closing video.");
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-      quality: 0.85,
-      videoMaxDuration: 60,
-    });
-    if (result.canceled || result.assets.length === 0) return; // aborted → don't close
-    const asset = result.assets[0];
-    if (!asset) return;
     setBusy("close");
     setError(null);
     try {
-      // Upload stage: if the bytes never land, the close is not attempted and
-      // the message names the real upload problem (too large / network).
-      try {
-        await uploadMedia({
-          jobId: String(token),
-          phase: "closing",
-          type: "video",
-          uri: asset.uri,
-          filename: asset.fileName ?? `closing-${Date.now()}.mp4`,
-          contentType: asset.mimeType ?? "video/mp4",
-        });
-      } catch (e) {
-        console.warn("close+video upload failed", e);
-        if (e instanceof ApiError && e.status === 413) {
-          setError("The closing video is too large to upload — try a shorter clip.");
-        } else if (e instanceof ApiError) {
-          setError(apiDetail(e) ?? "Couldn't upload the closing video — try again.");
-        } else {
-          setError("Couldn't upload the closing video — check your connection and try again.");
-        }
-        return;
-      }
-      // Close stage: the video IS saved now. A failure here is a close problem,
-      // not a video one — never send the tech back to re-record an orphan clip.
-      try {
-        setJob(await jobsApi.transition(id, "close"));
-      } catch (e) {
-        console.warn("close+video close failed", e);
-        if (e instanceof ApiError && (e.status === 409 || e.status === 400)) {
-          const detail = apiDetail(e) ?? "try again after syncing.";
-          setError(`Video saved, but the job can't be closed yet: ${detail}`);
-        } else {
-          setError("The closing video uploaded, but the job couldn't be closed — try again.");
-        }
-      }
+      const result = await closeJobWithVideo(id, token);
+      if (result.kind === "closed") setJob(result.job);
+      else if (result.kind !== "canceled") setError(result.message);
     } finally {
       setBusy(null);
     }
