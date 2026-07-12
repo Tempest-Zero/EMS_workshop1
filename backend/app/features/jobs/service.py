@@ -688,11 +688,12 @@ class JobService:
 
     # ── Completion + bill (Module 3 post-job / Module 4) ─────────────────
     async def submit_completion(
-        self, *, job_id: UUID, shop_id: str, body: CompletionRequest, actor: str | None
+        self, *, job_id: UUID, shop_id: str, body: CompletionRequest, actor: str | None, actor_role: str | None = None
     ) -> JobDetail:
         """Upsert the completion form (one per job) and (re)generate the
         original bill. Idempotent — safe to replay from the offline queue."""
         row = await self._load(job_id, shop_id)
+        self._assert_actor_owns_job(row, actor, actor_role)
         # Money guard (Phase 4): a closed job's bill is a settled document.
         if row.status == "closed":
             raise JobConflictError("job is closed — the completion can no longer be changed")
@@ -787,9 +788,10 @@ class JobService:
         return await self._detail(row)
 
     async def negotiate_bill(
-        self, *, job_id: UUID, shop_id: str, amount_paisa: int, note: str | None, actor: str | None
+        self, *, job_id: UUID, shop_id: str, amount_paisa: int, note: str | None, actor: str | None, actor_role: str | None = None
     ) -> JobDetail:
         row = await self._load(job_id, shop_id)
+        self._assert_actor_owns_job(row, actor, actor_role)
         if row.status == "closed":
             raise JobConflictError("job is closed — the bill can no longer be renegotiated")
         if row.bill_original_paisa is None:
@@ -844,6 +846,7 @@ class JobService:
         method: str,
         client_id: UUID,
         actor: str | None,
+        actor_role: str | None = None,
     ) -> JobDetail:
         """Append a payment. Idempotent on ``client_id`` — replaying the same
         queued action (offline retry) does NOT double-charge.
@@ -855,6 +858,7 @@ class JobService:
         loser surfaces a 500 for what is actually a successful no-op.
         """
         row = await self._load(job_id, shop_id)
+        self._assert_actor_owns_job(row, actor, actor_role)
         existing = await self._repo.get_payment_by_client(client_id)
         if existing is None:
             try:
@@ -888,10 +892,11 @@ class JobService:
         return await self._detail(row)
 
     async def void_payment(
-        self, *, job_id: UUID, shop_id: str, payment_id: UUID, reason: str, actor: str | None
+        self, *, job_id: UUID, shop_id: str, payment_id: UUID, reason: str, actor: str | None, actor_role: str | None = None
     ) -> JobDetail:
         """Correct a payment by voiding it (kept for the audit trail)."""
         row = await self._load(job_id, shop_id)
+        self._assert_actor_owns_job(row, actor, actor_role)
         payment = await self._repo.get_payment(payment_id)
         if payment is None or payment.job_id != row.id:
             raise JobNotFoundError(f"payment {payment_id} not found")
@@ -910,12 +915,13 @@ class JobService:
 
     # ── GPS route (Phase 3) ──────────────────────────────────────────────
     async def record_location(
-        self, *, job_id: UUID, shop_id: str, body: LocationRequest, actor: str | None
+        self, *, job_id: UUID, shop_id: str, body: LocationRequest, actor: str | None, actor_role: str | None = None
     ) -> JobDetail:
         """Record a GPS punch. Idempotent on ``client_id`` — replaying a queued
         punch (offline retry) does NOT duplicate it. Once both pins exist the
         detail carries the derived route distance + fuel estimate."""
         row = await self._load(job_id, shop_id)
+        self._assert_actor_owns_job(row, actor, actor_role)
         existing = await self._repo.get_location_by_client(body.client_id)
         if existing is None:
             now = datetime.now(UTC)
@@ -1010,8 +1016,8 @@ class JobService:
             route=route,
         )
 
-    async def status_by_token(self, *, token: str, shop_id: str) -> str | None:
-        """The job's current status, looked up by its human token (media rows
+    async def info_by_token(self, *, token: str, shop_id: str) -> tuple[str, str | None] | None:
+        """The job's current status and assigned tech, looked up by its human token (media rows
         key on the token). ``None`` for an unknown/non-numeric token — callers
         treat that as "no job to protect"."""
         try:
@@ -1019,7 +1025,7 @@ class JobService:
         except ValueError:
             return None
         row = await self._repo.get_by_token(token=numeric, shop_id=shop_id)
-        return None if row is None else row.status
+        return None if row is None else (row.status, row.assigned_tech_id)
 
     # ── Evidence reconciliation (Phase 5) ────────────────────────────────
     async def evidence_gaps(
@@ -1103,3 +1109,10 @@ class JobService:
             circuity_factor=settings.fuel_route_circuity_factor,
         )
         return detail
+
+    @staticmethod
+    def _assert_actor_owns_job(row: JobRow, actor: str | None, actor_role: str | None) -> None:
+        if actor_role == "manager":
+            return
+        if actor is None or row.assigned_tech_id != actor:
+            raise JobForbiddenError(f"technician {actor} is not assigned to this job")

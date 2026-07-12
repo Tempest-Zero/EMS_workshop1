@@ -10,6 +10,7 @@ import { ClockScreen } from "./src/features/attendance/ClockScreen";
 import { useAttendanceBackground } from "./src/features/attendance/useAttendanceBackground";
 import { AuthProvider, useAuth } from "./src/features/auth/AuthContext";
 import { LoginScreen } from "./src/features/auth/LoginScreen";
+import { ForceChangePasswordScreen } from "./src/features/auth/ForceChangePasswordScreen";
 import { JobsStack } from "./src/features/jobs/JobsStack";
 import { OnboardingScreen } from "./src/features/onboarding/OnboardingScreen";
 import { isOnboarded } from "./src/features/onboarding/permissions";
@@ -113,9 +114,13 @@ function AuthedApp() {
 }
 
 function Root() {
-  const { ready, isAuthenticated } = useAuth();
+  const { ready, isAuthenticated, needsPasswordChange } = useAuth();
   if (!ready) return <Spinner />;
-  return isAuthenticated ? <AuthedApp /> : <LoginScreen />;
+  if (isAuthenticated) {
+    if (needsPasswordChange) return <ForceChangePasswordScreen />;
+    return <AuthedApp />;
+  }
+  return <LoginScreen />;
 }
 
 export default function App() {

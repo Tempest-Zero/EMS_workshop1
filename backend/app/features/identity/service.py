@@ -17,22 +17,26 @@ from datetime import UTC, datetime
 
 from app.features.identity.models import Technician
 from app.features.identity.repository import IdentityRepository
-from app.features.identity.schemas import LoginResponse, TechnicianPublic
-from app.features.identity.security import create_access_token, hash_pin, verify_pin
+from app.features.identity.schemas import (
+    LoginResponse,
+    TechnicianCreate,
+    TechnicianPublic,
+    TechnicianUpdate,
+)
+from app.features.identity.security import (
+    create_access_token,
+    hash_password,
+    validate_password_strength,
+    verify_password,
+)
 from app.features.identity.throttle import (
     is_locked,
     next_lock_until,
     retry_after_seconds,
 )
 
-# Managers reach payroll, customer PII and the revenue ledger — a 4-digit PIN
-# is too thin for that account. Technicians keep 4 (workshop ergonomics).
-MIN_PIN_DIGITS_TECH = 4
-MIN_PIN_DIGITS_MANAGER = 6
-
-
 class InvalidCredentialsError(Exception):
-    """Raised on an unknown tech id, wrong PIN, or an inactive account."""
+    """Raised on an unknown username, wrong password, or an inactive account."""
 
 
 class AccountLockedError(Exception):
@@ -43,8 +47,16 @@ class AccountLockedError(Exception):
         self.retry_after = retry_after
 
 
-class PinPolicyError(Exception):
-    """Raised when a new PIN doesn't meet the policy for the target account."""
+class PasswordPolicyError(Exception):
+    """Raised when a new password doesn't meet the strength policy."""
+
+
+class UsernameConflictError(Exception):
+    """Raised when trying to register a duplicate username."""
+
+
+class TechnicianIdConflictError(Exception):
+    """Raised when trying to register a duplicate technician ID."""
 
 
 class NotPermittedError(Exception):
@@ -59,30 +71,26 @@ class IdentityService:
     def __init__(self, repo: IdentityRepository) -> None:
         self._repo = repo
 
-    async def login(self, *, tech_id: str, pin: str) -> LoginResponse:
-        """Verify a PIN and mint a JWT, enforcing the per-account lockout.
+    async def login(self, *, username: str, password: str) -> LoginResponse:
+        """Verify a password and mint a JWT, enforcing the per-account lockout.
 
         Mutates throttle state on BOTH outcomes (counter bump on failure, reset
         on success) — the router must commit before surfacing the error, or the
         counter silently rolls back with the 401.
         """
-        tech = await self._repo.get(tech_id)
-        # Unknown/inactive ids keep today's generic 401 (the roster is public,
-        # but don't add a new oracle distinguishing "missing" from "wrong PIN").
+        tech = await self._repo.get_by_username(username)
         if tech is None or not tech.active:
-            raise InvalidCredentialsError("invalid tech id or PIN")
+            raise InvalidCredentialsError("invalid username or password")
 
         now = datetime.now(UTC)
         if is_locked(tech.locked_until, now):
             raise AccountLockedError(retry_after_seconds(tech.locked_until, now))
 
-        if not verify_pin(pin, tech.pin_hash):
-            # `or 0`: a not-yet-flushed instance has None here (SQLAlchemy
-            # column defaults apply at INSERT, not at construction).
+        if not verify_password(password, tech.password_hash):
             tech.failed_attempts = (tech.failed_attempts or 0) + 1
             tech.locked_until = next_lock_until(tech.failed_attempts, now)
             await self._repo.flush()
-            raise InvalidCredentialsError("invalid tech id or PIN")
+            raise InvalidCredentialsError("invalid username or password")
 
         # Success: clear throttle state; escalation only ever resets here.
         tech.failed_attempts = 0
@@ -92,31 +100,99 @@ class IdentityService:
             tech_id=tech.id,
             role=tech.role,
             name=tech.name,
+            must_change_password=tech.must_change_password,
             token_version=tech.token_version or 0,
         )
         return LoginResponse(token=token, technician=TechnicianPublic.model_validate(tech))
 
-    async def roster(self) -> list[TechnicianPublic]:
+    async def list_active(self) -> list[TechnicianPublic]:
         techs = await self._repo.list_active()
         return [TechnicianPublic.model_validate(t) for t in techs]
 
-    async def set_pin(self, *, actor_id: str, actor_role: str, tech_id: str, pin: str) -> None:
-        """Set a technician's PIN. A manager may set anyone's; a tech only their own.
+    async def list_all(self) -> list[TechnicianPublic]:
+        techs = await self._repo.list_all(include_inactive=True)
+        return [TechnicianPublic.model_validate(t) for t in techs]
 
-        Deliberately does NOT bump ``token_version``: rotating a PIN must not
-        401 the holder's phone — the installed APK's outbox drops queued writes
-        on 401 (fixed in the Phase 3 build). Session killing is the separate,
-        explicit ``revoke_sessions``. Revisit once the v2 outbox is rolled out.
+    async def set_password(self, *, actor_id: str, actor_role: str, tech_id: str, password: str) -> None:
+        """Set a technician's password. A manager may set anyone's; a tech only their own.
+        Setting a password clears the must_change_password flag and invalidates all existing sessions.
         """
         if actor_role != "manager" and actor_id != tech_id:
-            raise NotPermittedError("only a manager may set another technician's PIN")
+            raise NotPermittedError("only a manager may set another technician's password")
         tech = await self._load(tech_id)
-        self._check_pin_policy(pin, tech)
-        tech.pin_hash = hash_pin(pin)
-        # A fresh PIN is a fresh start for the throttle.
+        
+        try:
+            validate_password_strength(password)
+        except ValueError as e:
+            raise PasswordPolicyError(str(e)) from e
+            
+        tech.password_hash = hash_password(password)
+        tech.must_change_password = False
+        tech.token_version = (tech.token_version or 0) + 1
+        # A fresh password is a fresh start for the throttle.
         tech.failed_attempts = 0
         tech.locked_until = None
         await self._repo.flush()
+
+    async def create_technician(self, body: TechnicianCreate) -> TechnicianPublic:
+        if await self._repo.get(body.id) is not None:
+            raise TechnicianIdConflictError(f"Technician ID {body.id} already exists")
+        if await self._repo.get_by_username(body.username) is not None:
+            raise UsernameConflictError(f"Username {body.username} already exists")
+            
+        try:
+            validate_password_strength(body.password)
+        except ValueError as e:
+            raise PasswordPolicyError(str(e)) from e
+
+        tech = Technician(
+            id=body.id,
+            username=body.username,
+            name=body.name,
+            role=body.role,
+            specialty=body.specialty,
+            phone=body.phone,
+            avatar=body.avatar,
+            password_hash=hash_password(body.password),
+            must_change_password=True,
+            active=True,
+        )
+        self._repo.add(tech)
+        await self._repo.flush()
+        return TechnicianPublic.model_validate(tech)
+
+    async def update_technician(self, *, actor_id: str, tech_id: str, body: TechnicianUpdate) -> TechnicianPublic:
+        tech = await self._load(tech_id)
+        
+        # Self-demotion guard
+        if actor_id == tech_id and body.role == "tech" and tech.role == "manager":
+            raise NotPermittedError("a manager cannot demote themselves")
+            
+        # Deactivation guard
+        if body.active is False and tech.active is True and tech.role == "manager":
+            active_managers = await self._repo.count_active_managers()
+            if active_managers <= 1:
+                raise NotPermittedError("cannot deactivate the only active manager account")
+                
+        # Role change invalidates existing sessions
+        if body.role is not None and body.role != tech.role:
+            tech.token_version = (tech.token_version or 0) + 1
+            
+        if body.name is not None:
+            tech.name = body.name
+        if body.specialty is not None:
+            tech.specialty = body.specialty
+        if body.phone is not None:
+            tech.phone = body.phone
+        if body.avatar is not None:
+            tech.avatar = body.avatar
+        if body.role is not None:
+            tech.role = body.role
+        if body.active is not None:
+            tech.active = body.active
+            
+        await self._repo.flush()
+        return TechnicianPublic.model_validate(tech)
 
     async def revoke_sessions(self, *, tech_id: str) -> None:
         """Invalidate every live JWT for a technician (lost-phone kill switch).
@@ -137,10 +213,4 @@ class IdentityService:
             raise TechnicianNotFoundError(f"technician {tech_id} not found")
         return tech
 
-    @staticmethod
-    def _check_pin_policy(pin: str, tech: Technician) -> None:
-        if not pin.isdigit():
-            raise PinPolicyError("PIN must be digits only")
-        minimum = MIN_PIN_DIGITS_MANAGER if tech.role == "manager" else MIN_PIN_DIGITS_TECH
-        if len(pin) < minimum:
-            raise PinPolicyError(f"PIN for a {tech.role} account must be at least {minimum} digits")
+

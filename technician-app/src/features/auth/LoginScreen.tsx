@@ -17,43 +17,24 @@ import {
 import { authApi, type Technician } from "../../lib/authApi";
 import { useAuth } from "./AuthContext";
 
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-}
-
 export function LoginScreen() {
   const { login } = useAuth();
-  const [roster, setRoster] = useState<Technician[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [pin, setPin] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    authApi
-      .roster()
-      .then((r) => setRoster(r.filter((t) => t.active)))
-      .catch(() => setError("Couldn't load technicians — check your connection."))
-      .finally(() => setLoading(false));
-  }, []);
-
   const submit = async () => {
-    if (!selected || pin.length < 4) {
-      setError("Pick your name and enter your 4-digit PIN.");
+    if (!username || !password) {
+      setError("Enter your username and password.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await login(selected, pin);
+      await login(username, password);
     } catch {
-      setError("Wrong PIN, or login failed.");
+      setError("Invalid credentials, or login failed.");
       setBusy(false);
     }
   };
@@ -63,43 +44,22 @@ export function LoginScreen() {
       <Text style={styles.brand}>FixFlow</Text>
       <Text style={styles.subtitle}>Technician sign-in</Text>
 
-      <Text style={styles.label}>WHO ARE YOU?</Text>
-      {loading ? (
-        <ActivityIndicator style={{ marginTop: 16 }} />
-      ) : (
-        <View style={styles.roster}>
-          {roster.map((t) => {
-            const active = selected === t.id;
-            return (
-              <Pressable
-                key={t.id}
-                style={[styles.techRow, active && styles.techRowActive]}
-                onPress={() => setSelected(t.id)}
-              >
-                <View style={[styles.avatar, active && styles.avatarActive]}>
-                  <Text style={[styles.avatarText, active && styles.avatarTextActive]}>
-                    {initials(t.name)}
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.techName}>{t.name}</Text>
-                  {t.specialty ? <Text style={styles.techSpecialty}>{t.specialty}</Text> : null}
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
-      )}
-
-      <Text style={[styles.label, { marginTop: 20 }]}>PIN</Text>
+      <Text style={styles.label}>USERNAME</Text>
       <TextInput
         style={styles.input}
-        value={pin}
-        onChangeText={setPin}
-        placeholder="••••"
-        keyboardType="number-pad"
+        value={username}
+        onChangeText={setUsername}
+        placeholder="e.g. t2"
+        autoCapitalize="none"
+      />
+
+      <Text style={[styles.label, { marginTop: 20 }]}>PASSWORD</Text>
+      <TextInput
+        style={styles.input}
+        value={password}
+        onChangeText={setPassword}
+        placeholder="••••••••"
         secureTextEntry
-        maxLength={12}
       />
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -152,8 +112,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    fontSize: 18,
-    letterSpacing: 4,
+    fontSize: 16,
     marginTop: 8,
   },
   error: { color: "#b91c1c", fontSize: 13, fontWeight: "600", marginTop: 12 },

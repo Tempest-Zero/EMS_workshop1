@@ -127,13 +127,12 @@ class MediaService:
         requested_by: str | None = None,
         is_manager: bool = False,
         job_open: bool = True,
+        job_assigned_tech_id: str | None = None,
     ) -> None:
         """Remove the storage object then the DB row — under the evidence
-        policy: a manager may always delete; a technician may delete **their
-        own** media (the retake flow) **while the job is open**. Once a job
-        closes, its evidence is frozen for everyone but the manager. Rows from
-        before ownership existed (``created_by`` NULL) are grandfathered as
-        own-media.
+        policy: a manager may always delete; a technician may delete media
+        while the job is open and they are assigned to it. Once a job
+        closes, its evidence is frozen for everyone but the manager.
 
         Storage delete is best-effort: if the object is already gone we treat
         it as success and continue with the DB delete so the row never becomes
@@ -143,8 +142,8 @@ class MediaService:
         if not is_manager:
             if not job_open:
                 raise MediaForbiddenError("the job is closed — its evidence is frozen")
-            if media.created_by is not None and media.created_by != requested_by:
-                raise MediaForbiddenError("only the technician who captured this can delete it")
+            if requested_by is None or job_assigned_tech_id != requested_by:
+                raise MediaForbiddenError("only the assigned technician can delete media for this job")
         try:
             self._storage.delete(media.storage_path)
         except Exception:  # noqa: BLE001 — idempotent cleanup

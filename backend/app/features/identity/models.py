@@ -24,14 +24,16 @@ class Technician(Base):
 
     # Stable slug PK (e.g. "t1"), matching the ids attendance/media already use.
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, server_default=text("''"))
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     specialty: Mapped[str | None] = mapped_column(String(128), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Tailwind color class carried over from the web mock's avatars.
     avatar: Mapped[str | None] = mapped_column(String(32), nullable=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'tech'"))
-    # PBKDF2 string from security.hash_pin (never the raw PIN).
-    pin_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # PBKDF2 string from security.hash_password (never the raw password).
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")

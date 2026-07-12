@@ -11,6 +11,7 @@ export interface Technician {
   avatar: string | null;
   role: string;
   active: boolean;
+  must_change_password: boolean;
 }
 
 export interface LoginResponse {
@@ -22,16 +23,23 @@ export interface Principal {
   tech_id: string;
   role: string;
   name: string;
+  must_change_password: boolean;
 }
 
 export const authApi = {
-  /** Public roster for the login picker (never includes pin_hash). */
-  roster: () => request<Technician[]>("/api/technicians"),
+  /** Public roster */
+  roster: () => request<Technician[]>("/api/technicians/roster"),
 
-  login: (techId: string, pin: string) =>
+  login: (username: string, password: string) =>
     request<LoginResponse>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ tech_id: techId, pin }),
+      body: JSON.stringify({ username, password }),
+    }),
+
+  changePassword: (password: string) =>
+    request<void>("/api/technicians/password", {
+      method: "POST",
+      body: JSON.stringify({ password }),
     }),
 
   me: () => request<Principal>("/api/auth/me"),

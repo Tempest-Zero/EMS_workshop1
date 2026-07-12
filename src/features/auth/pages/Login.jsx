@@ -1,38 +1,21 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Wand2, LogIn, Loader2 } from "lucide-react";
 import { useAuth } from "@app/providers/AuthContext";
-import { fetchTechnicians } from "@features/auth/data/authApi";
-import Avatar from "@shared/ui/Avatar";
 
 export default function Login() {
   const { login } = useAuth();
-  const [techs, setTechs] = useState([]);
-  const [techId, setTechId] = useState("");
-  const [pin, setPin] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  // The web is the manager console — technicians sign in on the mobile app.
-  // Show only manager accounts in the picker, and pre-select the first one so a
-  // single-manager shop only has to type the PIN (otherwise the Log in button
-  // stays disabled until the lone account is clicked, which reads as a bug).
-  useEffect(() => {
-    fetchTechnicians()
-      .then((rows) => {
-        const managers = rows.filter((t) => t.role === "manager");
-        setTechs(managers);
-        if (managers.length) setTechId((cur) => cur || managers[0].id);
-      })
-      .catch(() => setError("Couldn't reach the server. Please try again."));
-  }, []);
-
   const submit = (e) => {
     e.preventDefault();
-    if (!techId || !pin) return;
+    if (!username || !password) return;
     setBusy(true);
     setError(null);
-    login(techId, pin)
-      .catch(() => setError("Wrong PIN, or that account is inactive."))
+    login(username, password)
+      .catch(() => setError("Invalid username or password, or that account is inactive."))
       .finally(() => setBusy(false));
   };
 
@@ -51,54 +34,38 @@ export default function Login() {
 
         <form onSubmit={submit} className="space-y-4">
           <div>
-            <div className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
-              Sign in as
-            </div>
-            <div className="grid max-h-56 grid-cols-1 gap-1.5 overflow-y-auto">
-              {techs.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setTechId(t.id)}
-                  className={`flex items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition ${
-                    techId === t.id
-                      ? "border-slate-900 bg-slate-900/5 ring-1 ring-slate-900"
-                      : "border-slate-200 hover:bg-slate-50"
-                  }`}
-                >
-                  <Avatar name={t.name} color={t.avatar} size="sm" />
-                  <div className="leading-tight">
-                    <div className="text-sm font-bold text-slate-800">{t.name}</div>
-                    {/* This picker only lists managers, so show the role — not the
-                        trade specialty, which reads as "this isn't the manager". */}
-                    <div className="text-[11px] text-slate-400">Manager</div>
-                  </div>
-                </button>
-              ))}
-              {techs.length === 0 && !error && (
-                <div className="rounded-lg border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-400">
-                  Loading…
-                </div>
-              )}
-            </div>
+            <label
+              htmlFor="username"
+              className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-400"
+            >
+              Username
+            </label>
+            <input
+              id="username"
+              type="text"
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="e.g. manager"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-800 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+            />
           </div>
 
           <div>
             <label
-              htmlFor="pin"
+              htmlFor="password"
               className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-400"
             >
-              PIN
+              Password
             </label>
             <input
-              id="pin"
+              id="password"
               type="password"
-              inputMode="numeric"
-              autoComplete="off"
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              placeholder="••••"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-center text-lg tracking-[0.3em] text-slate-800 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-800 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
             />
           </div>
 
@@ -110,7 +77,7 @@ export default function Login() {
 
           <button
             type="submit"
-            disabled={busy || !techId || !pin}
+            disabled={busy || !username || !password}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3 text-sm font-bold text-white transition active:scale-[0.99] disabled:opacity-40"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}

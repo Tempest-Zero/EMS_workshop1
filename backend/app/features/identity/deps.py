@@ -58,6 +58,7 @@ async def get_current_principal(
         # rename) applies on the next request instead of at token expiry.
         role=tech.role,
         name=tech.name,
+        must_change_password=tech.must_change_password,
     )
 
 

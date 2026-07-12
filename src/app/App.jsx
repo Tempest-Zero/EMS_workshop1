@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import ManagerLayout from "@app/layouts/ManagerLayout";
 import ToastHost from "@app/components/ToastHost";
 import { useAuth } from "@app/providers/AuthContext";
-import { Login } from "@features/auth";
+import { Login, ForceChangePassword } from "@features/auth";
 
 // Each feature exposes its pages through its public barrel (src/features/<x>/index.js).
 // This is the MANAGER web. Technician field workflows (clock-in, my-jobs, SOP
@@ -15,13 +15,15 @@ import { Attendance, AttendanceTechDetail, AttendanceVariance } from "@features/
 import { Schedule } from "@features/schedule";
 import { Troubleshooting } from "@features/troubleshooting";
 import { Settings } from "@features/settings";
+import { Users } from "@features/users";
 
 export default function App() {
-  const { isAuthenticated, ready } = useAuth();
+  const { isAuthenticated, ready, needsPasswordChange } = useAuth();
 
   // Wait for the initial token check so we don't flash the login screen.
   if (!ready) return <div className="min-h-[100svh] bg-[#eef2f6]" />;
   if (!isAuthenticated) return <Login />;
+  if (needsPasswordChange) return <ForceChangePassword />;
 
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
@@ -38,6 +40,7 @@ export default function App() {
           <Route path="schedule" element={<Schedule />} />
           <Route path="troubleshooting" element={<Troubleshooting />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="users" element={<Users />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

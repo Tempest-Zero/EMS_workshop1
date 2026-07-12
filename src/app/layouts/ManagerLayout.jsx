@@ -11,6 +11,7 @@ import {
   Menu,
   X,
   Wand2,
+  UserCog,
 } from "lucide-react";
 import { WORKSHOP } from "@shared/config/constants";
 import { fmtDate, fmtDow } from "@shared/lib/date";
@@ -20,6 +21,7 @@ import LogoutButton from "@app/components/LogoutButton";
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/technicians", label: "Technicians", icon: Users },
+  { to: "/users", label: "User Management", icon: UserCog },
   { to: "/jobs", label: "Jobs", icon: ClipboardList },
   { to: "/attendance", label: "Attendance", icon: CalendarCheck },
   { to: "/schedule", label: "Schedule", icon: CalendarDays },
@@ -30,6 +32,7 @@ const NAV = [
 function pageTitle(pathname) {
   if (pathname === "/") return "Dashboard";
   if (pathname.startsWith("/technicians")) return "Technicians";
+  if (pathname.startsWith("/users")) return "User Management";
   if (pathname.startsWith("/jobs")) return "Jobs";
   if (pathname.startsWith("/attendance")) return "Attendance";
   if (pathname.startsWith("/schedule")) return "Schedule";

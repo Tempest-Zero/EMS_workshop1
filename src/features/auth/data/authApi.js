@@ -7,14 +7,19 @@ import { apiGet, apiSend, setToken } from "@shared/lib/api";
 
 /** Public roster for the login picker (no PINs). */
 export function fetchTechnicians() {
-  return apiGet("/api/technicians");
+  return apiGet("/api/technicians/roster");
 }
 
-/** Exchange a tech id + PIN for a token; returns the technician profile. */
-export async function login(techId, pin) {
-  const res = await apiSend("/api/auth/login", "POST", { tech_id: techId, pin });
+/** Exchange a username + password for a token; returns the technician profile. */
+export async function login(username, password) {
+  const res = await apiSend("/api/auth/login", "POST", { username, password });
   setToken(res.token);
   return res.technician;
+}
+
+/** Force password change on first login. */
+export async function changePassword(newPassword) {
+  return apiSend("/api/technicians/password", "POST", { password: newPassword });
 }
 
 /** Rehydrate the current caller from a stored token (also validates it). */

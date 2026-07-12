@@ -254,12 +254,14 @@ async def submit_completion(
 ) -> JobDetail:
     try:
         detail = await service.submit_completion(
-            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id, actor_role=principal.role
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     except JobConflictError as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except JobForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     await session.commit()
     return detail
 
@@ -283,6 +285,7 @@ async def negotiate_bill(
             amount_paisa=body.amount_paisa,
             note=body.note,
             actor=principal.tech_id,
+            actor_role=principal.role,
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
@@ -290,6 +293,8 @@ async def negotiate_bill(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     except JobConflictError as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except JobForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     await session.commit()
     return detail
 
@@ -314,9 +319,12 @@ async def log_payment(
             method=body.method,
             client_id=body.client_id,
             actor=principal.tech_id,
+            actor_role=principal.role,
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     await session.commit()
     return detail
 
@@ -341,9 +349,12 @@ async def void_payment(
             payment_id=payment_id,
             reason=body.reason,
             actor=principal.tech_id,
+            actor_role=principal.role,
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     await session.commit()
     return detail
 
@@ -362,10 +373,12 @@ async def record_location(
 ) -> JobDetail:
     try:
         detail = await service.record_location(
-            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id
+            job_id=job_id, shop_id=DEFAULT_SHOP_ID, body=body, actor=principal.tech_id, actor_role=principal.role
         )
     except JobNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     await session.commit()
     return detail
 

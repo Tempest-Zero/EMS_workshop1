@@ -1,9 +1,12 @@
 """HTTP endpoints for the identity slice (mounted under ``/api``).
 
-* ``GET  /api/technicians``                       — public roster for the login picker (no PINs).
-* ``POST /api/auth/login``                        — Name/PIN → JWT (throttled per account + per IP).
+* ``GET  /api/technicians/roster``                — public roster for the login picker (active only).
+* ``GET  /api/technicians``                       — full roster including inactive (manager only).
+* ``POST /api/technicians``                       — register a new technician (manager only).
+* ``PUT  /api/technicians/{id}``                  — edit, promote, or deactivate (manager only).
+* ``POST /api/auth/login``                        — Username/Password → JWT (throttled per account + per IP).
 * ``GET  /api/auth/me``                           — echo the verified caller (requires a token).
-* ``PUT  /api/technicians/{id}/pin``              — set a PIN (manager: anyone; tech: self).
+* ``PUT  /api/technicians/{id}/password``         — set a password (manager: anyone; tech: self).
 * ``POST /api/technicians/{id}/revoke-sessions``  — invalidate all live tokens (manager only).
 
 Commit discipline: the login service mutates throttle counters on *failure* —
@@ -26,16 +29,20 @@ from app.features.identity.schemas import (
     LoginRequest,
     LoginResponse,
     Principal,
-    SetPinRequest,
+    SetPasswordRequest,
+    TechnicianCreate,
     TechnicianPublic,
+    TechnicianUpdate,
 )
 from app.features.identity.service import (
     AccountLockedError,
     IdentityService,
     InvalidCredentialsError,
     NotPermittedError,
-    PinPolicyError,
+    PasswordPolicyError,
+    TechnicianIdConflictError,
     TechnicianNotFoundError,
+    UsernameConflictError,
 )
 from app.features.identity.throttle import IpRateLimiter
 
@@ -64,12 +71,66 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-@router.get("/technicians", response_model=list[TechnicianPublic], summary="Active roster")
-async def list_technicians(service: ServiceDep) -> list[TechnicianPublic]:
-    return await service.roster()
+@router.get("/technicians/roster", response_model=list[TechnicianPublic], summary="Public roster for login picker")
+async def list_roster(service: ServiceDep) -> list[TechnicianPublic]:
+    return await service.list_active()
 
 
-@router.post("/auth/login", response_model=LoginResponse, summary="Name/PIN → token")
+@router.get("/technicians", response_model=list[TechnicianPublic], summary="Full roster (manager only)")
+async def list_technicians(service: ServiceDep, _manager: CurrentManager) -> list[TechnicianPublic]:
+    return await service.list_all()
+
+
+@router.post(
+    "/technicians",
+    response_model=TechnicianPublic,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a new technician (manager only)",
+)
+async def create_technician(
+    body: TechnicianCreate,
+    service: ServiceDep,
+    session: SessionDep,
+    _manager: CurrentManager,
+) -> TechnicianPublic:
+    try:
+        tech = await service.create_technician(body)
+    except TechnicianIdConflictError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except UsernameConflictError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except PasswordPolicyError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    await session.commit()
+    return tech
+
+
+@router.put(
+    "/technicians/{tech_id}",
+    response_model=TechnicianPublic,
+    summary="Edit, promote, or deactivate a technician (manager only)",
+)
+async def update_technician(
+    tech_id: str,
+    body: TechnicianUpdate,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+    _manager: CurrentManager,
+) -> TechnicianPublic:
+    try:
+        tech = await service.update_technician(
+            actor_id=principal.tech_id, tech_id=tech_id, body=body
+        )
+    except TechnicianNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except NotPermittedError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    await session.commit()
+    return tech
+
+
+@router.post("/auth/login", response_model=LoginResponse, summary="Username/Password → token")
 async def login(
     body: LoginRequest, request: Request, service: ServiceDep, session: SessionDep
 ) -> LoginResponse:
@@ -80,7 +141,7 @@ async def login(
             headers={"Retry-After": "60"},
         )
     try:
-        resp = await service.login(tech_id=body.tech_id, pin=body.pin)
+        resp = await service.login(username=body.username, password=body.password)
     except AccountLockedError as e:
         await session.commit()  # nothing changed, but keep the branch uniform
         raise HTTPException(
@@ -90,7 +151,7 @@ async def login(
         ) from e
     except InvalidCredentialsError as e:
         await session.commit()  # persist the bumped failure counter / new lock
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid tech id or PIN") from e
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid username or password") from e
     await session.commit()  # persist the counter reset
     return resp
 
@@ -101,29 +162,29 @@ async def me(principal: CurrentPrincipal) -> Principal:
 
 
 @router.put(
-    "/technicians/{tech_id}/pin",
+    "/technicians/{tech_id}/password",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Set a technician's PIN (manager: anyone; technician: own only)",
+    summary="Set a technician's password (manager: anyone; technician: own only)",
 )
-async def set_pin(
+async def set_password(
     tech_id: str,
-    body: SetPinRequest,
+    body: SetPasswordRequest,
     service: ServiceDep,
     session: SessionDep,
     principal: CurrentPrincipal,
 ) -> Response:
     try:
-        await service.set_pin(
+        await service.set_password(
             actor_id=principal.tech_id,
             actor_role=principal.role,
             tech_id=tech_id,
-            pin=body.pin,
+            password=body.password,
         )
     except NotPermittedError as e:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     except TechnicianNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
-    except PinPolicyError as e:
+    except PasswordPolicyError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

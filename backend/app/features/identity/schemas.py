@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 Role = str  # "tech" | "manager" (checked at the DB; not enumerated for the client)
@@ -14,23 +16,44 @@ class TechnicianPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    username: str
     name: str
     specialty: str | None = None
     avatar: str | None = None
     role: str
     active: bool
+    must_change_password: bool
 
 
 class LoginRequest(BaseModel):
-    tech_id: str = Field(..., min_length=1, max_length=64)
-    pin: str = Field(..., min_length=3, max_length=12)
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=8, max_length=128)
 
 
-class SetPinRequest(BaseModel):
-    """New PIN for an account. The digit/length policy lives in the service —
-    the minimum depends on the *target's* role (managers need 6+)."""
+class SetPasswordRequest(BaseModel):
+    """New password for an account."""
 
-    pin: str = Field(..., min_length=4, max_length=12)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class TechnicianCreate(BaseModel):
+    id: str = Field(..., min_length=1, max_length=16, pattern=r"^[a-zA-Z0-9_-]+$")
+    username: str = Field(..., min_length=1, max_length=64)
+    name: str = Field(..., min_length=1, max_length=128)
+    password: str = Field(..., min_length=8, max_length=128)
+    role: Literal["tech", "manager"] = "tech"
+    specialty: str | None = Field(default=None, max_length=128)
+    phone: str | None = Field(default=None, max_length=32)
+    avatar: str | None = Field(default=None, max_length=32)
+
+
+class TechnicianUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    specialty: str | None = Field(default=None, max_length=128)
+    phone: str | None = Field(default=None, max_length=32)
+    avatar: str | None = Field(default=None, max_length=32)
+    role: Literal["tech", "manager"] | None = None
+    active: bool | None = None
 
 
 class LoginResponse(BaseModel):
@@ -44,3 +67,4 @@ class Principal(BaseModel):
     tech_id: str
     role: str
     name: str
+    must_change_password: bool

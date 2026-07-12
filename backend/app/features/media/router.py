@@ -72,9 +72,10 @@ async def request_upload(
     # caller could reserve unlimited rows under arbitrary keys (the storage
     # path is prefixed with this id) and mint signed PUT URLs into the bucket —
     # and the closing-video gate counts rows by exactly this key.
-    job_status = await jobs.status_by_token(token=job_id, shop_id=DEFAULT_SHOP_ID)
-    if job_status is None:
+    job_info = await jobs.info_by_token(token=job_id, shop_id=DEFAULT_SHOP_ID)
+    if job_info is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"job {job_id} not found")
+    job_status, _ = job_info
     # Evidence freezes at close (mirrors the delete policy below): adding
     # "evidence" to an already-closed job is a manager-only correction.
     if job_status == "closed" and principal.role != "manager":
@@ -130,7 +131,8 @@ async def delete_media(
     principal: CurrentPrincipal,
     jobs: JobsServiceDep,
 ) -> Response:
-    job_status = await jobs.status_by_token(token=job_id, shop_id=DEFAULT_SHOP_ID)
+    job_info = await jobs.info_by_token(token=job_id, shop_id=DEFAULT_SHOP_ID)
+    job_status, job_assigned_tech_id = job_info if job_info else (None, None)
     try:
         await service.delete(
             job_id=job_id,
@@ -138,6 +140,7 @@ async def delete_media(
             requested_by=principal.tech_id,
             is_manager=principal.role == "manager",
             job_open=job_status != "closed",
+            job_assigned_tech_id=job_assigned_tech_id,
         )
     except MediaNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e

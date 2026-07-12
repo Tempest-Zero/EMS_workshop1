@@ -27,8 +27,10 @@ interface AuthState {
   ready: boolean;
   isAuthenticated: boolean;
   technician: Technician | null;
-  login: (techId: string, pin: string) => Promise<void>;
+  needsPasswordChange: boolean;
+  login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const Ctx = createContext<AuthState | null>(null);
@@ -72,8 +74,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null);
   }, []);
 
-  const login = useCallback(async (techId: string, pin: string) => {
-    const res = await authApi.login(techId, pin);
+  const login = useCallback(async (username: string, password: string) => {
+    const res = await authApi.login(username, password);
     await setToken(res.token);
     await AsyncStorage.setItem(TECH_KEY, JSON.stringify(res.technician));
     setTok(res.token);
@@ -81,6 +83,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOutboxPrincipal(res.technician.id);
     await resumeOutbox(res.technician.id);
   }, []);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const principal = await authApi.me();
+      if (technician) {
+        const updated = { ...technician, must_change_password: principal.must_change_password };
+        await AsyncStorage.setItem(TECH_KEY, JSON.stringify(updated));
+        setTechnician(updated);
+      }
+    } catch {
+      // Ignored
+    }
+  }, [technician]);
 
   const logout = useCallback(async () => {
     await stopDutyPings(); // privacy: stop location recording before signing out
@@ -93,7 +108,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ ready, isAuthenticated: !!token, technician, login, logout }}
+      value={{ 
+        ready, 
+        isAuthenticated: !!token, 
+        technician, 
+        needsPasswordChange: technician?.must_change_password ?? false,
+        login, 
+        logout,
+        refreshUser
+      }}
     >
       {children}
     </Ctx.Provider>

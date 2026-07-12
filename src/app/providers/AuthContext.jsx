@@ -10,7 +10,7 @@ const AuthContext = createContext(null);
  * `/auth/me` (which also validates the token); a 401 anywhere clears it.
  */
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null); // { tech_id, role, name } | null
+  const [user, setUser] = useState(null); // { tech_id, role, name, must_change_password } | null
   const [ready, setReady] = useState(false); // initial token check finished
 
   useEffect(() => {
@@ -34,16 +34,29 @@ export function AuthProvider({ children }) {
       .finally(() => setReady(true));
   }, []);
 
-  const login = useCallback(async (techId, pin) => {
-    const tech = await apiLogin(techId, pin);
-    // Manager-only console: refuse a valid but non-manager login (the picker
-    // already lists managers only — this is the enforcement behind it).
+  const login = useCallback(async (username, password) => {
+    const tech = await apiLogin(username, password);
+    // Manager-only console: refuse a valid but non-manager login
     if (tech.role !== "manager") {
       setToken(null);
       throw new Error("not-a-manager");
     }
-    setUser({ tech_id: tech.id, role: tech.role, name: tech.name });
+    setUser({ 
+      tech_id: tech.id, 
+      role: tech.role, 
+      name: tech.name, 
+      must_change_password: tech.must_change_password 
+    });
     return tech;
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const principal = await me();
+      setUser(principal);
+    } catch {
+      // Ignored
+    }
   }, []);
 
   const logout = useCallback(() => {
@@ -51,7 +64,15 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
-  const value = { user, isAuthenticated: Boolean(user), ready, login, logout };
+  const value = { 
+    user, 
+    isAuthenticated: Boolean(user), 
+    needsPasswordChange: user?.must_change_password,
+    ready, 
+    login, 
+    logout,
+    refreshUser
+  };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
