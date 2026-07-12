@@ -634,6 +634,16 @@ export function JobDetailScreen({ route, navigation }: Props) {
               >
                 <Text style={styles.btnDarkText}>📋 Open Job Wizard</Text>
               </Pressable>
+              {isVisit ? (
+                <Pressable
+                  style={styles.travelAgainLink}
+                  onPress={() => navigation.navigate("Travel", { id, token })}
+                >
+                  <Text style={styles.travelAgainText}>
+                    🚗 Travel again — start a new trip
+                  </Text>
+                </Pressable>
+              ) : null}
             </>
           )}
         </View>
@@ -1390,6 +1400,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   travelBtnText: { color: "white", fontSize: 16, fontWeight: "800", letterSpacing: 0.5 },
+  travelAgainLink: { marginTop: 8, alignItems: "center", paddingVertical: 6 },
+  travelAgainText: { color: "#475569", fontWeight: "700", fontSize: 13 },
   wizardBtn: {
     marginTop: 12,
     backgroundColor: "#2563eb",
