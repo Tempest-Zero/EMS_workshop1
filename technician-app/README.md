@@ -20,9 +20,9 @@ technician-app/
   src/
     features/
       auth/                     # LoginScreen + AuthContext (Name + PIN → JWT)
-      jobs/                     # JobsList · JobDetail · CompleteJob · VoiceNote (the core flow)
+      jobs/                     # JobsList · JobDetail (the lean hub) · arrival wizard · BillSheet · Travel
       attendance/               # ClockScreen — selfie + GPS clock-in/out, offline queue
-      media/                    # before/after capture (JobMediaCapture, MediaTile, useMedia)
+      media/                    # upload pipeline + read-only evidence strip (EvidenceStrip, MediaTile, useMedia)
       profile/                  # ProfileScreen
     lib/
       api.ts, jobsApi.ts, attendanceApi.ts, authApi.ts, devicesApi.ts  # typed FastAPI clients

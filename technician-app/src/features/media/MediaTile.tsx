@@ -1,22 +1,22 @@
 /**
- * One thumbnail for a captured Before/After artefact.
+ * One read-only thumbnail for a captured evidence artefact.
  *
  * Videos play in-place via `expo-video`'s `useVideoPlayer` + `<VideoView>`
  * (the modern API — `expo-av` is deprecated). Photos render via `<Image>`.
  * A pending row (uploaded === false) shows its status as a fallback.
+ * Deleting media is the wizard's job (where capture lives), not the tile's.
  */
 
 import { VideoView, useVideoPlayer } from "expo-video";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, StyleSheet, Text, View } from "react-native";
 
 import type { MediaItem } from "../../lib/api";
 
 interface Props {
   item: MediaItem;
-  onDelete: () => void;
 }
 
-export function MediaTile({ item, onDelete }: Props) {
+export function MediaTile({ item }: Props) {
   const player = useVideoPlayer(item.playback_url ?? "", (p) => {
     p.loop = false;
   });
@@ -45,9 +45,6 @@ export function MediaTile({ item, onDelete }: Props) {
       <View style={styles.typeBadge}>
         <Text style={styles.typeBadgeText}>{item.type}</Text>
       </View>
-      <Pressable style={styles.delete} onPress={onDelete} hitSlop={8}>
-        <Text style={styles.deleteText}>×</Text>
-      </Pressable>
     </View>
   );
 }
@@ -90,16 +87,4 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     textTransform: "uppercase",
   },
-  delete: {
-    position: "absolute",
-    right: 4,
-    top: 4,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: "rgba(0,0,0,0.65)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  deleteText: { color: "white", fontSize: 16, lineHeight: 18, marginTop: -2 },
 });
