@@ -537,7 +537,10 @@ export function JobDetailScreen({ route, navigation }: Props) {
   const hasBill = job.bill_original_paisa != null;
   const negotiatePaisa = rupeesToPaisa(negotiate);
   const payPaisa = rupeesToPaisa(payAmount);
-  const isVisit = job.job_type === "home-visit";
+  // A "visit" is any job the shop travels for — home-visit AND pickup-delivery
+  // (the shop drives both ways). Only a carry-in has no travel leg. Matches the
+  // backend's create-time rule.
+  const isVisit = job.job_type !== "carry-in";
   const hasDepart = job.locations.some((l) => l.kind === "depart_workshop");
   const hasArrive = job.locations.some((l) => l.kind === "arrive_customer");
 

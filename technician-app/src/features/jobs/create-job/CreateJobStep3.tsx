@@ -40,8 +40,11 @@ export function CreateJobStep3({ location, setLocation, customerLat, customerLng
   const [selectedTimeSlot, setSelectedTimeSlot] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
 
-  const isStep3Valid = serviceType !== '' && timeWindow !== '' && location.trim().length > 0;
   const isVisit = serviceType !== 'Carry-in';
+  // Carry-in has no travel: the address and schedule are visit-only (the server
+  // drops them anyway), so they can't gate the step for a carry-in.
+  const isStep3Valid =
+    serviceType !== '' && (!isVisit || (timeWindow !== '' && location.trim().length > 0));
 
   // "I'm standing at the customer's door" — pin from the tech's own GPS.
   const useMyLocation = async () => {
@@ -147,7 +150,7 @@ export function CreateJobStep3({ location, setLocation, customerLat, customerLng
           <Text style={styles.addressIcon}>📍</Text>
           <TextInput
             style={styles.addressInput}
-            placeholder="Type customer address..."
+            placeholder={isVisit ? 'Type customer address...' : 'Customer address (optional)...'}
             placeholderTextColor="#94a3b8"
             value={location}
             onChangeText={setLocation}
@@ -155,31 +158,37 @@ export function CreateJobStep3({ location, setLocation, customerLat, customerLng
           />
         </View>
 
-        <View style={styles.spacer} />
+        {/* Scheduling is visit-only — a carry-in is dropped off, there is no
+            appointment window. */}
+        {isVisit ? (
+          <>
+            <View style={styles.spacer} />
 
-        {/* 3. SCHEDULING CHIPS (WITH POPUP TRIGGER) */}
-        <View style={styles.chipRow}>
-          {['Today 4-6', 'Tmrw AM'].map((item) => (
-            <Pressable 
-              key={item} 
-              style={[styles.chip, timeWindow === item && styles.chipActive]}
-              onPress={() => setTimeWindow(item)}
-            >
-              <Text style={[styles.chipText, timeWindow === item && styles.chipTextActive]}>{item}</Text>
-            </Pressable>
-          ))}
-          
-          {/* 🪄 The Custom "Pick..." Button */}
-          <Pressable 
-            style={[styles.chip, isCustomTime && styles.chipActive]}
-            onPress={() => setShowCalendar(true)}
-          >
-            <Text style={[styles.chipText, isCustomTime && styles.chipTextActive]}>
-              {isCustomTime ? timeWindow : '🗓️ Pick date...'}
-            </Text>
-          </Pressable>
-        </View>
-        
+            {/* 3. SCHEDULING CHIPS (WITH POPUP TRIGGER) */}
+            <View style={styles.chipRow}>
+              {['Today 4-6', 'Tmrw AM'].map((item) => (
+                <Pressable
+                  key={item}
+                  style={[styles.chip, timeWindow === item && styles.chipActive]}
+                  onPress={() => setTimeWindow(item)}
+                >
+                  <Text style={[styles.chipText, timeWindow === item && styles.chipTextActive]}>{item}</Text>
+                </Pressable>
+              ))}
+
+              {/* 🪄 The Custom "Pick..." Button */}
+              <Pressable
+                style={[styles.chip, isCustomTime && styles.chipActive]}
+                onPress={() => setShowCalendar(true)}
+              >
+                <Text style={[styles.chipText, isCustomTime && styles.chipTextActive]}>
+                  {isCustomTime ? timeWindow : '🗓️ Pick date...'}
+                </Text>
+              </Pressable>
+            </View>
+          </>
+        ) : null}
+
       </ScrollView>
 
       {/* STICKY FOOTER */}

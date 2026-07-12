@@ -60,7 +60,9 @@ export function CreateJobWizard({ navigation }: Props) {
   const isStep1Valid = phone.length >= 10 && name.trim().length > 0;
   // 🪄 Step 2 requires an appliance, a brand, and AT LEAST ONE format of problem description
   const isStep2Valid = appliance !== '' && brand !== '' && (problemText.trim().length > 0 || problemAudio.length > 0);
-  const isStep3Valid = location !== '' && serviceType !== '' && timeWindow !== ''; 
+  // Carry-in drops the visit-only address + schedule, so they can't gate step 3.
+  const isStep3Valid =
+    serviceType === 'Carry-in' ? true : location !== '' && timeWindow !== '';
   const isStep4Valid = estimate.trim().length > 0;
 
   // 🟢 SMART DOT NAVIGATION 
