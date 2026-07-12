@@ -33,6 +33,7 @@ export function VoiceNote({
   onChange: (uri: string | null) => void;
 }) {
   const recordingRef = useRef<Audio.Recording | null>(null);
+  const startingRef = useRef(false);
   const soundRef = useRef<Audio.Sound | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const mounted = useRef(true);
@@ -94,7 +95,12 @@ export function VoiceNote({
   };
 
   const start = async () => {
+    // Guard a double-tap: a second start while one is preparing would fail
+    // and its catch used to orphan the FIRST recording (mic held forever).
+    if (startingRef.current || recordingRef.current) return;
+    startingRef.current = true;
     setError(null);
+    let rec: Audio.Recording | null = null;
     try {
       const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) {
@@ -102,7 +108,7 @@ export function VoiceNote({
         return;
       }
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const rec = new Audio.Recording();
+      rec = new Audio.Recording();
       await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await rec.startAsync();
       recordingRef.current = rec;
@@ -118,13 +124,16 @@ export function VoiceNote({
         });
       }, TICK_MS);
     } catch (e) {
-      recordingRef.current = null;
+      // Unload the half-started session — never leave it holding the mic.
+      await rec?.stopAndUnloadAsync().catch(() => {});
       clearTimer();
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
       if (mounted.current) {
         setRecording(false);
         setError(`Couldn't start recording: ${e instanceof Error ? e.message : String(e)}`);
       }
+    } finally {
+      startingRef.current = false;
     }
   };
 

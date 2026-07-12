@@ -9,12 +9,12 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, View, SafeAreaView, StatusBar } from 'react-native';
 
-import { ApiError, type MediaType, type Phase } from "../../../lib/api";
+import { api, ApiError, type MediaType, type Phase } from "../../../lib/api";
 import { jobsApi, type JobType } from "../../../lib/jobsApi";
 import type { RootStackParamList } from "../../../lib/navigation";
 import { makeItem } from "../../../lib/outbox";
 import { sendOrQueue } from "../../../lib/outboxSync";
-import { enqueuePendingMedia } from "../../media/pendingMedia";
+import { enqueuePendingMedia, removePendingMedia } from "../../media/pendingMedia";
 import { uploadMedia } from "../../media/uploadMedia";
 import {
   clearArrivalDraft,
@@ -207,7 +207,18 @@ export function ArrivalJobWizard({ route, navigation }: Props) {
               update({ voiceUri: uri });
               void uploadEvidence("voice", "remark", "audio", uri, "audio/mp4");
             }}
-            onDeleted={() => update({ voiceUri: null, remarkMediaId: null })}
+            onDeleted={() => {
+              // The eager upload may already be server-side — delete it there
+              // too (best-effort: offline leaves the row and the next clip
+              // simply supersedes it as the completion's link), and drop any
+              // still-queued offline copy so a deleted note can't upload later.
+              const mediaId = draftRef.current?.remarkMediaId;
+              if (mediaId) void api.deleteMedia(String(token), mediaId).catch(() => {});
+              void removePendingMedia(`arrival:${id}:voice`);
+              const uploads = { ...(draftRef.current?.uploads ?? {}) };
+              delete uploads.voice;
+              update({ voiceUri: null, remarkMediaId: null, uploads });
+            }}
             onNext={() => update({ step: 3 })}
           />
         )}
