@@ -14,7 +14,10 @@ export default function JobCard({ job }) {
   const tech = technicians.find((t) => t.id === job.assignedTechId);
   const owed = amountOwed(job);
   const c = statusConfig[job.status];
-  const isVisit = job.jobType === "home-visit";
+  // The shop travels for home visits AND pickups; only a carry-in has no leg.
+  const isVisit = Boolean(job.jobType) && job.jobType !== "carry-in";
+  const typeLabel =
+    job.jobType === "pickup-delivery" ? "Pickup" : isVisit ? "Home Visit" : "Carry-in";
   const waitDays = job.waitingSince ? daysSince(job.waitingSince) : 0;
   const readyDays = job.readySince ? daysSince(job.readySince) : 0;
 
@@ -37,7 +40,7 @@ export default function JobCard({ job }) {
             </div>
             <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
               {isVisit ? <Home className="h-3 w-3" /> : null}
-              {isVisit ? "Home Visit" : "Carry-in"}
+              {typeLabel}
             </span>
           </div>
 

@@ -4,10 +4,10 @@ other slices; the web client maps to its view shape)."""
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.shared.phone import canonicalize_pk_phone
 
@@ -54,6 +54,25 @@ class JobCreate(BaseModel):
     # writer links-or-creates the customer and appends a consent event.
     whatsapp_consent: bool = False
     shop_id: str = Field(default=DEFAULT_SHOP_ID, max_length=64)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_type_from_address(cls, values: Any) -> Any:
+        """A create that sends an address but no explicit type means a travel
+        job — default it to home-visit, not carry-in.
+
+        The silent carry-in default made every typeless intake (older
+        clients, scripts) a no-travel job, which hid the whole travel flow on
+        the phone. An explicit ``job_type`` always wins; only the omitted
+        case is inferred.
+        """
+        if (
+            isinstance(values, dict)
+            and "job_type" not in values
+            and str(values.get("customer_address") or "").strip()
+        ):
+            values["job_type"] = "home-visit"
+        return values
 
     @field_validator("customer_phone")
     @classmethod

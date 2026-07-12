@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Home, Package } from "lucide-react";
+import { Home, Package, Truck } from "lucide-react";
 import { useApp } from "@app/providers/AppContext";
 import { inputClass, Field } from "@shared/ui/primitives";
 import { APPLIANCE_TYPES } from "@shared/config/constants";
@@ -11,7 +11,10 @@ export default function NewJobForm({ onSubmit }) {
   // Field technicians only — the manager account isn't assignable. Default to
   // unassigned: the job lands on the work list for dual assignment.
   const assignable = technicians.filter((t) => t.role !== "manager");
-  const [jobType, setJobType] = useState("carry-in");
+  // No preselected type: the silent carry-in default sent real home visits
+  // into the DB typeless, which hid the whole travel flow on the phone.
+  const [jobType, setJobType] = useState("");
+  const [typeMissing, setTypeMissing] = useState(false);
   const [applianceType, setApplianceType] = useState(APPLIANCE_TYPES[0]);
   const [assignedTechId, setAssignedTechId] = useState("");
   const [form, setForm] = useState({
@@ -26,17 +29,25 @@ export default function NewJobForm({ onSubmit }) {
   });
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-  const isVisit = jobType === "home-visit";
+  // The shop travels for home visits AND pickups; only a carry-in has no leg.
+  const isVisit = jobType === "home-visit" || jobType === "pickup-delivery";
 
   const submit = (e) => {
     e.preventDefault();
+    if (!jobType) {
+      setTypeMissing(true);
+      return;
+    }
     onSubmit({ ...form, jobType, applianceType, assignedTechId });
   };
 
   const toggle = (val, label, Icon) => (
     <button
       type="button"
-      onClick={() => setJobType(val)}
+      onClick={() => {
+        setJobType(val);
+        setTypeMissing(false);
+      }}
       className={`flex flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-bold transition ${
         jobType === val
           ? "border-slate-900 bg-slate-900 text-white"
@@ -53,7 +64,13 @@ export default function NewJobForm({ onSubmit }) {
       <div className="flex gap-2">
         {toggle("carry-in", "Carry-in", Package)}
         {toggle("home-visit", "Home Visit", Home)}
+        {toggle("pickup-delivery", "Pickup", Truck)}
       </div>
+      {typeMissing && (
+        <p className="text-xs font-semibold text-red-600">
+          Pick how the appliance reaches the shop — carry-in, home visit, or pickup.
+        </p>
+      )}
 
       <Field label="Customer Name">
         <input

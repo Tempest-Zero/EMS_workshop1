@@ -90,7 +90,10 @@ export default function JobDetail({ tech = false }) {
   }
 
   const technician = app.technicians.find((t) => t.id === job.assignedTechId);
-  const isVisit = job.jobType === "home-visit";
+  // The shop travels for home visits AND pickups; only a carry-in has no leg.
+  const isVisit = Boolean(job.jobType) && job.jobType !== "carry-in";
+  const typeLabel =
+    job.jobType === "pickup-delivery" ? "Pickup" : isVisit ? "Home Visit" : "Carry-in";
   const owed = amountOwed(job);
   const paid = amountPaid(job);
   const bal = balance(job);
@@ -131,7 +134,7 @@ export default function JobDetail({ tech = false }) {
             </div>
             <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
               {isVisit ? <Home className="h-3.5 w-3.5" /> : null}
-              {isVisit ? "Home Visit" : "Carry-in"}
+              {typeLabel}
             </span>
           </div>
 
