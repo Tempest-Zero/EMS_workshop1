@@ -55,6 +55,8 @@ from app.features.jobs.schemas import (
     TransitionRequest,
     TravelSampleBatch,
     TravelSampleBatchResponse,
+    TravelTrailOut,
+    TravelTrailSampleOut,
 )
 from app.features.media.service import MediaService
 from app.shared.geo import haversine_m
@@ -279,6 +281,72 @@ _LOCATION_EVENT_LABELS = {
     "depart_workshop_delivery": "left workshop (delivery)",
     "arrive_customer_delivery": "arrived at customer (delivery)",
 }
+
+# ── Punch verdicts (0037) — flag-never-block, the attendance posture ─────────
+# Which reference circle judges each punch kind: the job's customer pin for
+# the customer-side kinds, the workshop attendance fence for the rest.
+_CUSTOMER_SIDE_KINDS = frozenset({"arrive_customer", "depart_customer", "arrive_customer_delivery"})
+
+
+def punch_verdict(
+    *,
+    lat: float,
+    lng: float,
+    accuracy_m: float | None,
+    is_mock: bool,
+    reference: tuple[float, float, float] | None,
+) -> tuple[float | None, bool | None]:
+    """``(distance_m, verified)`` for a punch judged against its reference
+    circle ``(center_lat, center_lng, radius_m)``.
+
+    ``distance_m`` is stored whenever a reference exists — even for a mock or
+    coarse fix it's evidence. ``verified`` is tri-state: ``None`` when there is
+    nothing to judge against or the fix can't support a judgement (mock, or
+    accuracy above ``jobs_punch_accuracy_ceiling_m`` — a 500 m-blur fix says
+    nothing either way); otherwise inside-the-radius. Mirrors attendance's
+    ``inside_geofence`` semantics so the manager reads one vocabulary."""
+    if reference is None:
+        return None, None
+    center_lat, center_lng, radius_m = reference
+    distance = haversine_m(lat, lng, center_lat, center_lng)
+    judgeable = (
+        not is_mock
+        and accuracy_m is not None
+        and accuracy_m <= settings.jobs_punch_accuracy_ceiling_m
+    )
+    return distance, (distance <= radius_m) if judgeable else None
+
+
+def _off_pin_suffix(distance_m: float) -> str:
+    """Timeline honesty for a confidently-off-site punch."""
+    away = f"{distance_m / 1000:.1f} km" if distance_m >= 1000 else f"{round(distance_m)} m"
+    return f" — off-pin ({away} away)"
+
+
+def decimate_trail(samples: list[JobTravelSample], max_points: int) -> list[JobTravelSample]:
+    """Thin an oversized trail to ~``max_points`` for the map read (0037).
+
+    Uniform stride PER LEG — each leg keeps its shape, its first/last points,
+    and at least two points, with the budget split proportionally to leg size.
+    The per-leg floor and rounding mean the result can slightly exceed
+    ``max_points``; that honesty beats dropping a short leg entirely. Callers
+    pass ``captured_at``-ascending samples; original order is preserved."""
+    if len(samples) <= max_points:
+        return samples
+    by_leg: dict[str, list[int]] = {}
+    for i, s in enumerate(samples):
+        by_leg.setdefault(s.leg, []).append(i)
+    keep: set[int] = set()
+    for indices in by_leg.values():
+        budget = max(2, round(max_points * len(indices) / len(samples)))
+        n = len(indices)
+        if n <= budget:
+            keep.update(indices)
+            continue
+        step = (n - 1) / (budget - 1)
+        keep.update(indices[round(k * step)] for k in range(budget))
+        keep.add(indices[-1])  # rounding must never drop a leg's endpoint
+    return [samples[i] for i in sorted(keep)]
 
 
 # ── Outbox dispatch (W7/D1) ───────────────────────────────────────────────────
@@ -979,16 +1047,48 @@ class JobService:
         return await self._detail(row)
 
     # ── GPS route (Phase 3) ──────────────────────────────────────────────
+    async def _punch_reference(self, row: JobRow, kind: str) -> tuple[float, float, float] | None:
+        """The circle a punch of ``kind`` is judged against (0037): the job's
+        customer pin for customer-side kinds, the workshop attendance fence
+        for workshop-side kinds. ``None`` when there is nothing to judge
+        against (no pin on the job / no fence configured) — the punch is then
+        recorded unjudged, exactly as before 0037."""
+        if kind in _CUSTOMER_SIDE_KINDS:
+            if row.customer_lat is None or row.customer_lng is None:
+                return None
+            return row.customer_lat, row.customer_lng, settings.jobs_arrival_radius_m
+        workshop = await self._workshop(row.shop_id)
+        if workshop is None:
+            return None
+        center_lat, center_lng, radius_m = workshop
+        # The fence radius wins when it's the wider circle — a big yard must
+        # not flag its own techs; the floor keeps a tight fence from flagging
+        # a punch from the parking lane across the road.
+        return center_lat, center_lng, max(float(radius_m), settings.jobs_arrival_radius_m)
+
     async def record_location(
         self, *, job_id: UUID, shop_id: str, body: LocationRequest, actor: str | None
     ) -> JobDetail:
         """Record a GPS punch. Idempotent on ``client_id`` — replaying a queued
         punch (offline retry) does NOT duplicate it. Once both pins exist the
-        detail carries the derived route distance + fuel estimate."""
+        detail carries the derived route distance + fuel estimate.
+
+        Verdict at ingest (0037), flag-never-block: the punch is judged against
+        its reference circle as it exists NOW — an offline punch replayed hours
+        later is judged against the pin at replay time. The phone's tap-time
+        soft-block is the only gate; here the verdict is recorded for manager
+        oversight and an off-pin punch says so on the timeline."""
         row = await self._load(job_id, shop_id)
         existing = await self._repo.get_location_by_client(body.client_id)
         if existing is None:
             now = datetime.now(UTC)
+            distance_m, verified = punch_verdict(
+                lat=body.lat,
+                lng=body.lng,
+                accuracy_m=body.accuracy_m,
+                is_mock=body.is_mock,
+                reference=await self._punch_reference(row, body.kind),
+            )
             await self._repo.add_location(
                 JobLocation(
                     job_id=row.id,
@@ -1004,15 +1104,82 @@ class JobService:
                     # in derive_route depends on this.
                     captured_at=_effective_capture_time(body.device_time, now),
                     device_time=body.device_time,
+                    distance_m=distance_m,
+                    verified=verified,
                 )
             )
             label = _LOCATION_EVENT_LABELS[body.kind]
             mock = " (mock location)" if body.is_mock else ""
+            off_pin = _off_pin_suffix(distance_m) if verified is False and distance_m else ""
             await self._repo.add_event(
-                JobEvent(job_id=row.id, kind="gps", text=f"GPS — {label}{mock}", actor=actor)
+                JobEvent(
+                    job_id=row.id, kind="gps", text=f"GPS — {label}{mock}{off_pin}", actor=actor
+                )
             )
             row.updated_at = datetime.now(UTC)
         return await self._detail(row)
+
+    async def set_customer_pin(
+        self,
+        *,
+        job_id: UUID,
+        shop_id: str,
+        lat: float,
+        lng: float,
+        actor: str,
+        actor_is_manager: bool,
+    ) -> JobDetail:
+        """Set / move the job's customer home pin. The tech standing at the
+        door knows the real spot better than the intake guess — but the pin
+        anchors arrival verdicts and the fuel line, so it's guarded to the
+        assigned tech (or a manager) and every move is an audited timeline
+        event. Idempotent by value: the outbox replaying the same coordinates
+        returns the detail without a duplicate event."""
+        row = await self._load(job_id, shop_id)
+        if row.job_type == "carry-in":
+            raise JobActionError("a carry-in job has no travel — there is no pin to set")
+        if not actor_is_manager and row.assigned_tech_id != actor:
+            raise JobForbiddenError(f"job {job_id} is not assigned to {actor}")
+        if row.customer_lat == lat and row.customer_lng == lng:
+            return await self._detail(row)
+        had_pin = row.customer_lat is not None and row.customer_lng is not None
+        payload = {
+            "lat": lat,
+            "lng": lng,
+            "prev_lat": row.customer_lat,
+            "prev_lng": row.customer_lng,
+        }
+        row.customer_lat = lat
+        row.customer_lng = lng
+        row.updated_at = datetime.now(UTC)
+        verb = "moved" if had_pin else "set"
+        await self._repo.add_event(
+            JobEvent(
+                job_id=row.id,
+                kind="pin",
+                text=f"Customer pin {verb} ({lat:.5f}, {lng:.5f})",
+                actor=actor,
+                # Numbers/None only (C9) — the coordinates ARE the fact.
+                payload=payload,
+            )
+        )
+        return await self._detail(row)
+
+    async def travel_trail(
+        self, *, job_id: UUID, shop_id: str, leg: str | None, max_points: int
+    ) -> TravelTrailOut:
+        """The recorded breadcrumb trail, decimated for the manager's job map.
+        Read-only oversight — the billing path never reads through here."""
+        row = await self._load(job_id, shop_id)
+        samples = await self._repo.list_travel_samples(row.id)
+        if leg is not None:
+            samples = [s for s in samples if s.leg == leg]
+        kept = decimate_trail(samples, max_points)
+        return TravelTrailOut(
+            samples=[TravelTrailSampleOut.model_validate(s) for s in kept],
+            total=len(samples),
+            returned=len(kept),
+        )
 
     async def record_travel_samples(
         self,

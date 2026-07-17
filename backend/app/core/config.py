@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # these feed billing, so they must not silently move with attendance tuning.
     jobs_gps_backdate_ceiling_hours: int = 48
     jobs_gps_future_tolerance_seconds: int = 120
+    # Punch-verdict circle (0037). A customer-side punch is judged against the
+    # job's home pin with this radius; a workshop-side punch against the
+    # attendance fence (whose radius wins when larger). 250 m = "confidently
+    # not there" — generous enough that a hand-dropped intake pin or urban GPS
+    # drift never flags a real arrival. Matches the phone's tap-time gate.
+    jobs_arrival_radius_m: float = 250.0
+    # A punch fix coarser than this can't support a verdict either way →
+    # verified stays NULL (the attendance accuracy-ceiling pattern; same value
+    # as the phone's CONFIRM_ACCURACY_MAX_M so client and server agree).
+    jobs_punch_accuracy_ceiling_m: float = 100.0
 
     # ── Push (Firebase Cloud Messaging, HTTP v1) ─────────────────────────
     # The FCM service-account JSON, base64-encoded (set in Railway). The backend

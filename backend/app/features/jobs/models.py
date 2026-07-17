@@ -374,6 +374,14 @@ class JobLocation(Base):
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
     )
     device_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Ingest-time verdict vs the punch's reference circle (0037): the customer
+    # pin for customer-side kinds, the workshop fence for workshop-side kinds.
+    # ``distance_m`` is stored whenever a reference existed (evidence, even on
+    # a mock/coarse fix); ``verified`` is tri-state like attendance's
+    # ``inside_geofence`` — NULL means unjudged (no reference / mock / coarse).
+    # Flag-never-block: the phone's tap-time soft-block is the only gate.
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class JobTravelSample(Base):

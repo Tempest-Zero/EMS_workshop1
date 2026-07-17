@@ -227,6 +227,20 @@ class LocationOut(BaseModel):
     is_mock: bool
     captured_at: datetime
     device_time: datetime | None = None
+    # Ingest-time verdict (0037): metres from the punch's reference circle
+    # (customer pin / workshop fence) + the tri-state judgement. NULLs on
+    # pre-0037 rows and unjudgeable fixes (no reference / mock / coarse).
+    distance_m: float | None = None
+    verified: bool | None = None
+
+
+class PinRequest(BaseModel):
+    """Set / move the job's customer home pin from the travel screen (the tech
+    at the door knows the real spot better than the intake guess). Idempotent
+    by value — the outbox replaying the same coordinates is a no-op."""
+
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
 
 
 class RouteOut(BaseModel):
@@ -281,6 +295,30 @@ class TravelSampleBatchResponse(BaseModel):
     deduped: int
     rejected: int = 0
     route: RouteOut | None = None
+
+
+class TravelTrailSampleOut(BaseModel):
+    """One breadcrumb of the recorded trail, read back for the manager's job
+    map. Deliberately lean — no ids or tech snapshot; the map only plots."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    leg: str
+    lat: float
+    lng: float
+    accuracy_m: float | None = None
+    is_mock: bool
+    captured_at: datetime
+
+
+class TravelTrailOut(BaseModel):
+    """The breadcrumb trail for a job (manager oversight). ``samples`` is
+    decimated to ~``max_points`` (uniform stride per leg, endpoints kept);
+    ``total`` vs ``returned`` says how much was thinned."""
+
+    samples: list[TravelTrailSampleOut] = []
+    total: int
+    returned: int
 
 
 class EvidenceGap(BaseModel):
