@@ -430,6 +430,17 @@ export function JobDetailScreen({ route, navigation }: Props) {
   // backend's create-time rule.
   const isVisit = job.job_type !== "carry-in";
   const hasArrive = job.locations.some((l) => l.kind === "arrive_customer");
+  // Return leg: offer "head back" once they've arrived, until an
+  // arrive_workshop punch AFTER the latest customer arrival closes the loop.
+  // Deliberately independent of `open` — the drive back usually happens after
+  // the job closed, and it still needs recording for the fuel line.
+  const lastArriveAt = job.locations
+    .filter((l) => l.kind === "arrive_customer")
+    .reduce<string | null>((max, l) => (max === null || l.captured_at > max ? l.captured_at : max), null);
+  const returned =
+    lastArriveAt !== null &&
+    job.locations.some((l) => l.kind === "arrive_workshop" && l.captured_at > lastArriveAt);
+  const showHeadBack = isVisit && hasArrive && !returned;
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -514,6 +525,23 @@ export function JobDetailScreen({ route, navigation }: Props) {
               ) : null}
             </>
           )}
+        </View>
+      ) : null}
+
+      {/* The return leg — outside the `open` gate on purpose: the drive back
+          usually happens after the job closed, and the fuel line wants it. */}
+      {showHeadBack ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>RETURN TRIP</Text>
+          <Text style={styles.sub}>
+            Record the drive back — it completes the travel/fuel record for this job.
+          </Text>
+          <Pressable
+            style={styles.travelBtn}
+            onPress={() => navigation.navigate("Travel", { id, token, leg: "return" })}
+          >
+            <Text style={styles.travelBtnText}>🏭 HEAD BACK TO WORKSHOP</Text>
+          </Pressable>
         </View>
       ) : null}
 

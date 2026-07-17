@@ -10,5 +10,7 @@ export type JobsStackParamList = {
   JobDetail: { id: string; token: number };
   CompleteJob: { id: string; token: number };
   CreateJob: undefined;
-  Travel: { id: string; token: number };
+  /** `leg` picks the travel phase: outbound (default) or the return to the
+   * workshop after the job. */
+  Travel: { id: string; token: number; leg?: "outbound" | "return" };
 };

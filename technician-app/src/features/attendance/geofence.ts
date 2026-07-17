@@ -23,6 +23,7 @@ import * as TaskManager from "expo-task-manager";
 import { attendanceApi, type ActiveGeofence, type PresenceKind } from "../../lib/attendanceApi";
 import { getToken, loadToken } from "../../lib/auth";
 import { haversineM } from "../../lib/geo";
+import { maybePromptReturn } from "../jobs/returnPrompt";
 import { maybePromptTravel } from "../jobs/travelPrompt";
 import { getLocation, type LocationReading } from "./location";
 import { notifyArrived, notifyLeaving } from "./attendanceNotifications";
@@ -72,8 +73,9 @@ function verdictConfirmed(verdict: CrossingVerdict): boolean | null {
   return null; // unknown — recorded as evidence, OS event trusted
 }
 
-/** The last fence the phone cached (written by `fetchActiveFence`); no network. */
-async function loadCachedFence(): Promise<ActiveGeofence | null> {
+/** The last fence the phone cached (written by `fetchActiveFence`); no network.
+ * Exported for the jobs return-leg screen — the workshop is its destination. */
+export async function loadCachedFence(): Promise<ActiveGeofence | null> {
   try {
     const raw = await AsyncStorage.getItem(FENCE_CACHE_KEY);
     return raw ? (JSON.parse(raw) as ActiveGeofence | null) : null;
@@ -236,9 +238,14 @@ export async function handleGeofenceEvent(
     const { verdict, loc } = await confirmCrossing("arrive");
     await recordCrossing("arrive", techId, { loc, confirmed: verdictConfirmed(verdict) });
     // A contradicted crossing is kept as evidence but stays silent (flap noise).
-    // Otherwise: don't nag if already on duty; if the check can't run (offline),
-    // err toward reminding — a redundant prompt beats a forgotten clock-in.
-    if (verdict !== "contradicted" && (await isClockedIn(techId)) !== true) await notifyArrived();
+    if (verdict !== "contradicted") {
+      // Don't nag if already on duty; if the check can't run (offline), err
+      // toward reminding — a redundant prompt beats a forgotten clock-in.
+      if ((await isClockedIn(techId)) !== true) await notifyArrived();
+      // Independently: a return breadcrumb leg armed while entering the fence
+      // means they're back from a job — nudge the arrive_workshop punch.
+      await maybePromptReturn(techId);
+    }
   } else if (eventType === Location.GeofencingEventType.Exit) {
     if (await isDuplicate("depart")) return;
     const { verdict, loc } = await confirmCrossing("depart");

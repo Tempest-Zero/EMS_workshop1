@@ -14,6 +14,11 @@
  *                    uncertain passes (the server's ingest verdict is the
  *                    manager's backstop — flag, never block). Then the
  *                    arrive_customer punch, sampler stop, job hub.
+ *
+ * RETURN MODE (`leg: "return"`): the same screen driving the trip back —
+ * destination = the cached workshop fence, HEAD BACK → depart_customer punch
+ * + a return breadcrumb leg, I'M BACK → the same soft-block gate against the
+ * fence, then the arrive_workshop punch closes the travel record.
  */
 import type { CompositeScreenProps } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -28,9 +33,11 @@ import { loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
 import type { RootStackParamList } from "../../lib/navigation";
 import { makeItem } from "../../lib/outbox";
 import { sendOrQueue } from "../../lib/outboxSync";
+import { type ActiveGeofence } from "../../lib/attendanceApi";
+import { loadCachedFence } from "../attendance/geofence";
 import { getLocation, type LocationReading } from "../attendance/location";
 import { useAuth } from "../auth/AuthContext";
-import { evaluateArrival, formatDistanceM } from "./arrivalGate";
+import { ARRIVE_RADIUS_M, evaluateArrival, formatDistanceM } from "./arrivalGate";
 import { loadTravelTrail, startJobTravel, stopJobTravel } from "./travelTracker";
 import type { JobsStackParamList } from "./types";
 
@@ -53,6 +60,7 @@ type LatLng = { latitude: number; longitude: number };
 
 export function TravelScreen({ route, navigation }: Props) {
   const { id, token } = route.params;
+  const returnMode = route.params.leg === "return";
   const { technician } = useAuth();
 
   const [job, setJob] = useState<JobDetail | null>(null);
@@ -62,6 +70,20 @@ export function TravelScreen({ route, navigation }: Props) {
   const [myFix, setMyFix] = useState<LocationReading | null>(null);
   const [draftPin, setDraftPin] = useState<LatLng | null>(null);
   const [trail, setTrail] = useState<LatLng[]>([]);
+  const [fence, setFence] = useState<ActiveGeofence | null>(null);
+
+  // Return mode navigates to the workshop — the cached attendance fence is
+  // its pin (offline-safe read; null just degrades the gate to allow).
+  useEffect(() => {
+    if (!returnMode) return;
+    let cancelled = false;
+    void loadCachedFence().then((f) => {
+      if (!cancelled) setFence(f);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [returnMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,17 +109,30 @@ export function TravelScreen({ route, navigation }: Props) {
   // on the road. Counting (not `some`) lets a re-visit — reschedule, part
   // pickup, customer-unreachable retry — start a NEW trip after an earlier
   // arrival, instead of the first arrive punch hiding START TRAVEL forever.
-  const departs = job?.locations.filter((l) => l.kind === "depart_workshop").length ?? 0;
-  const arrives = job?.locations.filter((l) => l.kind === "arrive_customer").length ?? 0;
+  // Return mode pairs the return punches instead.
+  const departKind = returnMode ? "depart_customer" : "depart_workshop";
+  const arriveKind = returnMode ? "arrive_workshop" : "arrive_customer";
+  const departs = job?.locations.filter((l) => l.kind === departKind).length ?? 0;
+  const arrives = job?.locations.filter((l) => l.kind === arriveKind).length ?? 0;
   const inTransit = departs > arrives;
 
-  const pin: LatLng | null =
+  const customerPin: LatLng | null =
     job?.customer_lat != null && job.customer_lng != null
       ? { latitude: job.customer_lat, longitude: job.customer_lng }
       : null;
+  const fencePin: LatLng | null =
+    fence !== null ? { latitude: fence.center_lat, longitude: fence.center_lng } : null;
+  /** Where this leg is heading — the customer's home, or the workshop. */
+  const pin = returnMode ? fencePin : customerPin;
   // A visit job with no pin gets the editor instead of START TRAVEL — the pin
   // is what arrival is verified against, so travel can't start without one.
-  const editingPin = job !== null && pin === null && !inTransit;
+  // (Outbound only: the workshop's pin is the fence, not tech-editable.)
+  const editingPin = !returnMode && job !== null && pin === null && !inTransit;
+  // The workshop gate honours a fence radius wider than the default — a big
+  // yard must not block its own techs (mirrors the server's rule).
+  const gateRadiusM = returnMode
+    ? Math.max(fence?.radius_m ?? 0, ARRIVE_RADIUS_M)
+    : ARRIVE_RADIUS_M;
 
   /** One GPS read shared by the gate and the punch — one fix, one truth. */
   const readFix = useCallback(async (): Promise<Fix | null> => {
@@ -154,17 +189,19 @@ export function TravelScreen({ route, navigation }: Props) {
   );
 
   const startTravel = async () => {
-    if (busy || !pin) return;
+    // Outbound requires the customer pin (the arrival anchor); the return's
+    // depart is at the customer — no pin precondition.
+    if (busy || (!returnMode && !pin)) return;
     setBusy("depart");
     setError(null);
     setInfo(null);
     try {
       const fix = await readFix();
       if (!fix) return;
-      const ok = await sendPunch("depart_workshop", fix);
+      const ok = await sendPunch(returnMode ? "depart_customer" : "depart_workshop", fix);
       if (ok && technician) {
         // Punch landed (or queued) → start the breadcrumb trail for this leg.
-        await startJobTravel(id, technician.id);
+        await startJobTravel(id, technician.id, returnMode ? "return" : "outbound");
       }
     } finally {
       setBusy(null);
@@ -181,15 +218,27 @@ export function TravelScreen({ route, navigation }: Props) {
       if (!fix) return;
       // TAP-TIME GATE (the only gate — an offline-queued punch replays
       // ungated by design; the server's ingest verdict is the backstop).
-      const gate = evaluateArrival(fix, pin ? { lat: pin.latitude, lng: pin.longitude } : null);
+      const gate = evaluateArrival(
+        fix,
+        pin ? { lat: pin.latitude, lng: pin.longitude } : null,
+        gateRadiusM,
+      );
       if (gate.verdict === "block") {
         setError(
-          `You're ${formatDistanceM(gate.distanceM)} from the customer's pin — get closer, or fix the pin if it's in the wrong place.`,
+          returnMode
+            ? `You're ${formatDistanceM(gate.distanceM)} from the workshop — get closer before punching your return.`
+            : `You're ${formatDistanceM(gate.distanceM)} from the customer's pin — get closer, or fix the pin if it's in the wrong place.`,
         );
         return;
       }
-      if (!(await sendPunch("arrive_customer", fix))) return;
+      if (!(await sendPunch(returnMode ? "arrive_workshop" : "arrive_customer", fix))) return;
       await stopJobTravel(technician?.id ?? null); // privacy stop + final drain
+      if (returnMode) {
+        Alert.alert("Return recorded", "The travel record for this job is complete.", [
+          { text: "OK", onPress: () => navigation.navigate("JobDetail", { id, token }) },
+        ]);
+        return;
+      }
       Alert.alert("Arrival recorded", "Entering the job hub.", [
         {
           text: "OK",
@@ -266,9 +315,11 @@ export function TravelScreen({ route, navigation }: Props) {
   }, [inTransit, id]);
 
   const openNavigation = () => {
-    if (job?.customer_lat != null && job.customer_lng != null) {
+    if (returnMode && fencePin) {
+      void Linking.openURL(`google.navigation:q=${fencePin.latitude},${fencePin.longitude}`);
+    } else if (!returnMode && job?.customer_lat != null && job.customer_lng != null) {
       void Linking.openURL(`google.navigation:q=${job.customer_lat},${job.customer_lng}`);
-    } else if (job?.customer_address) {
+    } else if (!returnMode && job?.customer_address) {
       void Linking.openURL(`geo:0,0?q=${encodeURIComponent(job.customer_address)}`);
     }
   };
@@ -287,10 +338,10 @@ export function TravelScreen({ route, navigation }: Props) {
           <Text style={styles.backArrow}>←</Text>
         </Pressable>
         <View style={styles.headerText}>
-          <Text style={styles.headerSub}>Navigating to</Text>
+          <Text style={styles.headerSub}>{returnMode ? "Returning from" : "Navigating to"}</Text>
           <Text style={styles.headerTitle}>Job #{token}</Text>
         </View>
-        {pin || job?.customer_address ? (
+        {pin || (!returnMode && job?.customer_address) ? (
           <Pressable style={styles.navBtn} onPress={openNavigation}>
             <Text style={styles.navBtnText}>🧭 Navigate</Text>
           </Pressable>
@@ -323,7 +374,7 @@ export function TravelScreen({ route, navigation }: Props) {
               editingPin ? (e) => setDraftPin(e.nativeEvent.coordinate) : undefined
             }
           >
-            {pin ? <Marker coordinate={pin} title={job.customer_name} /> : null}
+            {pin ? <Marker coordinate={pin} title={returnMode ? "Workshop" : job.customer_name} /> : null}
             {editingPin && draftPin ? (
               <Marker
                 draggable
@@ -353,11 +404,17 @@ export function TravelScreen({ route, navigation }: Props) {
           ) : distanceKm != null ? (
             <>
               <Text style={styles.etaTime}>{distanceKm.toFixed(1)} km</Text>
-              <Text style={styles.etaDistance}>straight line to the customer</Text>
+              <Text style={styles.etaDistance}>
+                {returnMode ? "straight line to the workshop" : "straight line to the customer"}
+              </Text>
             </>
           ) : (
             <Text style={styles.etaDistance}>
-              {pin ? "Getting your position…" : "No home pin on this job"}
+              {pin
+                ? "Getting your position…"
+                : returnMode
+                  ? "No workshop fence cached — punch still works"
+                  : "No home pin on this job"}
             </Text>
           )}
         </View>
@@ -393,7 +450,9 @@ export function TravelScreen({ route, navigation }: Props) {
         ) : !inTransit ? (
           <>
             <Text style={styles.instructionText}>
-              Punch out of the workshop — your route is recorded for the fuel bill.
+              {returnMode
+                ? "Heading back? Punch out of the customer's place — the return is recorded for the fuel bill."
+                : "Punch out of the workshop — your route is recorded for the fuel bill."}
             </Text>
             <Pressable
               style={[styles.actionBtn, styles.departBtn, busy === "depart" && styles.btnBusy]}
@@ -401,14 +460,16 @@ export function TravelScreen({ route, navigation }: Props) {
               onPress={() => void startTravel()}
             >
               <Text style={styles.actionBtnText}>
-                {busy === "depart" ? "Recording…" : "🚀 START TRAVEL"}
+                {busy === "depart" ? "Recording…" : returnMode ? "🏭 HEAD BACK" : "🚀 START TRAVEL"}
               </Text>
             </Pressable>
           </>
         ) : (
           <>
             <Text style={styles.instructionText}>
-              Drive safely. Tap below once you reach the customer's gate or door.
+              {returnMode
+                ? "Drive safely. Tap below once you're back at the workshop."
+                : "Drive safely. Tap below once you reach the customer's gate or door."}
             </Text>
             <Pressable
               style={[styles.actionBtn, styles.arriveBtn, busy === "arrive" && styles.btnBusy]}
@@ -416,7 +477,11 @@ export function TravelScreen({ route, navigation }: Props) {
               onPress={() => void arrive()}
             >
               <Text style={styles.actionBtnText}>
-                {busy === "arrive" ? "Checking distance…" : "I HAVE ARRIVED"}
+                {busy === "arrive"
+                  ? "Checking distance…"
+                  : returnMode
+                    ? "I'M BACK AT THE WORKSHOP"
+                    : "I HAVE ARRIVED"}
               </Text>
             </Pressable>
           </>
