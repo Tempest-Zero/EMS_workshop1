@@ -1342,6 +1342,8 @@ def test_derive_route_measures_return_leg_estimate() -> None:
     )
     route = derive_route(locations, [], rate_paisa_per_km=2000, circuity_factor=1.35)
     assert route is not None
+    assert route.return_distance_m is not None
+    assert route.round_trip_distance_m is not None
     assert route.return_distance_m == pytest.approx(_STRAIGHT_RETURN * 1.35)
     assert route.return_basis == "estimate"
     assert route.round_trip_distance_m == pytest.approx(route.distance_m + route.return_distance_m)
@@ -1373,6 +1375,7 @@ def test_derive_route_round_trip_breadcrumbs_needs_both_legs() -> None:
     samples = _drive(11, zigzag=True) + _return_drive(11, start=_T0 + timedelta(minutes=61))
     route = derive_route(locations, samples, rate_paisa_per_km=2000, circuity_factor=1.35)
     assert route is not None
+    assert route.return_distance_m is not None
     assert route.basis == "breadcrumbs"
     assert route.return_basis == "breadcrumbs"
     assert route.round_trip_basis == "breadcrumbs"
