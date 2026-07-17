@@ -51,6 +51,7 @@ import { loadTravelQueue } from "./travelQueue";
 import {
   ensureTravelTracking,
   handleTravelUpdate,
+  loadTravelTrail,
   MAX_TRAVEL_MS,
   startJobTravel,
   stopJobTravel,
@@ -162,4 +163,61 @@ it("stopJobTravel clears the session and kicks a final drain", async () => {
 
   expect(mockStore[TRAVEL_KEY]).toBeUndefined();
   expect(mockSync).toHaveBeenCalledWith("t1");
+});
+
+// ── The on-screen trail (the travel-map polyline) ───────────────────────────
+it("mirrors each fix into the session trail", async () => {
+  signIn();
+  await startJobTravel("job-1", "t1");
+  await handleTravelUpdate([fix()]);
+  await handleTravelUpdate([fix({ latitude: 24.861 })]);
+
+  const trail = await loadTravelTrail();
+  expect(trail?.jobId).toBe("job-1");
+  expect(trail?.leg).toBe("outbound");
+  expect(trail?.points).toHaveLength(2);
+  expect(trail?.points[1]).toMatchObject({ lat: 24.861, lng: 67.0 });
+});
+
+it("a new job's leg resets the trail instead of appending to the old one", async () => {
+  signIn();
+  await startJobTravel("job-1", "t1");
+  await handleTravelUpdate([fix()]);
+  await stopJobTravel("t1");
+
+  await startJobTravel("job-2", "t1");
+  await handleTravelUpdate([fix({ latitude: 24.9 })]);
+
+  const trail = await loadTravelTrail();
+  expect(trail?.jobId).toBe("job-2");
+  expect(trail?.points).toHaveLength(1);
+});
+
+it("caps the trail at its ring size (oldest points dropped)", async () => {
+  signIn();
+  await startJobTravel("job-1", "t1");
+  const many = Array.from({ length: 1005 }, (_, i) => fix({ latitude: 24 + i * 0.0001 }));
+  await handleTravelUpdate(many);
+
+  const trail = await loadTravelTrail();
+  expect(trail?.points).toHaveLength(1000);
+  // The newest survive; the first five were dropped.
+  expect(trail?.points[999]?.lat).toBeCloseTo(24 + 1004 * 0.0001, 6);
+});
+
+it("stopJobTravel clears the trail — it belongs to the leg", async () => {
+  signIn();
+  await startJobTravel("job-1", "t1");
+  await handleTravelUpdate([fix()]);
+  expect(await loadTravelTrail()).not.toBeNull();
+
+  await stopJobTravel("t1");
+  expect(await loadTravelTrail()).toBeNull();
+});
+
+it("a discarded fix (no active travel) never reaches the trail", async () => {
+  signIn();
+  mockRunning = true; // orphaned OS task, no active session
+  await handleTravelUpdate([fix()]);
+  expect(await loadTravelTrail()).toBeNull();
 });

@@ -27,6 +27,7 @@ export type OutboxKind =
   | "void"
   | "negotiate"
   | "location"
+  | "customer_pin"
   | "ready"
   | "note"
   | "transition";

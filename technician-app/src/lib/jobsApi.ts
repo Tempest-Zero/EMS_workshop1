@@ -82,7 +82,15 @@ export interface Payment {
   recorded_at: string;
 }
 
-export type LocationKind = "depart_workshop" | "arrive_customer";
+/** All six punch kinds (the backend rail accepted them all along): the
+ * outbound pair, the return pair, and the pickup-delivery transport pair. */
+export type LocationKind =
+  | "depart_workshop"
+  | "arrive_customer"
+  | "depart_customer"
+  | "arrive_workshop"
+  | "depart_workshop_delivery"
+  | "arrive_customer_delivery";
 
 export interface JobLocation {
   id: string;
@@ -93,6 +101,11 @@ export interface JobLocation {
   is_mock: boolean;
   captured_at: string;
   device_time: string | null;
+  /** Ingest-time verdict (0037): metres from the punch's reference circle
+   * (customer pin / workshop fence) + the tri-state judgement. Optional so a
+   * pre-0037 backend response still parses. */
+  distance_m?: number | null;
+  verified?: boolean | null;
 }
 
 export interface Route {
@@ -102,9 +115,16 @@ export interface Route {
   fuel_paisa: number;
   basis: "estimate" | "breadcrumbs";
   sample_count: number;
-  /** What an omitted-fuel completion bills (outbound × 2). */
+  /** Measured return leg (depart_customer → arrive_workshop) — null/0 until
+   * it exists. Optional so a pre-return backend response still parses. */
+  return_distance_m?: number | null;
+  return_basis?: "estimate" | "breadcrumbs" | null;
+  return_sample_count?: number;
+  /** What an omitted-fuel completion bills: outbound + measured return when
+   * present, else outbound × 2. */
   round_trip_distance_m: number;
   round_trip_fuel_paisa: number;
+  round_trip_basis?: "estimate" | "breadcrumbs";
 }
 
 export interface LocationInput {
@@ -270,4 +290,13 @@ export const jobsApi = {
       `/api/jobs/${encodeURIComponent(id)}/travel-samples`,
       { method: "POST", body: JSON.stringify({ samples }) },
     ),
+
+  // Set / move the customer's home pin (0037) — the tech at the door knows the
+  // real spot better than the intake guess. Assigned-tech-or-manager server-
+  // side; idempotent by value, so an outbox replay is a safe no-op.
+  setCustomerPin: (id: string, body: { lat: number; lng: number }) =>
+    request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}/customer-pin`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

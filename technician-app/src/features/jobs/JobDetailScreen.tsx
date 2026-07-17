@@ -75,6 +75,8 @@ function itemLabel(item: OutboxItem): string {
       return "Payment correction (void)";
     case "location":
       return "GPS punch";
+    case "customer_pin":
+      return "Customer home pin";
     case "ready":
       return "Mark Ready";
     case "note":
