@@ -22,6 +22,19 @@ export function fetchEvidenceGaps() {
   return apiGet("/api/jobs/evidence-gaps");
 }
 
+/**
+ * The recorded breadcrumb trail for a job's travel map (manager-only; the
+ * server decimates to ~`maxPoints` per leg, endpoints kept). Returns
+ * `{ samples: [{leg, lat, lng, accuracy_m, is_mock, captured_at}], total, returned }`.
+ */
+export function fetchTravelSamples(id, { leg, maxPoints } = {}) {
+  const params = new URLSearchParams();
+  if (leg) params.set("leg", leg);
+  if (maxPoints) params.set("max_points", String(maxPoints));
+  const qs = params.toString();
+  return apiGet(`/api/jobs/${encodeURIComponent(id)}/travel-samples${qs ? `?${qs}` : ""}`);
+}
+
 export function createJob(body) {
   return apiSend("/api/jobs", "POST", body);
 }
