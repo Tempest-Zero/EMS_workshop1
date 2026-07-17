@@ -244,12 +244,17 @@ class PinRequest(BaseModel):
 
 
 class RouteOut(BaseModel):
-    """The derived route between the two pins — present only once both exist.
-    ``distance_m`` is the billable ONE-WAY distance: the breadcrumb path-sum
-    when trusted samples cover the drive (``basis='breadcrumbs'``), else
-    straight-line × circuity factor (``basis='estimate'``). ``fuel_paisa`` is
-    the running cost for that leg (integer paisa, never floats); the
-    ``round_trip_*`` pair is what an omitted-fuel completion bills."""
+    """The derived route between the pins — present only once travel provably
+    happened. ``distance_m`` is the billable ONE-WAY outbound distance: the
+    breadcrumb path-sum when trusted samples cover the drive
+    (``basis='breadcrumbs'``), else straight-line × circuity factor
+    (``basis='estimate'``). The ``return_*`` trio is the measured return leg
+    (depart_customer → arrive_workshop), ``None``/0 until it exists.
+    ``fuel_paisa`` is the running cost for the outbound leg (integer paisa,
+    never floats); the ``round_trip_*`` fields are what an omitted-fuel
+    completion bills — outbound + measured return, else outbound × 2.
+    ``round_trip_basis`` is ``'breadcrumbs'`` only when every measured leg
+    was breadcrumb-derived."""
 
     distance_m: float
     fuel_paisa: int
@@ -257,8 +262,12 @@ class RouteOut(BaseModel):
     # Trusted (non-mock, accurate-enough) outbound samples inside the punch
     # window — how much real evidence backs the number.
     sample_count: int = 0
+    return_distance_m: float | None = None
+    return_basis: Literal["estimate", "breadcrumbs"] | None = None
+    return_sample_count: int = 0
     round_trip_distance_m: float | None = None
     round_trip_fuel_paisa: int | None = None
+    round_trip_basis: Literal["estimate", "breadcrumbs"] = "estimate"
 
 
 TravelLeg = Literal["outbound", "return", "delivery"]

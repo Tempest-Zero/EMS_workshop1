@@ -1268,7 +1268,9 @@ async def test_completion_uses_workshop_origin_when_depart_missing(
     completion = repo.add_completion.await_args.args[0]
     assert completion.fuel_basis == "estimate"
     assert completion.fuel_paisa > 0  # 0 without the workshop fallback
-    repo.list_travel_samples.assert_not_awaited()  # no depart pin → no breadcrumb query
+    # Samples ARE fetched now (an arrival exists — the return leg may need
+    # them), but the outbound still refuses breadcrumbs without a depart punch.
+    repo.list_travel_samples.assert_awaited()
 
 
 async def test_completion_resubmit_derives_with_the_snapshot_rate(
@@ -1294,6 +1296,191 @@ async def test_completion_resubmit_derives_with_the_snapshot_rate(
     straight = haversine_m(24.86, 67.0, 24.87, 67.0)
     one_way = straight * settings.fuel_route_circuity_factor
     assert existing.fuel_paisa == route_fuel_paisa(one_way * 2, snapshot_rate)
+
+
+# ── Return leg (PR B): depart_customer → arrive_workshop ─────────────────────
+_STRAIGHT_RETURN = haversine_m(24.87, 67.0, 24.86, 67.0)  # customer → workshop
+
+
+def _return_pins(
+    depart_at: datetime | None,
+    arrive_at: datetime,
+    *,
+    depart_lat: float = 24.87,
+    arrive_lat: float = 24.86,
+) -> list[JobLocation]:
+    pins: list[JobLocation] = []
+    if depart_at is not None:
+        dep = _loc("depart_customer", depart_lat, 67.0)
+        dep.captured_at = depart_at
+        pins.append(dep)
+    arr = _loc("arrive_workshop", arrive_lat, 67.0)
+    arr.captured_at = arrive_at
+    pins.append(arr)
+    return pins
+
+
+def _return_drive(n: int, *, start: datetime) -> list[JobTravelSample]:
+    """``n`` return-leg samples heading SOUTH from the customer, zigzagged so
+    the path-sum clears the straight line."""
+    return [
+        _sample(
+            24.87 - i * 0.001,
+            67.0 + (0.001 if i % 2 else 0.0),
+            start + timedelta(minutes=i),
+            leg="return",
+        )
+        for i in range(n)
+    ]
+
+
+def test_derive_route_measures_return_leg_estimate() -> None:
+    """All four punches, no breadcrumbs: the round trip is outbound + the
+    measured return estimate — no longer a blind ×2."""
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        _T0 + timedelta(minutes=60), _T0 + timedelta(minutes=75)
+    )
+    route = derive_route(locations, [], rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.return_distance_m == pytest.approx(_STRAIGHT_RETURN * 1.35)
+    assert route.return_basis == "estimate"
+    assert route.round_trip_distance_m == pytest.approx(route.distance_m + route.return_distance_m)
+    assert route.round_trip_basis == "estimate"
+    assert route.round_trip_fuel_paisa == route_fuel_paisa(route.round_trip_distance_m, 2000)
+
+
+def test_derive_route_return_breadcrumbs_win() -> None:
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        _T0 + timedelta(minutes=60), _T0 + timedelta(minutes=75)
+    )
+    ret_samples = _return_drive(11, start=_T0 + timedelta(minutes=61))
+    route = derive_route(locations, ret_samples, rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.return_basis == "breadcrumbs"
+    expected = path_sum_m(ret_samples)
+    assert expected is not None
+    assert route.return_distance_m == pytest.approx(expected)
+    assert route.return_sample_count == 11
+    # Outbound stayed an estimate → the mixed round trip is honestly an estimate.
+    assert route.basis == "estimate"
+    assert route.round_trip_basis == "estimate"
+
+
+def test_derive_route_round_trip_breadcrumbs_needs_both_legs() -> None:
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        _T0 + timedelta(minutes=60), _T0 + timedelta(minutes=75)
+    )
+    samples = _drive(11, zigzag=True) + _return_drive(11, start=_T0 + timedelta(minutes=61))
+    route = derive_route(locations, samples, rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.basis == "breadcrumbs"
+    assert route.return_basis == "breadcrumbs"
+    assert route.round_trip_basis == "breadcrumbs"
+    assert route.round_trip_distance_m == pytest.approx(route.distance_m + route.return_distance_m)
+
+
+def test_derive_route_out_of_order_arrive_workshop_is_not_a_return() -> None:
+    """An arrive_workshop punched BEFORE the customer arrival is punch-order
+    garbage — the round trip stays the doubled outbound."""
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        None,
+        _T0 + timedelta(minutes=5),  # predates the arrival
+    )
+    route = derive_route(locations, [], rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.return_distance_m is None
+    assert route.round_trip_distance_m == pytest.approx(route.distance_m * 2)
+    assert route.round_trip_basis == route.basis
+
+
+def test_derive_route_missing_depart_customer_uses_pin_origin() -> None:
+    """Forgot to punch 'head back': the customer pin stands in as the return
+    origin — and breadcrumbs are ineligible (the sampler never armed)."""
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        None, _T0 + timedelta(minutes=75)
+    )
+    ret_samples = _return_drive(11, start=_T0 + timedelta(minutes=61))
+    route = derive_route(
+        locations,
+        ret_samples,
+        rate_paisa_per_km=2000,
+        circuity_factor=1.35,
+        customer=(24.87, 67.0),
+    )
+    assert route is not None
+    assert route.return_basis == "estimate"  # no depart punch → no trail trust
+    assert route.return_distance_m == pytest.approx(_STRAIGHT_RETURN * 1.35)
+
+
+def test_derive_route_return_none_without_pin_or_depart() -> None:
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        None, _T0 + timedelta(minutes=75)
+    )
+    route = derive_route(locations, [], rate_paisa_per_km=2000, circuity_factor=1.35)
+    assert route is not None
+    assert route.return_distance_m is None
+    assert route.round_trip_distance_m == pytest.approx(route.distance_m * 2)
+
+
+def test_derive_route_far_arrive_workshop_snaps_to_fence() -> None:
+    """A bogus 'I'm back' punched 2 km from the fence must not inflate the
+    return — the fence centre is the honest destination."""
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        _T0 + timedelta(minutes=60), _T0 + timedelta(minutes=75), arrive_lat=24.84
+    )
+    route = derive_route(
+        locations, [], rate_paisa_per_km=2000, circuity_factor=1.35, workshop=_WORKSHOP
+    )
+    assert route is not None
+    assert route.return_distance_m == pytest.approx(_STRAIGHT_RETURN * 1.35)
+
+
+def test_derive_route_far_depart_customer_snaps_to_pin() -> None:
+    """A depart_customer punched far from the home pin (>500 m) is replaced by
+    the pin — symmetric with the workshop-origin rule."""
+    locations = _pins(_T0 - timedelta(minutes=1), _T0 + timedelta(minutes=15)) + _return_pins(
+        _T0 + timedelta(minutes=60), _T0 + timedelta(minutes=75), depart_lat=24.877
+    )
+    route = derive_route(
+        locations,
+        [],
+        rate_paisa_per_km=2000,
+        circuity_factor=1.35,
+        customer=(24.87, 67.0),
+    )
+    assert route is not None
+    assert route.return_distance_m == pytest.approx(_STRAIGHT_RETURN * 1.35)
+
+
+async def test_completion_bills_outbound_plus_measured_return(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """A resubmit after the tech returned bills the measured round trip (and
+    records both legs in the event payload)."""
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_locations.return_value = _pins(
+        _now() - timedelta(hours=2), _now() - timedelta(hours=1)
+    ) + _return_pins(_now() - timedelta(minutes=30), _now() - timedelta(minutes=10))
+
+    detail = await service.submit_completion(
+        job_id=job.id, shop_id="default", body=CompletionRequest(time_spent_mins=60), actor="t1"
+    )
+
+    straight_out = haversine_m(24.86, 67.0, 24.87, 67.0)
+    expected_out = straight_out * settings.fuel_route_circuity_factor
+    expected_ret = _STRAIGHT_RETURN * settings.fuel_route_circuity_factor
+    expected_fuel = route_fuel_paisa(expected_out + expected_ret, settings.fuel_rate_paisa_per_km)
+    completion = repo.add_completion.await_args.args[0]
+    assert completion.fuel_paisa == expected_fuel
+    assert completion.fuel_distance_m == pytest.approx(expected_out + expected_ret)
+    assert completion.fuel_basis == "estimate"
+    assert detail.bill_original_paisa == 120000 + expected_fuel  # labour + fuel
+
+    payload = repo.add_event.await_args.args[0].payload
+    assert payload["outbound_m"] == pytest.approx(expected_out)
+    assert payload["return_m"] == pytest.approx(expected_ret)
 
 
 # ── Punch verdicts (0037) — flag-never-block ─────────────────────────────────
