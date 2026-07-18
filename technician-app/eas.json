@@ -18,7 +18,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://efficient-tenderness-production-2d09.up.railway.app"
+        "EXPO_PUBLIC_API_URL": "https://efficient-tenderness-production-2d09.up.railway.app",
+        "EXPO_PUBLIC_SENTRY_DSN": ""
       }
     },
     "production": {
@@ -27,7 +28,8 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api.fixflow.example"
+        "EXPO_PUBLIC_API_URL": "https://api.fixflow.example",
+        "EXPO_PUBLIC_SENTRY_DSN": ""
       }
     }
   },
