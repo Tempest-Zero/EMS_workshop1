@@ -50,6 +50,7 @@ import type * as Location from "expo-location";
 import { loadTravelQueue } from "./travelQueue";
 import {
   ensureTravelTracking,
+  getActiveTravel,
   handleTravelUpdate,
   loadTravelTrail,
   MAX_TRAVEL_MS,
@@ -220,4 +221,63 @@ it("a discarded fix (no active travel) never reaches the trail", async () => {
   mockRunning = true; // orphaned OS task, no active session
   await handleTravelUpdate([fix()]);
   expect(await loadTravelTrail()).toBeNull();
+});
+
+// ── The return leg ──────────────────────────────────────────────────────────
+it("a return session stamps leg='return' on queue items and the trail", async () => {
+  signIn();
+  await startJobTravel("job-1", "t1", "return");
+  await handleTravelUpdate([fix()]);
+
+  const queue = await loadTravelQueue();
+  expect(queue[0]).toMatchObject({ job_id: "job-1", leg: "return" });
+  expect((await loadTravelTrail())?.leg).toBe("return");
+});
+
+it("switching outbound → return restarts the failsafe clock and the trail", async () => {
+  signIn();
+  // An outbound leg armed hours ago (but not yet expired).
+  mockStore[TRAVEL_KEY] = JSON.stringify({
+    jobId: "job-1",
+    techId: "t1",
+    leg: "outbound",
+    startedAt: new Date(Date.now() - MAX_TRAVEL_MS + 60_000).toISOString(),
+  });
+  await startJobTravel("job-1", "t1", "return");
+
+  const state = JSON.parse(mockStore[TRAVEL_KEY]!) as { leg: string; startedAt: string };
+  expect(state.leg).toBe("return");
+  // A NEW leg gets a fresh startedAt — the outbound's age must not expire it.
+  expect(Date.now() - Date.parse(state.startedAt)).toBeLessThan(5_000);
+});
+
+it("getActiveTravel reports the armed leg (outbound default for legacy state)", async () => {
+  signIn();
+  mockStore[TRAVEL_KEY] = JSON.stringify({
+    jobId: "job-1",
+    techId: "t1",
+    startedAt: new Date().toISOString(), // pre-return state: no leg field
+  });
+  expect(await getActiveTravel()).toEqual({ jobId: "job-1", leg: "outbound" });
+
+  await startJobTravel("job-2", "t1", "return");
+  expect(await getActiveTravel()).toEqual({ jobId: "job-2", leg: "return" });
+
+  await stopJobTravel("t1");
+  expect(await getActiveTravel()).toBeNull();
+});
+
+it("ensureTravelTracking re-arms preserving the return leg", async () => {
+  signIn();
+  mockStore[TRAVEL_KEY] = JSON.stringify({
+    jobId: "job-1",
+    techId: "t1",
+    leg: "return",
+    startedAt: new Date().toISOString(),
+  });
+
+  await ensureTravelTracking();
+  expect(mockStart).toHaveBeenCalled();
+  const state = JSON.parse(mockStore[TRAVEL_KEY]!) as { leg: string };
+  expect(state.leg).toBe("return"); // not silently reset to outbound
 });

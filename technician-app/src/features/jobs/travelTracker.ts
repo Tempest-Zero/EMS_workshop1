@@ -42,10 +42,16 @@ export const MAX_TRAVEL_MS = 4 * 60 * 60 * 1000;
 const SAMPLE_INTERVAL_MS = 20_000;
 const SAMPLE_DISTANCE_M = 50;
 
+/** Which travel phase the sampler is recording — the server's leg vocabulary
+ * minus "delivery" (the pickup-delivery flow reuses "outbound"/"return"). */
+export type TravelLegKind = "outbound" | "return";
+
 interface TravelState {
   jobId: string;
   techId: string;
   startedAt: string; // ISO — drives the max-duration failsafe
+  /** Absent on states written before the return leg existed → "outbound". */
+  leg?: TravelLegKind;
 }
 
 async function getSignedInTechId(): Promise<string | null> {
@@ -147,6 +153,14 @@ export async function hasActiveTravel(): Promise<boolean> {
   return state !== null && !expired(state);
 }
 
+/** The armed leg (job + phase), or null when idle/expired. The geofence-enter
+ * "you're back?" prompt reads this to know a return leg is being recorded. */
+export async function getActiveTravel(): Promise<{ jobId: string; leg: TravelLegKind } | null> {
+  const state = await readTravel();
+  if (state === null || expired(state)) return null;
+  return { jobId: state.jobId, leg: state.leg ?? "outbound" };
+}
+
 async function isRunning(): Promise<boolean> {
   try {
     return await Location.hasStartedLocationUpdatesAsync(TRAVEL_TASK);
@@ -155,14 +169,24 @@ async function isRunning(): Promise<boolean> {
   }
 }
 
-/** Arm breadcrumb sampling for a job's outbound leg (idempotent). Called by
- * the travel screen's START TRAVEL punch. Never throws. */
-export async function startJobTravel(jobId: string, techId: string): Promise<void> {
+/** Arm breadcrumb sampling for one leg of a job (idempotent). Called by the
+ * travel screen's START TRAVEL / HEAD BACK punches. Never throws. */
+export async function startJobTravel(
+  jobId: string,
+  techId: string,
+  leg: TravelLegKind = "outbound",
+): Promise<void> {
   const existing = await readTravel();
-  const continuing = existing?.jobId === jobId && existing.techId === techId;
+  const continuing =
+    existing?.jobId === jobId &&
+    existing.techId === techId &&
+    (existing.leg ?? "outbound") === leg;
   await writeTravel({
     jobId,
     techId,
+    leg,
+    // A NEW leg restarts the failsafe clock — the outbound's age must not
+    // expire the return before it begins.
     startedAt: continuing ? existing.startedAt : new Date().toISOString(),
   });
   try {
@@ -174,7 +198,8 @@ export async function startJobTravel(jobId: string, techId: string): Promise<voi
       pausesUpdatesAutomatically: false,
       showsBackgroundLocationIndicator: true,
       foregroundService: {
-        notificationTitle: "FixFlow — travelling to job",
+        notificationTitle:
+          leg === "return" ? "FixFlow — returning to workshop" : "FixFlow — travelling to job",
         notificationBody: "Your route is being recorded for the travel/fuel bill.",
       },
     });
@@ -200,7 +225,8 @@ export async function stopJobTravel(techId?: string | null): Promise<void> {
 }
 
 /** Idempotent reconcile (launch/foreground): active travel ∧ not running →
- * re-arm; no travel (or expired / signed out) ∧ running → stop. */
+ * re-arm (preserving the leg); no travel (or expired / signed out) ∧ running
+ * → stop. */
 export async function ensureTravelTracking(): Promise<void> {
   const techId = await getSignedInTechId();
   const state = await readTravel();
@@ -209,7 +235,7 @@ export async function ensureTravelTracking(): Promise<void> {
     if (running || state) await stopJobTravel(techId);
     return;
   }
-  if (!running) await startJobTravel(state.jobId, techId);
+  if (!running) await startJobTravel(state.jobId, techId, state.leg ?? "outbound");
 }
 
 /** Task body — exported for unit tests (mirrors handlePingUpdate). A fix that
@@ -231,12 +257,13 @@ export async function handleTravelUpdate(
     await stopJobTravel(techId); // the failsafe — forgotten arrival punch
     return;
   }
+  const leg = state.leg ?? "outbound";
   for (const fix of locations) {
     const item: QueuedTravelSample = {
       client_id: Crypto.randomUUID(),
       job_id: state.jobId,
       tech_id: techId,
-      leg: "outbound",
+      leg,
       lat: fix.coords.latitude,
       lng: fix.coords.longitude,
       accuracy_m: fix.coords.accuracy ?? null,
@@ -250,7 +277,7 @@ export async function handleTravelUpdate(
   // Mirror the fixes into the bounded on-screen trail (same leg vocabulary).
   await appendTrailPoints(
     state.jobId,
-    "outbound",
+    leg,
     locations.map((fix) => ({
       lat: fix.coords.latitude,
       lng: fix.coords.longitude,

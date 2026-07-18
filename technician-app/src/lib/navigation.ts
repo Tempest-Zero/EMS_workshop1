@@ -32,11 +32,15 @@ export function navigateToClock(): void {
   }
 }
 
-/** Deep-link the Travel screen for a specific job (the geofence travel prompt).
- * No-op until the container is mounted. */
-export function navigateToJobTravel(id: string, token: number): void {
+/** Deep-link the Travel screen for a specific job (the geofence travel/return
+ * prompts). No-op until the container is mounted. */
+export function navigateToJobTravel(
+  id: string,
+  token: number,
+  leg: "outbound" | "return" = "outbound",
+): void {
   if (navigationRef.isReady()) {
-    navigationRef.navigate("My Jobs", { screen: "Travel", params: { id, token } });
+    navigationRef.navigate("My Jobs", { screen: "Travel", params: { id, token, leg } });
   }
 }
 

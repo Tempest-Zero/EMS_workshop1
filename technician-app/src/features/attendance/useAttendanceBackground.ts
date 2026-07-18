@@ -13,6 +13,7 @@ import { useEffect } from "react";
 import { AppState } from "react-native";
 
 import { navigateToClock, navigateToJobs, navigateToJobTravel } from "../../lib/navigation";
+import type { ReturnPromptData } from "../jobs/returnPrompt";
 import type { TravelPromptData } from "../jobs/travelPrompt";
 import { ensureTravelTracking } from "../jobs/travelTracker";
 import type { AttendancePromptData } from "./attendanceNotifications";
@@ -24,6 +25,7 @@ function routeFromResponse(response: Notifications.NotificationResponse | null):
   const data = response?.notification.request.content.data as
     | Partial<AttendancePromptData>
     | Partial<TravelPromptData>
+    | Partial<ReturnPromptData>
     | undefined;
   if (data?.type === "attendance_prompt") {
     navigateToClock();
@@ -35,6 +37,14 @@ function routeFromResponse(response: Notifications.NotificationResponse | null):
     // opens the jobs hub so the tech picks.
     if (data.id && typeof data.token === "number") navigateToJobTravel(data.id, data.token);
     else navigateToJobs();
+    return;
+  }
+  if (data?.type === "return_prompt") {
+    // "Back at the workshop?" → the Travel screen in return mode, ready for
+    // the arrive_workshop punch.
+    if (data.id && typeof data.token === "number") {
+      navigateToJobTravel(data.id, data.token, "return");
+    }
   }
 }
 
