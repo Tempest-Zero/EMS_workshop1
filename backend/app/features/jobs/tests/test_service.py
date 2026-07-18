@@ -34,6 +34,7 @@ from app.features.jobs.service import (
     JobForbiddenError,
     JobNotFoundError,
     JobService,
+    decimate_trail,
     derive_route,
     path_sum_m,
     route_fuel_paisa,
@@ -1293,3 +1294,364 @@ async def test_completion_resubmit_derives_with_the_snapshot_rate(
     straight = haversine_m(24.86, 67.0, 24.87, 67.0)
     one_way = straight * settings.fuel_route_circuity_factor
     assert existing.fuel_paisa == route_fuel_paisa(one_way * 2, snapshot_rate)
+
+
+# ── Punch verdicts (0037) — flag-never-block ─────────────────────────────────
+def _pinned_job(lat: float = 24.86, lng: float = 67.0) -> JobRow:
+    job = _open_job()
+    job.customer_lat = lat
+    job.customer_lng = lng
+    return job
+
+
+async def test_arrival_inside_radius_is_verified(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    repo.get.return_value = _pinned_job()
+    await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="arrive_customer", lat=24.861, lng=67.0, accuracy_m=20, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    stored = repo.add_location.await_args.args[0]
+    assert stored.distance_m == pytest.approx(haversine_m(24.861, 67.0, 24.86, 67.0))
+    assert stored.verified is True
+    assert "off-pin" not in repo.add_event.await_args.args[0].text
+
+
+async def test_arrival_confidently_far_is_flagged_never_blocked(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """>250 m with a confident fix → verified False + an honest timeline line.
+    The punch is still recorded — the server never rejects over the verdict."""
+    service, repo = svc
+    repo.get.return_value = _pinned_job()
+    detail = await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="arrive_customer", lat=24.88, lng=67.0, accuracy_m=20, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    stored = repo.add_location.await_args.args[0]
+    assert stored.verified is False
+    assert stored.distance_m > settings.jobs_arrival_radius_m
+    text = repo.add_event.await_args.args[0].text
+    assert "off-pin" in text
+    assert "km away" in text
+    assert detail is not None  # recorded, not rejected
+
+
+async def test_arrival_coarse_fix_cannot_support_a_verdict(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """A fix blurrier than the ceiling says nothing either way → verified NULL,
+    but the distance is still stored as evidence."""
+    service, repo = svc
+    repo.get.return_value = _pinned_job()
+    await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="arrive_customer",
+            lat=24.88,
+            lng=67.0,
+            accuracy_m=settings.jobs_punch_accuracy_ceiling_m + 50,
+            client_id=uuid4(),
+        ),
+        actor="t1",
+    )
+    stored = repo.add_location.await_args.args[0]
+    assert stored.verified is None
+    assert stored.distance_m is not None
+    assert "off-pin" not in repo.add_event.await_args.args[0].text
+
+
+async def test_arrival_mock_fix_is_unjudged_but_distance_kept(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    repo.get.return_value = _pinned_job()
+    await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="arrive_customer",
+            lat=24.88,
+            lng=67.0,
+            accuracy_m=10,
+            is_mock=True,
+            client_id=uuid4(),
+        ),
+        actor="t1",
+    )
+    stored = repo.add_location.await_args.args[0]
+    assert stored.verified is None  # a spoofed fix can't verify anything
+    assert stored.distance_m is not None  # ...but the claim is kept as evidence
+    assert "mock" in repo.add_event.await_args.args[0].text
+
+
+async def test_arrival_without_pin_is_unjudged(svc: tuple[JobService, MagicMock]) -> None:
+    """No customer pin on the job → nothing to judge against (pre-0036 rows,
+    carry-in conversions). Behaviour is exactly pre-0037."""
+    service, repo = svc
+    repo.get.return_value = _open_job()  # no customer_lat/lng
+    await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="arrive_customer", lat=24.88, lng=67.0, accuracy_m=10, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    stored = repo.add_location.await_args.args[0]
+    assert stored.distance_m is None
+    assert stored.verified is None
+
+
+async def test_workshop_punch_judged_against_fence_with_radius_floor(
+    svc: tuple[JobService, MagicMock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Workshop-side punches use the attendance fence — with the arrival-radius
+    floor, so a tight fence doesn't flag the parking lane across the road."""
+    from app.features.jobs import service as jobs_service
+
+    service, repo = svc
+    repo.get.return_value = _open_job()
+    monkeypatch.setattr(jobs_service, "workshop_circle", AsyncMock(return_value=(24.86, 67.0, 150)))
+    # ~222 m from the fence centre: outside the 150 m fence but inside the
+    # 250 m floor → verified.
+    await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="depart_workshop", lat=24.862, lng=67.0, accuracy_m=15, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    assert repo.add_location.await_args.args[0].verified is True
+
+    # ~555 m away → confidently off-site.
+    await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="depart_workshop", lat=24.865, lng=67.0, accuracy_m=15, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    assert repo.add_location.await_args.args[0].verified is False
+    assert "off-pin" in repo.add_event.await_args.args[0].text
+
+
+async def test_workshop_punch_unjudged_without_fence(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """No configured fence (workshop_circle unavailable) → unjudged, never an
+    error in the punch path."""
+    service, repo = svc
+    repo.get.return_value = _open_job()
+    await service.record_location(
+        job_id=uuid4(),
+        shop_id="default",
+        body=LocationRequest(
+            kind="depart_workshop", lat=24.86, lng=67.0, accuracy_m=15, client_id=uuid4()
+        ),
+        actor="t1",
+    )
+    stored = repo.add_location.await_args.args[0]
+    assert stored.distance_m is None
+    assert stored.verified is None
+
+
+# ── Customer pin (0037) ──────────────────────────────────────────────────────
+async def test_set_customer_pin_sets_and_audits(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t1"
+    repo.get.return_value = job
+    detail = await service.set_customer_pin(
+        job_id=job.id,
+        shop_id="default",
+        lat=24.8607,
+        lng=67.0011,
+        actor="t1",
+        actor_is_manager=False,
+    )
+    assert detail.customer_lat == 24.8607
+    assert detail.customer_lng == 67.0011
+    event = repo.add_event.await_args.args[0]
+    assert event.kind == "pin"
+    assert "set" in event.text
+    assert event.payload == {"lat": 24.8607, "lng": 67.0011, "prev_lat": None, "prev_lng": None}
+
+
+async def test_set_customer_pin_move_keeps_prev_in_payload(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _pinned_job(24.86, 67.0)
+    job.assigned_tech_id = "t1"
+    repo.get.return_value = job
+    await service.set_customer_pin(
+        job_id=job.id,
+        shop_id="default",
+        lat=24.87,
+        lng=67.01,
+        actor="t1",
+        actor_is_manager=False,
+    )
+    event = repo.add_event.await_args.args[0]
+    assert "moved" in event.text
+    assert event.payload["prev_lat"] == 24.86
+    assert event.payload["prev_lng"] == 67.0
+
+
+async def test_set_customer_pin_same_coords_replay_is_a_no_op(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """The outbox replaying the identical pin (lost response) must not append
+    a duplicate timeline event."""
+    service, repo = svc
+    job = _pinned_job(24.86, 67.0)
+    job.assigned_tech_id = "t1"
+    repo.get.return_value = job
+    detail = await service.set_customer_pin(
+        job_id=job.id,
+        shop_id="default",
+        lat=24.86,
+        lng=67.0,
+        actor="t1",
+        actor_is_manager=False,
+    )
+    assert detail.customer_lat == 24.86
+    repo.add_event.assert_not_awaited()
+
+
+async def test_set_customer_pin_forbidden_for_unassigned_tech(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    """The pin anchors arrival verdicts + the fuel line — not a free-for-all
+    (deliberately stricter than record_location's open punch rail)."""
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t2"
+    repo.get.return_value = job
+    with pytest.raises(JobForbiddenError):
+        await service.set_customer_pin(
+            job_id=job.id,
+            shop_id="default",
+            lat=24.86,
+            lng=67.0,
+            actor="t1",
+            actor_is_manager=False,
+        )
+    repo.add_event.assert_not_awaited()
+
+
+async def test_set_customer_pin_manager_bypasses_assignment(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.assigned_tech_id = "t2"
+    repo.get.return_value = job
+    detail = await service.set_customer_pin(
+        job_id=job.id,
+        shop_id="default",
+        lat=24.86,
+        lng=67.0,
+        actor="m1",
+        actor_is_manager=True,
+    )
+    assert detail.customer_lat == 24.86
+
+
+async def test_set_customer_pin_rejects_carry_in(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    job.job_type = "carry-in"
+    job.assigned_tech_id = "t1"
+    repo.get.return_value = job
+    with pytest.raises(JobActionError):
+        await service.set_customer_pin(
+            job_id=job.id,
+            shop_id="default",
+            lat=24.86,
+            lng=67.0,
+            actor="t1",
+            actor_is_manager=False,
+        )
+
+
+# ── Trail read + decimation (0037) ───────────────────────────────────────────
+def test_decimate_trail_passthrough_under_budget() -> None:
+    samples = _drive(10)
+    assert decimate_trail(samples, 1000) is samples
+
+
+def test_decimate_trail_keeps_shape_and_endpoints_per_leg() -> None:
+    """A big outbound + a small return thinned together: both legs keep their
+    first/last points, order is preserved, and the result lands near budget."""
+    outbound = _drive(300)  # one per minute → ends at _T0 + 299 min
+    ret = [
+        _sample(24.9 - i * 0.001, 67.0, _T0 + timedelta(hours=6, minutes=i), leg="return")
+        for i in range(30)
+    ]
+    samples = outbound + ret
+    kept = decimate_trail(samples, 100)
+    assert 100 <= len(kept) <= 110  # per-leg floors/rounding may slightly exceed
+    assert kept[0] is outbound[0]
+    assert outbound[-1] in kept
+    assert ret[0] in kept
+    assert ret[-1] in kept
+    times = [s.captured_at for s in kept]
+    assert times == sorted(times)  # original order preserved
+
+
+def test_decimate_trail_short_leg_never_dropped() -> None:
+    """Proportional budgeting must not starve a 2-point leg out of existence."""
+    outbound = _drive(500)
+    ret = [
+        _sample(24.9, 67.0, _T0 + timedelta(hours=2), leg="return"),
+        _sample(24.89, 67.0, _T0 + timedelta(hours=2, minutes=1), leg="return"),
+    ]
+    kept = decimate_trail(outbound + ret, 50)
+    assert ret[0] in kept
+    assert ret[1] in kept
+
+
+async def test_travel_trail_filters_leg_and_reports_counts(
+    svc: tuple[JobService, MagicMock],
+) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    outbound = _drive(6)
+    ret = [_sample(24.9, 67.0, _T0 + timedelta(hours=2), leg="return")]
+    repo.list_travel_samples.return_value = outbound + ret
+
+    trail = await service.travel_trail(
+        job_id=job.id, shop_id="default", leg="outbound", max_points=1000
+    )
+    assert trail.total == 6
+    assert trail.returned == 6
+    assert all(s.leg == "outbound" for s in trail.samples)
+
+    trail = await service.travel_trail(job_id=job.id, shop_id="default", leg=None, max_points=1000)
+    assert trail.total == 7
+
+
+async def test_travel_trail_decimates_to_budget(svc: tuple[JobService, MagicMock]) -> None:
+    service, repo = svc
+    job = _open_job()
+    repo.get.return_value = job
+    repo.list_travel_samples.return_value = _drive(200)
+    trail = await service.travel_trail(job_id=job.id, shop_id="default", leg=None, max_points=50)
+    assert trail.total == 200
+    assert trail.returned < 200
+    assert trail.returned == len(trail.samples)
+    assert trail.samples[0].captured_at == _T0  # endpoint kept

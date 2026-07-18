@@ -17,7 +17,12 @@ from app.core.db import get_session
 from app.features.identity.deps import get_current_principal
 from app.features.identity.schemas import Principal
 from app.features.jobs.router import get_service
-from app.features.jobs.schemas import Job, JobDetail, TravelSampleBatchResponse
+from app.features.jobs.schemas import (
+    Job,
+    JobDetail,
+    TravelSampleBatchResponse,
+    TravelTrailOut,
+)
 from app.features.jobs.service import (
     JobActionError,
     JobConflictError,
@@ -439,3 +444,82 @@ async def test_money_guard_conflicts_map_to_409(
 
     resp = await client.post(f"/api/jobs/{job_id}/bill/negotiate", json={"amount_paisa": 1000})
     assert resp.status_code == 409
+
+
+# ── Customer pin (0037) ──────────────────────────────────────────────────────
+async def test_set_customer_pin_returns_200_and_commits(
+    client: AsyncClient, fake_service: AsyncMock, fake_session: AsyncMock
+) -> None:
+    fake_service.set_customer_pin.return_value = _detail(
+        job_type="home-visit", customer_lat=24.8607, customer_lng=67.0011
+    )
+    resp = await client.post(
+        f"/api/jobs/{uuid4()}/customer-pin", json={"lat": 24.8607, "lng": 67.0011}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["customer_lat"] == 24.8607
+    fake_session.commit.assert_awaited()
+    kwargs = fake_service.set_customer_pin.await_args.kwargs
+    assert kwargs["actor"] == "t1"
+    assert kwargs["actor_is_manager"] is True  # the fixture principal is a manager
+
+
+async def test_set_customer_pin_carry_in_is_400(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.set_customer_pin.side_effect = JobActionError("carry-in has no pin")
+    resp = await client.post(f"/api/jobs/{uuid4()}/customer-pin", json={"lat": 24.86, "lng": 67.0})
+    assert resp.status_code == 400
+
+
+async def test_set_customer_pin_unassigned_is_403(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.set_customer_pin.side_effect = JobForbiddenError("not your job")
+    resp = await client.post(f"/api/jobs/{uuid4()}/customer-pin", json={"lat": 24.86, "lng": 67.0})
+    assert resp.status_code == 403
+
+
+async def test_set_customer_pin_rejects_out_of_range_coords(client: AsyncClient) -> None:
+    resp = await client.post(f"/api/jobs/{uuid4()}/customer-pin", json={"lat": 999, "lng": 67.0})
+    assert resp.status_code == 422
+
+
+# ── Travel trail read (0037) ─────────────────────────────────────────────────
+async def test_travel_trail_returns_200_for_manager(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.travel_trail.return_value = TravelTrailOut(samples=[], total=0, returned=0)
+    resp = await client.get(f"/api/jobs/{uuid4()}/travel-samples?leg=outbound&max_points=500")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"samples": [], "total": 0, "returned": 0}
+    kwargs = fake_service.travel_trail.await_args.kwargs
+    assert kwargs["leg"] == "outbound"
+    assert kwargs["max_points"] == 500
+
+
+async def test_travel_trail_is_manager_only(client: AsyncClient, fake_service: AsyncMock) -> None:
+    """The trail maps a technician's movements — tech tokens get 403 (their
+    surface is the POST; the read is manager oversight)."""
+    app.dependency_overrides[get_current_principal] = lambda: Principal(
+        tech_id="t5", role="tech", name="Bilal"
+    )
+    resp = await client.get(f"/api/jobs/{uuid4()}/travel-samples")
+    assert resp.status_code == 403
+    fake_service.travel_trail.assert_not_awaited()
+
+
+async def test_travel_trail_rejects_bad_query(client: AsyncClient) -> None:
+    resp = await client.get(f"/api/jobs/{uuid4()}/travel-samples?max_points=9")
+    assert resp.status_code == 422  # below the ge=10 floor
+
+    resp = await client.get(f"/api/jobs/{uuid4()}/travel-samples?leg=teleport")
+    assert resp.status_code == 422
+
+
+async def test_travel_trail_unknown_job_is_404(
+    client: AsyncClient, fake_service: AsyncMock
+) -> None:
+    fake_service.travel_trail.side_effect = JobNotFoundError("nope")
+    resp = await client.get(f"/api/jobs/{uuid4()}/travel-samples")
+    assert resp.status_code == 404

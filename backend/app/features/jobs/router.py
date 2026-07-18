@@ -32,9 +32,12 @@ from app.features.jobs.schemas import (
     NegotiateRequest,
     NoteRequest,
     PaymentRequest,
+    PinRequest,
     TransitionRequest,
+    TravelLeg,
     TravelSampleBatch,
     TravelSampleBatchResponse,
+    TravelTrailOut,
     VoidRequest,
 )
 from app.features.jobs.service import (
@@ -368,6 +371,58 @@ async def record_location(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     await session.commit()
     return detail
+
+
+@router.post(
+    "/{job_id}/customer-pin",
+    response_model=JobDetail,
+    summary="Set / move the customer's home pin (assigned tech or manager; audited)",
+)
+async def set_customer_pin(
+    job_id: UUID,
+    body: PinRequest,
+    service: ServiceDep,
+    session: SessionDep,
+    principal: CurrentPrincipal,
+) -> JobDetail:
+    try:
+        detail = await service.set_customer_pin(
+            job_id=job_id,
+            shop_id=DEFAULT_SHOP_ID,
+            lat=body.lat,
+            lng=body.lng,
+            actor=principal.tech_id,
+            actor_is_manager=principal.role == "manager",
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except JobActionError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except JobForbiddenError as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    await session.commit()
+    return detail
+
+
+@router.get(
+    "/{job_id}/travel-samples",
+    response_model=TravelTrailOut,
+    summary="The recorded breadcrumb trail, decimated for the map (manager oversight)",
+    dependencies=[Depends(require_manager)],
+)
+async def get_travel_trail(
+    job_id: UUID,
+    service: ServiceDep,
+    leg: Annotated[TravelLeg | None, Query()] = None,
+    max_points: Annotated[int, Query(ge=10, le=5000)] = 1000,
+    shop_id: ShopId = DEFAULT_SHOP_ID,
+) -> TravelTrailOut:
+    try:
+        return await service.travel_trail(
+            job_id=job_id, shop_id=shop_id, leg=leg, max_points=max_points
+        )
+    except JobNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
 
 
 @router.post(
