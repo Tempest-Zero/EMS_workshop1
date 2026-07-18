@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mapApiJob, toCreateBody } from "./mapJob";
+import { mapApiJob, punchLabel, toCreateBody } from "./mapJob";
 
 describe("mapApiJob", () => {
   it("maps snake_case API fields to the nested view shape", () => {
@@ -131,9 +131,91 @@ describe("mapApiJob", () => {
       ],
     });
 
-    expect(job.route).toEqual({ distanceM: 2500, fuel: 50 }); // 5000 paisa → Rs 50
+    expect(job.route).toMatchObject({ distanceM: 2500, fuel: 50 }); // 5000 paisa → Rs 50
+    // A pre-return backend omits the new fields — they default honestly.
+    expect(job.route.basis).toBe("estimate");
+    expect(job.route.returnDistanceM).toBeNull();
+    expect(job.route.roundTripBasis).toBe("estimate");
     expect(job.locations).toHaveLength(2);
     expect(job.locations[1]).toMatchObject({ kind: "arrive_customer", isMock: true });
+    // No 0037 verdict fields on the wire → null (unjudged), never false.
+    expect(job.locations[1].verified).toBeNull();
+    expect(job.locations[1].distanceM).toBeNull();
+  });
+
+  it("maps the customer pin, punch verdicts, and the return/round-trip route fields", () => {
+    const job = mapApiJob({
+      id: "u",
+      token: 1,
+      status: "ready",
+      job_type: "home-visit",
+      customer_name: "A",
+      appliance_type: "AC",
+      problem: "",
+      abandoned: false,
+      customer_lat: 24.87,
+      customer_lng: 67.01,
+      route: {
+        distance_m: 4000,
+        fuel_paisa: 8000,
+        basis: "breadcrumbs",
+        sample_count: 42,
+        return_distance_m: 4600,
+        return_basis: "estimate",
+        return_sample_count: 3,
+        round_trip_distance_m: 8600,
+        round_trip_fuel_paisa: 17200,
+        round_trip_basis: "estimate",
+      },
+      locations: [
+        {
+          id: "l2",
+          kind: "arrive_customer",
+          lat: 24.9,
+          lng: 67.0,
+          accuracy_m: 12,
+          is_mock: false,
+          captured_at: "2026-06-08T09:20:00Z",
+          distance_m: 1437.2,
+          verified: false,
+        },
+        {
+          id: "l3",
+          kind: "arrive_workshop",
+          lat: 24.86,
+          lng: 67.0,
+          accuracy_m: 8,
+          is_mock: false,
+          captured_at: "2026-06-08T11:00:00Z",
+          distance_m: 40.0,
+          verified: true,
+        },
+      ],
+    });
+
+    expect(job.customerLat).toBe(24.87);
+    expect(job.customerLng).toBe(67.01);
+    expect(job.route).toMatchObject({
+      basis: "breadcrumbs",
+      sampleCount: 42,
+      returnDistanceM: 4600,
+      returnBasis: "estimate",
+      roundTripDistanceM: 8600,
+      roundTripFuel: 172, // 17200 paisa → Rs 172
+      roundTripBasis: "estimate",
+    });
+    expect(job.locations[0]).toMatchObject({ verified: false, distanceM: 1437.2 });
+    expect(job.locations[1]).toMatchObject({ kind: "arrive_workshop", verified: true });
+  });
+
+  it("labels every punch kind honestly", () => {
+    expect(punchLabel("depart_workshop")).toBe("Left workshop");
+    expect(punchLabel("arrive_customer")).toBe("Arrived at customer");
+    expect(punchLabel("depart_customer")).toBe("Left customer");
+    expect(punchLabel("arrive_workshop")).toBe("Back at workshop");
+    expect(punchLabel("depart_workshop_delivery")).toBe("Left workshop (delivery)");
+    expect(punchLabel("arrive_customer_delivery")).toBe("Arrived at customer (delivery)");
+    expect(punchLabel("mystery_kind")).toBe("mystery_kind"); // never crashes the list
   });
 
   it("defaults route to null and locations to [] when absent", () => {

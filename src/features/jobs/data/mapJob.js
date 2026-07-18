@@ -65,21 +65,55 @@ function mapPayments(payments) {
   }));
 }
 
-/** The derived route (P3e): straight-line distance + fuel estimate (paisa→rupees). */
-function mapRoute(route) {
-  if (!route) return null;
-  return { distanceM: route.distance_m, fuel: paisaToRupees(route.fuel_paisa) };
+/** Honest label for every punch kind — the old binary ternary called a
+ * return-leg punch "Arrived at customer". Mirrors the backend's vocabulary. */
+const PUNCH_LABELS = {
+  depart_workshop: "Left workshop",
+  arrive_customer: "Arrived at customer",
+  depart_customer: "Left customer",
+  arrive_workshop: "Back at workshop",
+  depart_workshop_delivery: "Left workshop (delivery)",
+  arrive_customer_delivery: "Arrived at customer (delivery)",
+};
+
+export function punchLabel(kind) {
+  return PUNCH_LABELS[kind] || kind;
 }
 
-/** The GPS punches that bound the route, shaped for the view. */
+/** The derived route: per-leg distances + fuel (paisa→rupees), with the
+ * provenance (`basis`) so the UI can caption the number honestly. The
+ * `return*`/`roundTrip*` fields arrived with the measured return leg; they
+ * are null/undefined against an older backend and the UI must tolerate it. */
+function mapRoute(route) {
+  if (!route) return null;
+  return {
+    distanceM: route.distance_m,
+    fuel: paisaToRupees(route.fuel_paisa),
+    basis: route.basis || "estimate",
+    sampleCount: route.sample_count ?? 0,
+    returnDistanceM: route.return_distance_m ?? null,
+    returnBasis: route.return_basis ?? null,
+    returnSampleCount: route.return_sample_count ?? 0,
+    roundTripDistanceM: route.round_trip_distance_m ?? null,
+    roundTripFuel: paisaToRupees(route.round_trip_fuel_paisa),
+    roundTripBasis: route.round_trip_basis || route.basis || "estimate",
+  };
+}
+
+/** The GPS punches that bound the route, shaped for the view. `verified` is
+ * the server's ingest-time verdict (0037): true = inside the reference circle,
+ * false = confidently off-site, null = unjudgeable (pre-0037, mock, coarse). */
 function mapLocations(locations) {
   return (locations || []).map((l) => ({
     id: l.id,
     kind: l.kind,
     lat: l.lat,
     lng: l.lng,
+    accuracyM: l.accuracy_m ?? null,
     isMock: Boolean(l.is_mock),
     capturedAt: l.captured_at,
+    distanceM: l.distance_m ?? null,
+    verified: l.verified ?? null,
   }));
 }
 
@@ -113,6 +147,10 @@ export function mapApiJob(api) {
       phone: api.customer_phone || "",
       address: api.customer_address || "",
     },
+    // The home pin from intake / the tech's travel-screen editor (0036/0037) —
+    // the travel map's anchor. Null when never set (carry-in, legacy rows).
+    customerLat: api.customer_lat ?? null,
+    customerLng: api.customer_lng ?? null,
     appliance: {
       type: api.appliance_type,
       brand: api.appliance_brand || "",
