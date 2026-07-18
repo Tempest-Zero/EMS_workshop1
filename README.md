@@ -162,8 +162,9 @@ flow (clock-in, before/after capture, completion) is demoed from the **mobile ap
 
 ## 📌 Out of Scope (currently)
 
-No real SMS or payments, no supplier catalogue, no customer portal, no maps/GPS, and no
-drag-and-drop scheduling. The **Settings → Integrations** rows are demonstration placeholders
+No real SMS or payments, no supplier catalogue, no customer portal, and no
+drag-and-drop scheduling. (Maps/GPS ARE real: the mobile app records GPS punches +
+travel breadcrumbs on a live map, and the backend derives route distance + fuel.) The **Settings → Integrations** rows are demonstration placeholders
 (labeled as such), marking where real services would plug in. The web console reads the live
 FastAPI backend (via `src/shared/lib/api.js`) for **auth, jobs, and attendance**; a few surfaces
 (**schedule**, the **workshop profile** form) remain demo data and are labeled in the UI.

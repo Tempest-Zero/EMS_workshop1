@@ -14,6 +14,7 @@ import { AppState } from "react-native";
 
 import { navigateToClock, navigateToJobs, navigateToJobTravel } from "../../lib/navigation";
 import type { TravelPromptData } from "../jobs/travelPrompt";
+import { ensureTravelTracking } from "../jobs/travelTracker";
 import type { AttendancePromptData } from "./attendanceNotifications";
 import { setAttendancePrompt } from "./attendancePrompt";
 import { ensureGeofenceMonitoring } from "./geofence";
@@ -43,6 +44,10 @@ export function useAttendanceBackground(): void {
     // Re-arm the on-duty ping tracker too (recovers after a reboot / app-kill
     // if the tech was clocked in — same pattern as the geofence).
     void ensurePingTracking();
+    // …and the job-travel breadcrumb sampler: an app killed mid-drive must
+    // resume recording on next launch, or the fuel line silently degrades to
+    // the estimate (and stops billing the road actually driven).
+    void ensureTravelTracking();
     // Cold start: the app was launched by tapping a prompt.
     void Notifications.getLastNotificationResponseAsync().then(routeFromResponse);
     const tap = Notifications.addNotificationResponseReceivedListener(routeFromResponse);
@@ -50,6 +55,7 @@ export function useAttendanceBackground(): void {
       if (s === "active") {
         void ensureGeofenceMonitoring();
         void ensurePingTracking();
+        void ensureTravelTracking();
       }
     });
     return () => {

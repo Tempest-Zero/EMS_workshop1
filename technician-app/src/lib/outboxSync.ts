@@ -71,6 +71,13 @@ interface NegotiatePayload {
 interface LocationPayload {
   body: LocationInput;
 }
+/** Customer home pin (0037). Stable outbox id `customer_pin:<jobId>` —
+ * last-write-wins is exactly right for a pin; the server is idempotent by
+ * value, so a replay after a lost response is a no-op. */
+interface PinPayload {
+  lat: number;
+  lng: number;
+}
 interface NotePayload {
   text: string;
 }
@@ -104,6 +111,10 @@ async function send(item: OutboxItem): Promise<unknown> {
     }
     case "location":
       return jobsApi.recordLocation(item.jobId, (item.payload as LocationPayload).body);
+    case "customer_pin": {
+      const p = item.payload as PinPayload;
+      return jobsApi.setCustomerPin(item.jobId, { lat: p.lat, lng: p.lng });
+    }
     case "ready":
       return jobsApi.transition(item.jobId, "ready");
     case "note":
@@ -219,6 +230,7 @@ export type {
   VoidPayload,
   NegotiatePayload,
   LocationPayload,
+  PinPayload,
   NotePayload,
   TransitionPayload,
   OutboxKind,

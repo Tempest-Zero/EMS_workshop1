@@ -28,6 +28,11 @@ export const TRAVEL_TASK = "fixflow-job-travel";
 
 const TECH_KEY = "fixflow_tech";
 const TRAVEL_KEY = "jobs.travel.active.v1";
+const TRAIL_KEY = "jobs.travel.trail.v1";
+
+// The on-screen trail is a bounded ring: enough for hours of driving at the
+// 20s cadence, and the map only needs shape, not every fix.
+const MAX_TRAIL_POINTS = 1000;
 
 // One leg of a Karachi home visit should never be hours — past this the
 // session is assumed to be a forgotten arrival punch and sampling stops.
@@ -76,6 +81,64 @@ function expired(state: TravelState): boolean {
   return Number.isFinite(started) && Date.now() - started > MAX_TRAVEL_MS;
 }
 
+// ── Session trail (the on-screen polyline) ───────────────────────────────────
+// A local, bounded copy of the CURRENT leg's fixes so the travel screen can
+// draw the driven path live. Privacy: the trail belongs to the leg — it is
+// cleared by stopJobTravel (arrival / logout / failsafe), never persisted
+// beyond it, and the task's self-stop layers bound it to MAX_TRAVEL_MS.
+
+export interface TravelTrailPoint {
+  lat: number;
+  lng: number;
+  /** ISO capture time — lets the screen drop a stale head after a re-arm. */
+  t: string;
+}
+
+export interface TravelTrail {
+  jobId: string;
+  leg: string;
+  points: TravelTrailPoint[];
+}
+
+/** The current leg's trail, or null. Never throws. */
+export async function loadTravelTrail(): Promise<TravelTrail | null> {
+  try {
+    const raw = await AsyncStorage.getItem(TRAIL_KEY);
+    return raw ? (JSON.parse(raw) as TravelTrail) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function appendTrailPoints(
+  jobId: string,
+  leg: string,
+  points: TravelTrailPoint[],
+): Promise<void> {
+  try {
+    const existing = await loadTravelTrail();
+    const trail: TravelTrail =
+      existing && existing.jobId === jobId && existing.leg === leg
+        ? existing
+        : { jobId, leg, points: [] };
+    trail.points.push(...points);
+    if (trail.points.length > MAX_TRAIL_POINTS) {
+      trail.points = trail.points.slice(-MAX_TRAIL_POINTS);
+    }
+    await AsyncStorage.setItem(TRAIL_KEY, JSON.stringify(trail));
+  } catch {
+    // best-effort — the polyline is a display nicety, never billing data
+  }
+}
+
+async function clearTravelTrail(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(TRAIL_KEY);
+  } catch {
+    // best-effort
+  }
+}
+
 /** True when a breadcrumb leg is currently armed (and not past the failsafe).
  * Used to suppress the geofence "start travel?" nudge — we're already
  * recording a route. Never throws. */
@@ -120,11 +183,13 @@ export async function startJobTravel(jobId: string, techId: string): Promise<voi
   }
 }
 
-/** The privacy hard-stop. Clears the active-travel state, stops the OS task,
- * and kicks a final drain. NEVER throws. */
+/** The privacy hard-stop. Clears the active-travel state (and the on-screen
+ * trail — it belongs to the leg), stops the OS task, and kicks a final drain.
+ * NEVER throws. */
 export async function stopJobTravel(techId?: string | null): Promise<void> {
   const state = await readTravel();
   await writeTravel(null);
+  await clearTravelTrail();
   try {
     if (await isRunning()) await Location.stopLocationUpdatesAsync(TRAVEL_TASK);
   } catch {
@@ -182,6 +247,16 @@ export async function handleTravelUpdate(
     };
     await enqueueTravelSample(item);
   }
+  // Mirror the fixes into the bounded on-screen trail (same leg vocabulary).
+  await appendTrailPoints(
+    state.jobId,
+    "outbound",
+    locations.map((fix) => ({
+      lat: fix.coords.latitude,
+      lng: fix.coords.longitude,
+      t: new Date(fix.timestamp).toISOString(),
+    })),
+  );
   void syncTravelSamples(techId); // best-effort flush; retries on later triggers
 }
 

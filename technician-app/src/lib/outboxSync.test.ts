@@ -33,6 +33,7 @@ const mockSubmitCompletion = jest.fn();
 const mockLogPayment = jest.fn();
 const mockTransition = jest.fn();
 const mockAddNote = jest.fn();
+const mockSetCustomerPin = jest.fn();
 jest.mock("./jobsApi", () => ({
   jobsApi: {
     submitCompletion: (...a: unknown[]) => mockSubmitCompletion(...a),
@@ -40,6 +41,7 @@ jest.mock("./jobsApi", () => ({
     voidPayment: jest.fn(),
     negotiateBill: jest.fn(),
     recordLocation: jest.fn(),
+    setCustomerPin: (...a: unknown[]) => mockSetCustomerPin(...a),
     transition: (...a: unknown[]) => mockTransition(...a),
     addNote: (...a: unknown[]) => mockAddNote(...a),
   },
@@ -71,6 +73,7 @@ beforeEach(async () => {
   mockLogPayment.mockReset();
   mockTransition.mockReset();
   mockAddNote.mockReset();
+  mockSetCustomerPin.mockReset();
   setOutboxPrincipal("t1");
   await resumeOutbox("t1"); // clears a pause left by a previous test
 });
@@ -304,5 +307,17 @@ describe("flushOutbox classification", () => {
     const all = await loadOutbox();
     expect(all[0]?.status).toBe("queued"); // still retrying, never parked
     expect(all[0]?.attempts).toBe(0); // offline doesn't increment attempts
+  });
+
+  it("replays a queued customer_pin via jobsApi.setCustomerPin", async () => {
+    await queueOne({
+      id: "customer_pin:job-1",
+      kind: "customer_pin",
+      payload: { lat: 24.8607, lng: 67.0011 },
+    });
+    mockSetCustomerPin.mockResolvedValue(detail);
+    await flushOutbox();
+    expect(mockSetCustomerPin).toHaveBeenCalledWith("job-1", { lat: 24.8607, lng: 67.0011 });
+    expect((await outboxCounts()).queued).toBe(0);
   });
 });
