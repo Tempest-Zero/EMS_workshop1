@@ -92,13 +92,13 @@ def _latest_location(locations: list[JobLocation], kind: str) -> JobLocation | N
     return max(matching, key=lambda loc: loc.captured_at) if matching else None
 
 
-def _has_route_pins(locations: list[JobLocation]) -> bool:
-    """Both boundary pins exist — the precondition for any route derivation
-    (and the guard that skips the breadcrumb query for carry-in jobs)."""
-    return (
-        _latest_location(locations, "depart_workshop") is not None
-        and _latest_location(locations, "arrive_customer") is not None
-    )
+def _route_possible(locations: list[JobLocation]) -> bool:
+    """An ``arrive_customer`` punch exists — the precondition for any route
+    derivation (and the guard that skips the breadcrumb query for carry-in
+    jobs). Deliberately NOT requiring the depart punch: the workshop-origin
+    fallback covers a forgotten outbound depart, and the RETURN leg's
+    breadcrumbs must still be summable in that case."""
+    return _latest_location(locations, "arrive_customer") is not None
 
 
 # ── Travel breadcrumbs → billable distance ───────────────────────────────────
@@ -151,6 +151,34 @@ def path_sum_m(samples: list[JobTravelSample]) -> float | None:
     return total
 
 
+def _leg_ladder(
+    origin: tuple[float, float],
+    dest: tuple[float, float],
+    samples: list[JobTravelSample],
+    *,
+    leg: str,
+    window: tuple[datetime, datetime] | None,
+    circuity_factor: float,
+) -> tuple[float, Literal["estimate", "breadcrumbs"], int]:
+    """The distance ladder for ONE leg: (a) path-sum of trusted ``leg``
+    breadcrumbs clipped to the punch ``window`` — actual driven metres; (b)
+    otherwise straight-line × ``circuity_factor``. ``window=None`` means
+    breadcrumbs are ineligible for this leg (no real depart punch armed the
+    sampler). A "path" shorter than the straight line is physically impossible
+    without heavy sample loss, so the estimate wins there too. Returns
+    ``(distance_m, basis, trusted_sample_count)``."""
+    straight_m = haversine_m(origin[0], origin[1], dest[0], dest[1])
+    candidates: list[JobTravelSample] = []
+    path: float | None = None
+    if window is not None:
+        lo, hi = window
+        candidates = [s for s in samples if s.leg == leg and lo <= s.captured_at <= hi]
+        path = path_sum_m(candidates)
+    if path is not None and path >= straight_m:
+        return path, "breadcrumbs", len(_trusted_samples(candidates))
+    return straight_m * circuity_factor, "estimate", len(_trusted_samples(candidates))
+
+
 def derive_route(
     locations: list[JobLocation],
     samples: list[JobTravelSample],
@@ -158,45 +186,51 @@ def derive_route(
     rate_paisa_per_km: int,
     circuity_factor: float,
     workshop: tuple[float, float, int] | None = None,
+    customer: tuple[float, float] | None = None,
 ) -> RouteOut | None:
-    """The billable ONE-WAY route from the workshop to the customer. ``None``
-    until an ``arrive_customer`` pin exists — a route means travel provably
-    happened.
+    """The billable route: the ONE-WAY outbound leg, plus the measured return
+    leg when it exists. ``None`` until an ``arrive_customer`` pin exists — a
+    route means travel provably happened.
 
-    Origin: normally the latest ``depart_workshop`` punch. But a forgotten
-    "start travel" (no depart punch) or a bogus one co-located with the
-    customer (both ends punched on arrival) would otherwise collapse the
+    Outbound origin: normally the latest ``depart_workshop`` punch. But a
+    forgotten "start travel" (no depart punch) or a bogus one co-located with
+    the customer (both ends punched on arrival) would otherwise collapse the
     straight-line estimate to ~0 and silently bill no fuel. When the caller
     supplies the ``workshop`` circle ``(center_lat, center_lng, radius_m)`` we
     fall back to the fence centre as the origin: (a) when there is no depart
     punch at all, or (b) when the depart punch sits farther than
     ``max(2×radius_m, 500 m)`` from the fence centre. Without a ``workshop`` the
-    behaviour is exactly as before (no depart pin → ``None``).
+    behaviour is exactly as before (no depart pin → ``None``). Each leg's
+    distance comes from the ``_leg_ladder`` (breadcrumb path-sum, else
+    straight-line × circuity); the window-clip is load-bearing —
+    ``_latest_location`` means a rescheduled job driven twice must count only
+    the latest drive's samples. Breadcrumbs are only ever summed when a real
+    depart punch exists (the sampler is armed by that punch) — an origin
+    fallback is always an estimate.
 
-    Distance ladder: (a) path-sum of trusted outbound breadcrumbs clipped to
-    the punch window — actual driven metres; (b) otherwise straight-line ×
-    ``circuity_factor``. The window-clip is load-bearing: ``_latest_location``
-    means a rescheduled job driven twice must count only the latest drive's
-    samples. A "path" shorter than the straight line is physically impossible
-    without heavy sample loss, so the estimate wins there too. Breadcrumbs are
-    only ever summed when a real depart punch exists (the sampler is armed by
-    that punch) — a workshop-origin fallback is always an estimate.
+    Return leg (depart_customer → arrive_workshop): derived only when the
+    latest ``arrive_workshop`` postdates the latest ``arrive_customer`` — an
+    out-of-order punch is garbage, not a return. Symmetric fallbacks: a
+    forgotten "head back" (no depart_customer, or one punched far from the
+    customer) uses the ``customer`` pin as the origin; an ``arrive_workshop``
+    punched far from the fence uses the fence centre as the destination.
 
-    Leg semantics (wired for the future): outbound = ``leg='outbound'`` within
-    depart_workshop→arrive_customer. The return leg (depart_customer→
-    arrive_workshop) is collected but not derived yet — billing happens before
-    it exists, so the billed round trip is outbound × 2."""
+    Round trip: outbound + measured return when the return exists, else
+    outbound × 2 (billing usually happens at the customer, before the return
+    leg is driven — a resubmit after returning recomputes honestly).
+    ``round_trip_basis`` is ``breadcrumbs`` only when every measured leg was
+    breadcrumb-derived; the doubled-outbound fallback inherits the outbound
+    basis (bit-for-bit the pre-return behaviour)."""
     depart = _latest_location(locations, "depart_workshop")
     arrive = _latest_location(locations, "arrive_customer")
     if arrive is None:
         return None
 
-    # Resolve the route origin (and whether breadcrumbs are eligible).
-    origin_lat: float
-    origin_lng: float
+    # Resolve the outbound origin (and whether breadcrumbs are eligible).
+    origin: tuple[float, float]
     trust_breadcrumbs: bool
     if depart is not None:
-        origin_lat, origin_lng, trust_breadcrumbs = depart.lat, depart.lng, True
+        origin, trust_breadcrumbs = (depart.lat, depart.lng), True
         if workshop is not None:
             center_lat, center_lng, radius_m = workshop
             gap_m = haversine_m(depart.lat, depart.lng, center_lat, center_lng)
@@ -204,37 +238,94 @@ def derive_route(
                 # The depart punch isn't at the workshop — trust the fence
                 # centre instead. Breadcrumbs still get their shot below; a
                 # stationary trail loses to the (now larger) straight line.
-                origin_lat, origin_lng = center_lat, center_lng
+                origin = (center_lat, center_lng)
     elif workshop is not None:
         # No depart punch ⇒ the sampler never armed ⇒ no trail to sum.
-        origin_lat, origin_lng, _radius = workshop
-        trust_breadcrumbs = False
+        origin, trust_breadcrumbs = (workshop[0], workshop[1]), False
     else:
-        return None  # today's behaviour: no depart pin, no origin → no route
+        return None  # no depart pin, no origin → no route
 
-    straight_m = haversine_m(origin_lat, origin_lng, arrive.lat, arrive.lng)
+    outbound_window = (
+        (depart.captured_at - _TRAVEL_WINDOW_SLACK, arrive.captured_at + _TRAVEL_WINDOW_SLACK)
+        if trust_breadcrumbs and depart is not None
+        else None
+    )
+    distance, basis, count = _leg_ladder(
+        origin,
+        (arrive.lat, arrive.lng),
+        samples,
+        leg="outbound",
+        window=outbound_window,
+        circuity_factor=circuity_factor,
+    )
 
-    candidates: list[JobTravelSample] = []
-    path: float | None = None
-    if trust_breadcrumbs and depart is not None:
-        lo = depart.captured_at - _TRAVEL_WINDOW_SLACK
-        hi = arrive.captured_at + _TRAVEL_WINDOW_SLACK
-        candidates = [s for s in samples if s.leg == "outbound" and lo <= s.captured_at <= hi]
-        path = path_sum_m(candidates)
+    # ── Return leg ───────────────────────────────────────────────────────
+    ret_depart = _latest_location(locations, "depart_customer")
+    ret_arrive = _latest_location(locations, "arrive_workshop")
+    return_distance: float | None = None
+    return_basis: Literal["estimate", "breadcrumbs"] | None = None
+    return_count = 0
+    if ret_arrive is not None and ret_arrive.captured_at > arrive.captured_at:
+        # Origin: the depart_customer punch of THIS visit (postdating the
+        # arrival), else the customer pin. A depart punched far from the pin
+        # is replaced by the pin — the symmetric twin of the workshop rule.
+        ret_origin: tuple[float, float] | None
+        return_window: tuple[datetime, datetime] | None
+        if ret_depart is not None and ret_depart.captured_at >= arrive.captured_at:
+            ret_origin = (ret_depart.lat, ret_depart.lng)
+            return_window = (
+                ret_depart.captured_at - _TRAVEL_WINDOW_SLACK,
+                ret_arrive.captured_at + _TRAVEL_WINDOW_SLACK,
+            )
+            if customer is not None:
+                gap_m = haversine_m(ret_depart.lat, ret_depart.lng, customer[0], customer[1])
+                if gap_m > 500.0:
+                    ret_origin = customer
+        elif customer is not None:
+            ret_origin, return_window = customer, None
+        else:
+            ret_origin, return_window = None, None
 
-    basis: Literal["estimate", "breadcrumbs"]
-    if path is not None and path >= straight_m:
-        basis, distance = "breadcrumbs", path
+        if ret_origin is not None:
+            # Destination sanity: an arrive_workshop punched far from the
+            # fence uses the fence centre (symmetric with the outbound rule).
+            ret_dest = (ret_arrive.lat, ret_arrive.lng)
+            if workshop is not None:
+                center_lat, center_lng, radius_m = workshop
+                gap_m = haversine_m(ret_arrive.lat, ret_arrive.lng, center_lat, center_lng)
+                if gap_m > max(2 * radius_m, 500.0):
+                    ret_dest = (center_lat, center_lng)
+            return_distance, return_basis, return_count = _leg_ladder(
+                ret_origin,
+                ret_dest,
+                samples,
+                leg="return",
+                window=return_window,
+                circuity_factor=circuity_factor,
+            )
+
+    round_trip = distance + (return_distance if return_distance is not None else distance)
+    round_trip_basis: Literal["estimate", "breadcrumbs"]
+    if return_distance is not None:
+        round_trip_basis = (
+            "breadcrumbs"
+            if basis == "breadcrumbs" and return_basis == "breadcrumbs"
+            else "estimate"
+        )
     else:
-        basis, distance = "estimate", straight_m * circuity_factor
+        round_trip_basis = basis
     return RouteOut(
         distance_m=distance,
         fuel_paisa=route_fuel_paisa(distance, rate_paisa_per_km),
         basis=basis,
-        sample_count=len(_trusted_samples(candidates)),
-        round_trip_distance_m=distance * 2,
-        # Round ONCE on the doubled distance — never double the rounded paisa.
-        round_trip_fuel_paisa=route_fuel_paisa(distance * 2, rate_paisa_per_km),
+        sample_count=count,
+        return_distance_m=return_distance,
+        return_basis=return_basis,
+        return_sample_count=return_count,
+        round_trip_distance_m=round_trip,
+        # Round ONCE on the summed distance — never double the rounded paisa.
+        round_trip_fuel_paisa=route_fuel_paisa(round_trip, rate_paisa_per_km),
+        round_trip_basis=round_trip_basis,
     )
 
 
@@ -663,6 +754,14 @@ class JobService:
             logger.exception("workshop geofence lookup failed; route fuel falls back to depart pin")
             return None
 
+    @staticmethod
+    def _customer_pin(row: JobRow) -> tuple[float, float] | None:
+        """The job's home pin as a coordinate pair — the return leg's origin
+        fallback (and nothing else; verdicts resolve their own reference)."""
+        if row.customer_lat is None or row.customer_lng is None:
+            return None
+        return row.customer_lat, row.customer_lng
+
     async def _link_customer(self, body: JobCreate, *, actor: str | None) -> UUID | None:
         """Resolve the job's customer link, honouring the F5 consent chip.
 
@@ -852,19 +951,21 @@ class JobService:
             await self._repo.clear_materials(completion.id)
 
         # Fuel: an explicit figure (including 0) is the tech's call; omitted →
-        # bill the derived ROUND TRIP (outbound × 2 — the return leg hasn't
-        # happened yet at billing time). No route (carry-in) → 0. The circuity
-        # factor is deliberately NOT snapshotted: it's a distance-model
-        # parameter, not a price, and the closed-job guard above already
-        # freezes settled bills.
+        # bill the derived ROUND TRIP: outbound + the measured return leg when
+        # it exists, else outbound × 2 (billing usually happens at the
+        # customer, before the return is driven — a resubmit after returning
+        # recomputes honestly; the closed-job guard freezes settled bills).
+        # No route (carry-in) → 0. The circuity factor is deliberately NOT
+        # snapshotted: it's a distance-model parameter, not a price.
         fuel_basis: str | None
         fuel_distance_m: float | None
+        route = None
         if body.fuel_paisa is not None:
             fuel_paisa, fuel_basis, fuel_distance_m = body.fuel_paisa, "manual", None
         else:
             locations = await self._repo.list_locations(row.id)
             samples = (
-                await self._repo.list_travel_samples(row.id) if _has_route_pins(locations) else []
+                await self._repo.list_travel_samples(row.id) if _route_possible(locations) else []
             )
             route = derive_route(
                 locations,
@@ -872,10 +973,11 @@ class JobService:
                 rate_paisa_per_km=completion.fuel_rate_paisa_per_km,
                 circuity_factor=settings.fuel_route_circuity_factor,
                 workshop=await self._workshop(row.shop_id),
+                customer=self._customer_pin(row),
             )
             if route is not None and route.round_trip_fuel_paisa is not None:
                 fuel_paisa = route.round_trip_fuel_paisa
-                fuel_basis = route.basis
+                fuel_basis = route.round_trip_basis
                 fuel_distance_m = route.round_trip_distance_m
             else:
                 fuel_paisa, fuel_basis, fuel_distance_m = 0, None, None
@@ -919,6 +1021,8 @@ class JobService:
                     "fuel_paisa": fuel_paisa,
                     "fuel_basis": fuel_basis,
                     "fuel_distance_m": fuel_distance_m,
+                    "outbound_m": route.distance_m if route is not None else None,
+                    "return_m": route.return_distance_m if route is not None else None,
                 },
             )
         )
@@ -1233,13 +1337,14 @@ class JobService:
         # The refreshed derivation rides back so the phone sees the estimate →
         # breadcrumbs upgrade without refetching the (heavy) job detail.
         locations = await self._repo.list_locations(row.id)
-        samples = await self._repo.list_travel_samples(row.id) if _has_route_pins(locations) else []
+        samples = await self._repo.list_travel_samples(row.id) if _route_possible(locations) else []
         route = derive_route(
             locations,
             samples,
             rate_paisa_per_km=settings.fuel_rate_paisa_per_km,
             circuity_factor=settings.fuel_route_circuity_factor,
             workshop=await self._workshop(row.shop_id),
+            customer=self._customer_pin(row),
         )
         return TravelSampleBatchResponse(
             accepted=accepted,
@@ -1333,12 +1438,13 @@ class JobService:
         detail.locations = [LocationOut.model_validate(loc) for loc in locations]
         # Breadcrumbs are only fetched when a route can exist at all — the
         # common carry-in case skips the query entirely.
-        samples = await self._repo.list_travel_samples(row.id) if _has_route_pins(locations) else []
+        samples = await self._repo.list_travel_samples(row.id) if _route_possible(locations) else []
         detail.route = derive_route(
             locations,
             samples,
             rate_paisa_per_km=settings.fuel_rate_paisa_per_km,
             circuity_factor=settings.fuel_route_circuity_factor,
             workshop=await self._workshop(row.shop_id),
+            customer=self._customer_pin(row),
         )
         return detail
