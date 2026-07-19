@@ -65,7 +65,11 @@ export function AppProvider({ children }) {
   // Live roster only — no seed fallback. An empty array until the API answers;
   // screens render their empty states rather than fabricated names.
   const [technicians, setTechnicians] = useState([]);
+  // The raw attendance board (single source — the Attendance page polls it and
+  // every other consumer reads the same copy) plus the derived per-tech map.
+  const [board, setBoard] = useState(null);
   const [attendanceToday, setAttendanceToday] = useState({});
+  const boardFetchedAtRef = useRef(0);
   const [toasts, setToasts] = useState([]);
 
   // Stable accessor for the live roster — lets toast callbacks (assign/claim)
@@ -136,6 +140,43 @@ export function AppProvider({ children }) {
     setToasts((t) => t.filter((x) => x.id !== id));
   }, []);
 
+  // Store a fresh board response + its derived per-tech map.
+  const applyBoard = useCallback((b) => {
+    boardFetchedAtRef.current = Date.now();
+    setBoard(b);
+    setAttendanceToday(boardToAttendance(b?.rows));
+  }, []);
+
+  // Re-fetch the board for the current roster. `maxAgeMs` lets callers skip the
+  // round trip when the copy on hand is recent (the Attendance page opens with
+  // { maxAgeMs: 30_000 } so login + navigate doesn't fetch the board twice).
+  // Rejects on network failure — the caller decides whether that's an error
+  // state (initial page load) or ignorable (background poll).
+  const boardInflightRef = useRef(null);
+  const refreshBoard = useCallback(
+    ({ maxAgeMs = 0 } = {}) => {
+      if (maxAgeMs > 0 && Date.now() - boardFetchedAtRef.current < maxAgeMs) {
+        return Promise.resolve(null);
+      }
+      // Near-simultaneous callers (login + landing on Attendance) share one
+      // request instead of racing past the freshness stamp.
+      if (boardInflightRef.current) return boardInflightRef.current;
+      const ids = techniciansRef.current.map((t) => t.id);
+      if (ids.length === 0) return Promise.resolve(null);
+      const req = fetchBoard(ids)
+        .then((b) => {
+          applyBoard(b);
+          return b;
+        })
+        .finally(() => {
+          boardInflightRef.current = null;
+        });
+      boardInflightRef.current = req;
+      return req;
+    },
+    [applyBoard]
+  );
+
   // Load the live roster once authenticated, then today's attendance board for
   // exactly those ids — the board's id list comes from the same live roster the
   // screens render, so a new hire shows up everywhere the day they exist.
@@ -147,8 +188,8 @@ export function AppProvider({ children }) {
         if (cancelled || !Array.isArray(rows)) return undefined;
         setTechnicians(rows);
         return fetchBoard(rows.map((t) => t.id))
-          .then((board) => {
-            if (!cancelled) setAttendanceToday(boardToAttendance(board?.rows));
+          .then((b) => {
+            if (!cancelled) applyBoard(b);
           })
           .catch(() => {});
       })
@@ -160,7 +201,7 @@ export function AppProvider({ children }) {
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, addToast]);
+  }, [isAuthenticated, addToast, applyBoard]);
 
   // Real create: POST to the API, then prepend the mapped job. Returns the new
   // job so the caller can navigate to it / toast its token.
@@ -403,6 +444,8 @@ export function AppProvider({ children }) {
     jobs,
     technicians,
     techName,
+    board,
+    refreshBoard,
     attendanceToday,
     toasts,
     addToast,

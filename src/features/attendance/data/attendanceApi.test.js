@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { _resetRequestCacheForTests } from "@shared/lib/requestCache";
 import {
   createAdjustment,
   fetchAdjustments,
@@ -6,6 +7,7 @@ import {
   fetchGeofence,
   fetchPayrollExports,
   fetchGrid,
+  fetchSelfieGaps,
   fetchShift,
   fetchTechDays,
   saveGeofence,
@@ -21,6 +23,7 @@ function mockOk() {
 describe("attendanceApi", () => {
   beforeEach(() => {
     mockOk();
+    _resetRequestCacheForTests();
   });
 
   it("fetchBoard passes shop_id and each tech id", async () => {
@@ -115,6 +118,14 @@ describe("attendanceApi", () => {
     const body = JSON.parse(init.body);
     expect(body.working_days).toBe("1111110");
     expect(body.grace_minutes).toBe(10);
+  });
+
+  it("fetchSelfieGaps hits the endpoint once for two rapid calls (shared cache)", async () => {
+    await fetchSelfieGaps();
+    await fetchSelfieGaps();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const url = globalThis.fetch.mock.calls[0][0];
+    expect(url).toContain("/api/attendance/selfie-gaps?shop_id=default");
   });
 
   it("fetchPayrollExports passes shop_id", async () => {

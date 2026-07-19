@@ -7,6 +7,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 
 import { attendanceApi } from "../../lib/attendanceApi";
+import { _resetTodayCacheForTests } from "./todayCache";
 import { notifyArrived, notifyLeaving } from "./attendanceNotifications";
 import { handleGeofenceEvent } from "./geofence";
 import { getLocation } from "./location";
@@ -100,6 +101,9 @@ beforeEach(async () => {
   // A clean per-test baseline so a prior test's fix override never leaks
   // (clearAllMocks resets calls, not implementations).
   mockedGetLocation.mockResolvedValue(fixAtMeters(0));
+  // isClockedIn goes through the shared today-memo; drop it so one test's
+  // clock state can't satisfy the next test from cache.
+  _resetTodayCacheForTests();
 });
 
 it("ENTER while signed in & off-duty: logs arrival and prompts clock-in", async () => {

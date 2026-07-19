@@ -27,6 +27,7 @@ import {
 import { punch } from "./punch";
 import { discardPunch, syncNow } from "./sync";
 import { syncPresence } from "./presenceSync";
+import { getToday, invalidateToday } from "./todayCache";
 
 // Retry-while-pending backoff: 3s → 60s. The effect re-runs (resetting to base)
 // whenever pendingCount changes, so a stuck punch backs off instead of polling
@@ -104,7 +105,7 @@ export function useAttendance() {
       const end = new Date();
       const start = new Date(end.getTime() - HISTORY_DAYS * 24 * 3600 * 1000);
       const [today, list, shiftData] = await Promise.all([
-        attendanceApi.today(techId),
+        getToday(techId),
         attendanceApi.listPunches(techId, start.toISOString(), end.toISOString()),
         attendanceApi.getShift(techId).catch(() => null),
       ]);
@@ -119,6 +120,8 @@ export function useAttendance() {
   // Sync (the signed-in tech's punches only), then re-read queue + server.
   const syncAndRefresh = useCallback(async () => {
     await syncNow(techId);
+    // The flush may have landed punches — the cached `today` is no longer truth.
+    invalidateToday(techId);
     await refresh();
   }, [techId, refresh]);
 
@@ -232,6 +235,7 @@ export function useAttendance() {
         // brought them here so the primed banner resolves.
         Vibration.vibrate(40);
         clearAttendancePrompt();
+        invalidateToday(techId);
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -253,6 +257,7 @@ export function useAttendance() {
         await retryPresence(row.key);
         await syncPresence(techId);
       }
+      invalidateToday(techId);
       await refresh();
     },
     [techId, refresh],

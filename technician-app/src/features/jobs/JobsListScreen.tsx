@@ -20,7 +20,8 @@ import {
 
 import { ApiError } from "../../lib/api";
 import { jobsApi, type Job } from "../../lib/jobsApi";
-import { cacheStamp, loadJobsList, saveJobsList } from "../../lib/jobsCache";
+import { cacheStamp, loadJobsList } from "../../lib/jobsCache";
+import { getJobsList, peekJobsList } from "../../lib/jobsMemo";
 import { useAuth } from "../auth/AuthContext";
 import { isVisitType, jobTypeBadge } from "./jobType";
 import type { JobsStackParamList } from "./types";
@@ -107,13 +108,12 @@ export function JobsListScreen({ navigation, route }: Props) {
 
   const currentRoute = route.name;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     try {
-      const all = await jobsApi.list();
+      const all = await getJobsList({ force });
       setJobs(all);
       setError(null);
       setCachedAt(null);
-      void saveJobsList(all);
     } catch {
       const cached = await loadJobsList();
       if (cached) {
@@ -131,6 +131,13 @@ export function JobsListScreen({ navigation, route }: Props) {
 
   useFocusEffect(
     useCallback(() => {
+      // Paint the last known list immediately; getJobsList then decides
+      // whether the network is needed at all (fresh memo → no request).
+      const known = peekJobsList();
+      if (known) {
+        setJobs(known);
+        setLoading(false);
+      }
       void load();
     }, [load]),
   );
@@ -139,11 +146,11 @@ export function JobsListScreen({ navigation, route }: Props) {
     setClaiming(id);
     try {
       await jobsApi.claim(id);
-      await load();
+      await load(true);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         setError("Already claimed by another technician — list refreshed.");
-        await load();
+        await load(true);
       } else {
         setError("Couldn't claim that job — try again.");
       }
@@ -176,7 +183,7 @@ export function JobsListScreen({ navigation, route }: Props) {
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              void load();
+              void load(true);
             }}
           />
         }

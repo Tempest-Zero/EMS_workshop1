@@ -4,6 +4,7 @@
  */
 
 import { apiGet, apiSend } from "@shared/lib/api";
+import { cached } from "@shared/lib/requestCache";
 
 /** List jobs. `params` may include `status`, `tech_id`, `q`, `shop_id`. */
 export function fetchJobs(params = {}) {
@@ -17,9 +18,12 @@ export function fetchJob(id) {
 }
 
 /** Closed jobs whose closing video never actually uploaded (manager oversight —
- * the close gate tolerates pending uploads; this is the reconciliation view). */
+ * the close gate tolerates pending uploads; this is the reconciliation view).
+ * Refetched on every Dashboard mount, so a short shared cache dedupes it. */
 export function fetchEvidenceGaps() {
-  return apiGet("/api/jobs/evidence-gaps");
+  return cached("jobs.evidence-gaps", () => apiGet("/api/jobs/evidence-gaps"), {
+    ttlMs: 60_000,
+  });
 }
 
 /**

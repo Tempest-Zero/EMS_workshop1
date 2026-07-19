@@ -21,6 +21,7 @@ import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 
 import { attendanceApi, type ActiveGeofence, type PresenceKind } from "../../lib/attendanceApi";
+import { getToday } from "./todayCache";
 import { getToken, loadToken } from "../../lib/auth";
 import { haversineM } from "../../lib/geo";
 import { maybePromptReturn } from "../jobs/returnPrompt";
@@ -215,7 +216,9 @@ export async function recordCrossing(
 async function isClockedIn(techId: string): Promise<boolean | null> {
   try {
     if (!getToken()) await loadToken();
-    const today = await attendanceApi.today(techId);
+    // Shared 30s memo with the Dashboard/Clock screens; a headless cold start
+    // has an empty memo and hits the network exactly as before.
+    const today = await getToday(techId);
     return today.clocked_in;
   } catch {
     return null;
