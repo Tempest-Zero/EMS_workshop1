@@ -10,6 +10,10 @@ import { fileURLToPath, URL } from "node:url";
 // still be hosted under a subpath if ever needed — nothing changes by default.
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
+  // Agent sessions run in .claude/worktrees/ inside the repo; without this the
+  // dev-server watcher sees their file churn and force-reloads the page every
+  // few seconds, making local dev unusable while an agent works.
+  server: { watch: { ignored: ["**/.claude/**"] } },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

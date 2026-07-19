@@ -10,8 +10,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useState } from "react";
 import { Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
 
-import { attendanceApi } from "../../lib/attendanceApi";
 import type { RootStackParamList } from "../../lib/navigation";
+import { getToday } from "../attendance/todayCache";
 import { useAuth } from "../auth/AuthContext";
 
 type Props = NativeStackScreenProps<RootStackParamList, "DashboardHub">;
@@ -28,8 +28,7 @@ export function DashboardScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       if (technician) {
-        attendanceApi
-          .today(technician.id)
+        getToday(technician.id)
           .then((t) => {
             if (!cancelled) setClockedIn(t.clocked_in);
           })

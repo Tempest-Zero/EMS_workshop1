@@ -32,6 +32,7 @@ import {
 
 import { EvidenceStrip } from "../media/EvidenceStrip";
 import { ApiError } from "../../lib/api";
+import { coalesce } from "../../lib/coalesce";
 import { jobsApi, type JobDetail, type TransitionAction } from "../../lib/jobsApi";
 import { cacheStamp, loadJobDetail, saveJobDetail } from "../../lib/jobsCache";
 import { messagingApi, type WhatsAppKind } from "../../lib/messagingApi";
@@ -178,7 +179,16 @@ export function JobDetailScreen({ route, navigation }: Props) {
 
   // When the outbox drains (a queued write synced), reload so the authoritative
   // bill / cash / route appears in place of the optimistic "saved offline" note.
-  useEffect(() => onOutboxChange(() => void load()), [load]);
+  // notify() fires per queue mutation, so a drain settling N items would mean N
+  // reloads — coalesce the burst into one fetch after a quiet gap.
+  useEffect(() => {
+    const reload = coalesce(() => void load(), 400);
+    const unsubscribe = onOutboxChange(reload.call);
+    return () => {
+      unsubscribe();
+      reload.cancel();
+    };
+  }, [load]);
 
   // The pending overlay: queued/failed outbox items for THIS job, rendered on
   // top of server truth so an offline tech sees what they recorded.

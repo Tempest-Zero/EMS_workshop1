@@ -6,6 +6,7 @@
  */
 
 import { apiGet, apiSend } from "@shared/lib/api";
+import { cached } from "@shared/lib/requestCache";
 
 export const SHOP_ID = "default";
 
@@ -61,9 +62,14 @@ export function fetchVariance(techIds, start, end) {
 
 /** Punches past the grace window whose selfie never uploaded (manager-only).
  * The flag-side of "selfie is required evidence": capture never blocks, but a
- * gap must surface here instead of passing silently. */
+ * gap must surface here instead of passing silently. Dashboard and Attendance
+ * both need this list, so it's served from a short shared cache. */
 export function fetchSelfieGaps() {
-  return apiGet(`/api/attendance/selfie-gaps?shop_id=${encodeURIComponent(SHOP_ID)}`);
+  return cached(
+    "attendance.selfie-gaps",
+    () => apiGet(`/api/attendance/selfie-gaps?shop_id=${encodeURIComponent(SHOP_ID)}`),
+    { ttlMs: 60_000 }
+  );
 }
 
 export function fetchAdjustments(techId) {
