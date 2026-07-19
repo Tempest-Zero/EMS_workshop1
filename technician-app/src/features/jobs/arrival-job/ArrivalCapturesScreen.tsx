@@ -5,12 +5,14 @@
  * the wizard (offline → pending-media queue). No skip: these ARE the gates.
  */
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, Pressable, SafeAreaView, ScrollView, Platform, ActivityIndicator } from 'react-native';
+import { Alert, StyleSheet, Text, View, Pressable, SafeAreaView, ScrollView, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 
 import type { MediaType, Phase } from '../../../lib/api';
+import { config } from '../../../lib/config';
 import type { JobType } from '../../../lib/jobsApi';
+import { checkVideoDuration } from '../videoDuration';
 import type { ArrivalDraft, UploadState } from './arrivalDraft';
 
 interface Step1Props {
@@ -110,6 +112,35 @@ export function ArrivalCapturesScreen({ draft, jobType, onCapture, onPatch, onNe
 
       const asset = result.canceled ? undefined : result.assets[0];
       if (asset?.uri) {
+        // Android camera apps often ignore videoMaxDuration — gate the clip
+        // BEFORE it reaches the draft/upload. Unknown duration passes (UX
+        // guard, not a security control).
+        const verdict = checkVideoDuration(asset.duration, {
+          minMs: config.video.minMs,
+          maxMs: config.video.maxBeforeAfterMs,
+        });
+        if (verdict === 'too_short') {
+          Alert.alert(
+            'Video too short',
+            'Record at least 3 seconds — show the unit clearly so the clip counts as proof.',
+            [
+              { text: 'Retake', onPress: () => void recordVideo() },
+              { text: 'Cancel', style: 'cancel' },
+            ],
+          );
+          return;
+        }
+        if (verdict === 'too_long') {
+          Alert.alert(
+            'Video too long',
+            'Keep it under 15 seconds — a short clip of the unit running is enough.',
+            [
+              { text: 'Retake', onPress: () => void recordVideo() },
+              { text: 'Cancel', style: 'cancel' },
+            ],
+          );
+          return;
+        }
         onCapture(
           'before-video',
           { videoUri: asset.uri },
