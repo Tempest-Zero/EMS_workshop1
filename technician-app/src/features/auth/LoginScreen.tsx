@@ -38,7 +38,7 @@ export function LoginScreen() {
   useEffect(() => {
     authApi
       .roster()
-      .then((r) => setRoster(r.filter((t) => t.active)))
+      .then((r) => setRoster(r.filter((t) => t.active && t.role !== "manager")))
       .catch(() => setError("Couldn't load technicians — check your connection."))
       .finally(() => setLoading(false));
   }, []);
