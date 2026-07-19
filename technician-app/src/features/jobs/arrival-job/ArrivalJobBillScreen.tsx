@@ -18,9 +18,10 @@ import { messagingApi } from "../../../lib/messagingApi";
 import { formatPaisa, rupeesToPaisa } from "../../../lib/money";
 import type { RootStackParamList } from "../../../lib/navigation";
 import { makeItem } from "../../../lib/outbox";
-import { sendOrQueue, type PaymentPayload } from "../../../lib/outboxSync";
+import { sendOrQueue, type NegotiatePayload, type PaymentPayload } from "../../../lib/outboxSync";
 import { useJobOutbox } from "../../../lib/useJobOutbox";
 import { closeJobWithVideo } from "../closeJobWithVideo";
+import { defaultPayRs, isNegotiateDirty } from "./billMath";
 
 type Props = NativeStackScreenProps<RootStackParamList, "BillSheet">;
 
@@ -44,7 +45,8 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
   const [paymentMethod, setPaymentMethod] = useState<PayChoice | null>(null);
   const [payRs, setPayRs] = useState('');
 
-  const seeded = useRef(false);
+  const seededNegotiate = useRef(false);
+  const lastBalance = useRef<number | null>(null);
 
   // Queued/failed outbox writes for THIS job — offline payments show as
   // "syncing" and back the double-charge warning (the server dedups a
@@ -55,6 +57,13 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
     (s, i) => s + (i.payload as PaymentPayload).amountPaisa,
     0,
   );
+  // A negotiate queued offline is, per the outbox contract, already "saved" —
+  // it flushes before any later payment (FIFO). Its amount counts as clean in
+  // the dirty check below, so an offline tech isn't re-asked to save the same
+  // discount forever.
+  const pendingNegotiatePaisa =
+    (outboxView.queued.find((i) => i.kind === "negotiate")?.payload as NegotiatePayload | undefined)
+      ?.amountPaisa ?? null;
 
   const load = useCallback(async () => {
     try {
@@ -77,13 +86,24 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
     void load();
   }, [load]);
 
-  // Seed the inputs from server truth exactly once (not on every reload).
+  // Seed the negotiated input from server truth exactly once (not on every
+  // reload) — it's the technician's scratchpad while they haggle.
   useEffect(() => {
-    if (!job || seeded.current) return;
-    seeded.current = true;
+    if (!job || seededNegotiate.current) return;
+    seededNegotiate.current = true;
     const current = job.bill_negotiated_paisa ?? job.bill_original_paisa;
     if (current != null) setNegotiatedRs(String(Math.round(current / 100)));
-    if (job.balance_paisa > 0) setPayRs(String(Math.round(job.balance_paisa / 100)));
+  }, [job]);
+
+  // The payment input FOLLOWS the balance: every reconciled row (initial load,
+  // negotiate save, payment, close, WhatsApp log) recomputes the suggested
+  // amount. Seeding it once was the reported money bug — after "Save
+  // negotiated" the input kept the pre-discount figure, and that's what the
+  // payment logged.
+  useEffect(() => {
+    if (!job || job.balance_paisa === lastBalance.current) return;
+    lastBalance.current = job.balance_paisa;
+    setPayRs(defaultPayRs(job.balance_paisa));
   }, [job]);
 
   if (error && !job) {
@@ -127,18 +147,20 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
   const originalPaisa = job.bill_original_paisa ?? materialsPaisa + labourPaisa + fuelPaisa;
   const negotiatedPaisa = rupeesToPaisa(negotiatedRs);
   const negotiateDirty =
-    negotiatedPaisa > 0 && negotiatedPaisa !== (job.bill_negotiated_paisa ?? originalPaisa);
+    isNegotiateDirty(negotiatedPaisa, job.bill_negotiated_paisa, originalPaisa) &&
+    negotiatedPaisa !== pendingNegotiatePaisa;
 
   const applyDiscount = (label: string, amountPaisa: number) => {
     setSelectedDiscount(label);
     setNegotiatedRs(String(Math.max(0, Math.round((originalPaisa - amountPaisa) / 100))));
   };
 
-  const saveNegotiated = async () => {
-    if (!negotiateDirty || busy) return;
-    setBusy("negotiate");
-    setError(null);
-    setInfo(null);
+  /**
+   * Persist the negotiated amount through the outbox. Stable id → a repeat is
+   * last-write-wins, never a duplicate. Owns no UI state beyond reconciling
+   * the returned row; callers layer busy/info/error on the three outcomes.
+   */
+  const persistNegotiated = async (): Promise<"saved" | "queued" | "failed"> => {
     try {
       const detail = await sendOrQueue(
         makeItem({
@@ -149,18 +171,52 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
         }),
         () => jobsApi.negotiateBill(id, negotiatedPaisa, selectedDiscount ?? undefined),
       );
-      if (detail) setJob(detail);
-      else setInfo("Negotiated amount saved offline — syncing when reconnected.");
+      if (detail) {
+        setJob(detail); // the balance follower refreshes the suggested payment
+        return "saved";
+      }
+      return "queued";
     } catch {
-      setError("Couldn't save the negotiated amount — try again.");
-    } finally {
-      setBusy(null);
+      return "failed";
     }
+  };
+
+  const saveNegotiated = async () => {
+    if (!negotiateDirty || busy) return;
+    setBusy("negotiate");
+    setError(null);
+    setInfo(null);
+    const result = await persistNegotiated();
+    if (result === "queued") setInfo("Negotiated amount saved offline — syncing when reconnected.");
+    else if (result === "failed") setError("Couldn't save the negotiated amount — try again.");
+    setBusy(null);
   };
 
   const logPayment = async () => {
     const paisa = rupeesToPaisa(payRs);
     if (!paymentMethod || paymentMethod === 'later' || paisa <= 0 || busy) return;
+    // A discount the tech never saved is the second half of the reported bug —
+    // auto-save it FIRST (a payment outbox item must never be created before
+    // its negotiate item), then STOP: the save just changed the suggested
+    // amount under their thumb, so they confirm it before logging.
+    if (negotiateDirty) {
+      setBusy("payment");
+      setError(null);
+      setInfo(null);
+      const r = await persistNegotiated();
+      setBusy(null);
+      if (r === "failed") {
+        setError("Couldn't save the discount — try again before logging the payment.");
+        return;
+      }
+      if (r === "queued") {
+        // Offline: no reconciled row is coming, so derive the new balance —
+        // the negotiated total minus what's already been received.
+        setPayRs(defaultPayRs(negotiatedPaisa - job.received_paisa));
+      }
+      setInfo("Discount saved — confirm the updated amount, then tap Log payment.");
+      return;
+    }
     // Double-charge guard: warn when the same amount is already waiting to
     // sync on this job — each tap mints a fresh client_id, so the server
     // can't tell a deliberate second payment from a doubting re-tap.
@@ -198,8 +254,7 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
         () => jobsApi.logPayment(id, paisa, METHOD_FOR[paymentMethod], clientId),
       );
       if (detail) {
-        setJob(detail);
-        setPayRs(detail.balance_paisa > 0 ? String(Math.round(detail.balance_paisa / 100)) : '');
+        setJob(detail); // the balance follower refreshes the suggested amount
       } else {
         setInfo("Payment saved offline — syncing when reconnected.");
       }
@@ -218,6 +273,15 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
     setError(null);
     setInfo(null);
     try {
+      // An unsaved discount must land before the close. "queued" may proceed —
+      // close carries no amount, and the queued negotiate flushes first (FIFO).
+      if (negotiateDirty) {
+        const r = await persistNegotiated();
+        if (r === "failed") {
+          setError("Couldn't save the discount — try again before closing the job.");
+          return;
+        }
+      }
       const result = await closeJobWithVideo(id, token);
       if (result.kind === "closed") {
         setJob(result.job);
@@ -245,6 +309,22 @@ export function ArrivalJobBillScreen({ route, navigation }: Props) {
     setError(null);
     setInfo(null);
     try {
+      // The bill message renders server truth — an unsaved discount would send
+      // the OLD amount. Persist first; offline can't proceed (the preview is a
+      // live call, and the message must show the discounted figure).
+      if (negotiateDirty) {
+        const r = await persistNegotiated();
+        if (r === "queued") {
+          setError(
+            "Discount saved offline — reconnect before sending the bill so WhatsApp shows the discounted amount.",
+          );
+          return;
+        }
+        if (r === "failed") {
+          setError("Couldn't save the discount — try again before sending the bill.");
+          return;
+        }
+      }
       const preview = await messagingApi.preview(id, "bill");
       if (!preview.consent) {
         setError("No WhatsApp consent on record for this customer.");
