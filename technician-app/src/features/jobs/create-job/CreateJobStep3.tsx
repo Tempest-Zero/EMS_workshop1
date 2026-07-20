@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View, Pressable, TextInput, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 
 import { getLocation } from '../../attendance/location';
 import { SchedulePickerModal } from '../SchedulePickerModal';
+import { loadRecents, rememberPick, searchAddress, type AddressCandidate } from './addressSearch';
 
 interface Step3Props {
   /** The customer address — held by the wizard so submit can send it. */
@@ -29,9 +30,55 @@ const DEFAULT_REGION = {
   longitudeDelta: 0.08,
 };
 
+// Honest failure copy — the on-device geocoder needs network + Play
+// Services, and search quality is address-grade, not Places-grade.
+const SEARCH_MSG: Record<'no_match' | 'outside' | 'offline', string> = {
+  no_match: 'No match found — try the area name, or drop the pin on the map.',
+  outside: 'That address resolved outside Karachi — check the spelling or drop the pin manually.',
+  offline: 'No connection — address search needs internet; drop the pin manually.',
+};
+
 export function CreateJobStep3({ location, setLocation, customerLat, customerLng, setCustomerPin, serviceType, setServiceType, timeWindow, setTimeWindow, onNext }: Step3Props) {
   const [showCalendar, setShowCalendar] = useState(false);
   const [locating, setLocating] = useState(false);
+
+  // Address search (hardened on-device geocoder pipeline — addressSearch.ts).
+  const mapRef = useRef<MapView | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [candidates, setCandidates] = useState<AddressCandidate[]>([]);
+  const [searchMsg, setSearchMsg] = useState<string | null>(null);
+  const [recents, setRecents] = useState<AddressCandidate[]>([]);
+
+  useEffect(() => {
+    void loadRecents().then(setRecents);
+  }, []);
+
+  const runSearch = async () => {
+    if (searching || location.trim().length < 3) return;
+    setSearching(true);
+    setSearchMsg(null);
+    setCandidates([]);
+    try {
+      const res = await searchAddress(location);
+      if (res.status === 'ok') setCandidates(res.candidates);
+      else setSearchMsg(SEARCH_MSG[res.status]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const pickCandidate = (c: AddressCandidate) => {
+    setLocation(c.label);
+    setCustomerPin(c.lat, c.lng);
+    setCandidates([]);
+    setSearchMsg(c.approximate ? 'Area-level match — drag the pin to the exact house.' : null);
+    // initialRegion only applies on first render — move the camera explicitly.
+    mapRef.current?.animateToRegion(
+      { latitude: c.lat, longitude: c.lng, latitudeDelta: 0.02, longitudeDelta: 0.02 },
+      500,
+    );
+    void rememberPick(c).then(loadRecents).then(setRecents);
+  };
 
   const isVisit = serviceType !== 'Carry-in';
   // Carry-in has no travel: the address and schedule are visit-only (the server
@@ -88,6 +135,7 @@ export function CreateJobStep3({ location, setLocation, customerLat, customerLng
           <>
             <View style={styles.mapContainer}>
               <MapView
+                ref={mapRef}
                 style={StyleSheet.absoluteFill}
                 initialRegion={
                   customerLat != null && customerLng != null
@@ -127,10 +175,54 @@ export function CreateJobStep3({ location, setLocation, customerLat, customerLng
             placeholder={isVisit ? 'Type customer address...' : 'Customer address (optional)...'}
             placeholderTextColor="#94a3b8"
             value={location}
-            onChangeText={setLocation}
+            onChangeText={(t) => {
+              setLocation(t);
+              // Typing invalidates the last search's suggestions/message.
+              setCandidates([]);
+              setSearchMsg(null);
+            }}
             autoCorrect={false}
+            returnKeyType="search"
+            onSubmitEditing={() => void runSearch()}
           />
+          <Pressable
+            style={styles.searchBtn}
+            onPress={() => void runSearch()}
+            disabled={searching || location.trim().length < 3}
+          >
+            {searching ? (
+              <ActivityIndicator size="small" color="#334155" />
+            ) : (
+              <Text style={styles.searchBtnText}>Find</Text>
+            )}
+          </Pressable>
         </View>
+
+        {searchMsg ? <Text style={styles.helperText}>{searchMsg}</Text> : null}
+
+        {candidates.map((c) => (
+          <Pressable
+            key={`${c.lat},${c.lng}`}
+            style={styles.candidateRow}
+            onPress={() => pickCandidate(c)}
+          >
+            <Text style={styles.candidateLabel} numberOfLines={2}>📌 {c.label}</Text>
+            {c.approximate ? (
+              <Text style={styles.candidateHint}>Area only — drag the pin to the exact house</Text>
+            ) : null}
+          </Pressable>
+        ))}
+
+        {candidates.length === 0 && !searchMsg && location.trim().length < 3 && recents.length > 0 ? (
+          <View>
+            <Text style={styles.recentsTitle}>Recent</Text>
+            {recents.slice(0, 3).map((c) => (
+              <Pressable key={c.label} style={styles.candidateRow} onPress={() => pickCandidate(c)}>
+                <Text style={styles.candidateLabel} numberOfLines={1}>🕘 {c.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
 
         {/* Scheduling is visit-only — a carry-in is dropped off, there is no
             appointment window. */}
@@ -210,6 +302,13 @@ const styles = StyleSheet.create({
   addressInput: { flex: 1, fontSize: 13, color: '#0f172a', fontWeight: '500', height: 36, padding: 0 },
 
   helperText: { fontSize: 13, color: '#64748b', marginTop: 12, marginLeft: 4 },
+
+  searchBtn: { marginLeft: 8, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12, backgroundColor: '#f1f5f9', minWidth: 52, alignItems: 'center' },
+  searchBtnText: { fontSize: 12, fontWeight: '700', color: '#334155' },
+  candidateRow: { marginTop: 8, backgroundColor: '#ffffff', borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0', paddingVertical: 10, paddingHorizontal: 12 },
+  candidateLabel: { fontSize: 13, color: '#0f172a', fontWeight: '600' },
+  candidateHint: { fontSize: 12, color: '#b45309', marginTop: 2 },
+  recentsTitle: { fontSize: 12, fontWeight: '700', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 12, marginLeft: 4 },
   
   spacer: { height: 24 },
   
