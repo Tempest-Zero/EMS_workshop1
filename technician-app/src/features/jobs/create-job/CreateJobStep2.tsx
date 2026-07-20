@@ -15,6 +15,8 @@ const BRANDS = ['Dawlance', 'Haier', 'Pel', 'Samsung', 'LG', 'Kenwood', 'Gree', 
 // ------------------------------------------------------------------
 const MAX_MS = 120_000;
 const TICK_MS = 200;
+/** A press shorter than this can't hold a usable description — discard it. */
+const MIN_MS = 1_000;
 
 function fmt(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -22,9 +24,15 @@ function fmt(ms: number): string {
 }
 
 function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (uri: string | null) => void }) {
+  // The press drives two async sequences (start on press-in, stop on
+  // press-out) that can overlap on a quick tap — the refs below serialize
+  // them so a recording is never left running unheld and the live Recording
+  // object is never orphaned while it still holds the mic (expo-av allows
+  // only ONE prepared recorder app-wide). Same hardening as ArrivalJobStep2.
   const recordingRef = useRef<Audio.Recording | null>(null);
+  const startingRef = useRef(false);
+  const pressActive = useRef(false);
   const soundRef = useRef<Audio.Sound | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const mounted = useRef(true);
 
   const [recording, setRecording] = useState(false);
@@ -34,10 +42,7 @@ function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (u
   const [posMs, setPosMs] = useState(0);
   const [durMs, setDurMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
-
-  const clearTimer = () => {
-    if (timer.current) { clearInterval(timer.current); timer.current = null; }
-  };
+  const [hint, setHint] = useState<string | null>(null);
 
   const onStatus = (s: AVPlaybackStatus) => {
     if (!s.isLoaded || !mounted.current) return;
@@ -47,46 +52,70 @@ function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (u
     if (s.didJustFinish) setPlaying(false);
   };
 
+  // The timer reads the recorder's own clock (not a hand-accumulated
+  // interval), so the display can't drift from the file's real duration.
+  const onRecStatus = (s: Audio.RecordingStatus) => {
+    if (!mounted.current || !s.isRecording) return;
+    setElapsedMs(s.durationMillis);
+    if (s.durationMillis >= MAX_MS) void stop();
+  };
+
   const start = async () => {
+    if (busy || startingRef.current || recordingRef.current) return;
+    startingRef.current = true;
     setError(null);
+    setHint(null);
+    let rec: Audio.Recording | null = null;
     try {
       const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) { setError("Microphone permission needed."); return; }
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const rec = new Audio.Recording();
+      rec = new Audio.Recording();
+      rec.setOnRecordingStatusUpdate(onRecStatus);
+      rec.setProgressUpdateInterval(TICK_MS);
       await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await rec.startAsync();
       recordingRef.current = rec;
-      setRecording(true);
-      setElapsedMs(0);
-      clearTimer();
-      timer.current = setInterval(() => {
-        if (!mounted.current) return;
-        setElapsedMs((prev) => {
-          const next = prev + TICK_MS;
-          if (next >= MAX_MS) void stop();
-          return next;
-        });
-      }, TICK_MS);
+      if (mounted.current) {
+        setElapsedMs(0);
+        setRecording(true);
+      }
     } catch (e) {
-      recordingRef.current = null; clearTimer();
+      // Unload whatever was acquired — a half-started session left behind
+      // keeps the mic and blocks every future recording.
+      await rec?.stopAndUnloadAsync().catch(() => {});
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
       if (mounted.current) { setRecording(false); setError(`Error: ${e instanceof Error ? e.message : String(e)}`); }
+    } finally {
+      startingRef.current = false;
+    }
+    // The press may have ended while we were still preparing — close the
+    // session instead of leaving it recording with no finger on the button.
+    if (recordingRef.current && (!pressActive.current || !mounted.current)) {
+      void stop();
     }
   };
 
   const stop = async () => {
+    // A quick tap releases before the start sequence assigns the ref — wait
+    // (bounded) so the stop always has the session to close.
+    for (let i = 0; startingRef.current && i < 80; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     const rec = recordingRef.current;
     if (!rec) return;
     recordingRef.current = null;
-    clearTimer();
     setBusy(true);
     try {
-      await rec.stopAndUnloadAsync();
+      const status = await rec.stopAndUnloadAsync();
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
       const out = rec.getURI();
       if (!out) {
         if (mounted.current) setError("Recording failed.");
+      } else if (status.durationMillis < MIN_MS) {
+        // Too short to describe a problem — a stray tap, not a recording.
+        await FileSystem.deleteAsync(out, { idempotent: true }).catch(() => {});
+        if (mounted.current) setHint("Too short — press and hold while you speak.");
       } else {
         const info = await FileSystem.getInfoAsync(out, { size: true });
         const ok = info.exists && (!("size" in info) || info.size > 0);
@@ -98,7 +127,7 @@ function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (u
     } catch (e) {
       if (mounted.current) setError(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      if (mounted.current) { setRecording(false); setBusy(false); }
+      if (mounted.current) { setRecording(false); setBusy(false); setElapsedMs(0); }
     }
   };
 
@@ -140,7 +169,7 @@ function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (u
     mounted.current = true;
     const sub = AppState.addEventListener("change", (next) => { if (next !== "active" && recordingRef.current) void stop(); });
     return () => {
-      mounted.current = false; clearTimer(); sub.remove();
+      mounted.current = false; sub.remove();
       void recordingRef.current?.stopAndUnloadAsync().catch(() => {});
       void soundRef.current?.unloadAsync().catch(() => {});
       void Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
@@ -168,8 +197,8 @@ function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (u
         <View style={vnStyles.micWrapper}>
           <Pressable 
             style={[vnStyles.micButton, recording && vnStyles.micButtonActive]}
-            onPressIn={() => void start()}
-            onPressOut={() => void stop()}
+            onPressIn={() => { pressActive.current = true; void start(); }}
+            onPressOut={() => { pressActive.current = false; void stop(); }}
             disabled={busy}
           >
             <Ionicons 
@@ -179,7 +208,7 @@ function HoldToRecordVoice({ uri, onChange }: { uri: string | null; onChange: (u
             />
           </Pressable>
           <Text style={[vnStyles.micHelper, recording && vnStyles.micHelperActive]}>
-            {busy ? "Saving audio..." : recording ? `Recording... Release to save (${fmt(elapsedMs)})` : "Hold to explain the problem"}
+            {busy ? "Saving audio..." : recording ? `Recording... Release to save (${fmt(elapsedMs)})` : (hint ?? "Hold to explain the problem")}
           </Text>
         </View>
       )}
