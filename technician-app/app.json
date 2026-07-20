@@ -15,6 +15,11 @@
     "android": {
       "package": "com.fixflow.technician",
       "googleServicesFile": "./google-services.json",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDT01oLCfh_DD7JGZQHD0ywzP5dP1jfUIg"
+        }
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
