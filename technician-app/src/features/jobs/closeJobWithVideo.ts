@@ -12,13 +12,16 @@
 import * as ImagePicker from "expo-image-picker";
 
 import { ApiError } from "../../lib/api";
+import { config } from "../../lib/config";
 import { jobsApi, type JobDetail } from "../../lib/jobsApi";
 import { uploadMedia } from "../media/uploadMedia";
+import { checkVideoDuration } from "./videoDuration";
 
 export type CloseWithVideoResult =
   | { kind: "closed"; job: JobDetail }
   | { kind: "canceled" }
   | { kind: "no-permission"; message: string }
+  | { kind: "bad-duration"; message: string }
   | { kind: "upload-failed"; message: string }
   | { kind: "close-failed"; message: string };
 
@@ -43,6 +46,25 @@ export async function closeJobWithVideo(id: string, token: number): Promise<Clos
   if (result.canceled || result.assets.length === 0) return { kind: "canceled" };
   const asset = result.assets[0];
   if (!asset) return { kind: "canceled" };
+
+  // Android camera apps often ignore videoMaxDuration — gate the clip BEFORE
+  // any bytes are uploaded. Unknown duration passes (UX guard, not security).
+  const verdict = checkVideoDuration(asset.duration, {
+    minMs: config.video.minMs,
+    maxMs: config.video.maxClosingMs,
+  });
+  if (verdict === "too_short") {
+    return {
+      kind: "bad-duration",
+      message: "The handover video is too short — record at least 3 seconds showing the finished work.",
+    };
+  }
+  if (verdict === "too_long") {
+    return {
+      kind: "bad-duration",
+      message: "The handover video is too long — keep it under 60 seconds.",
+    };
+  }
 
   try {
     await uploadMedia({

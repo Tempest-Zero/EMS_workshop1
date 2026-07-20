@@ -26,6 +26,17 @@ export const config = {
     maxSize: 720,
     bitrate: 2_500_000,
   },
+  /**
+   * Evidence-video duration bounds (ms). Android camera apps frequently
+   * ignore ImagePicker's `videoMaxDuration`, and nothing enforces a minimum —
+   * so clips are checked after capture. Targets are 15s (before/after) and
+   * 60s (closing); each max allows some camera overshoot past the target.
+   */
+  video: {
+    minMs: 3_000,
+    maxBeforeAfterMs: 20_000,
+    maxClosingMs: 75_000,
+  },
   attendance: {
     /**
      * Privacy failsafe: the hard ceiling (hours) on a single on-duty tracking
